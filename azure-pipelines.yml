@@ -10,15 +10,18 @@
 # wake the shared deploy) is in git history at 224cb96 if the game ever moves
 # back in with the other games.
 #
-# One-time setup, outside this file:
-#   1. Create the Static Web App (plan: Free; deployment source: "Other" —
-#      this pipeline deploys with a token, not a GitHub Action).
-#   2. Copy its deployment token (Overview -> Manage deployment token) into a
-#      SECRET pipeline variable named SWA_DEPLOYMENT_TOKEN.
-#   3. Put the site's real URL into STARLINE_PUBLIC_URL below.
-#   4. Create the environment named under the Deploy stage and hang any
-#      approvals off it. PR validation comes from a branch policy pointing at
-#      this pipeline — Azure Repos has no `pr:` trigger in YAML.
+# Target: the "shmup" Static Web App. Its deployment token is already held in
+# the secret pipeline variable SWA_DEPLOYMENT_TOKEN, and its address is in
+# STARLINE_PUBLIC_URL below.
+#
+# What is still outside this file:
+#   - Reader on the GameBase feed for this project's build service, so
+#     npmAuthenticate can restore the @ccllc packages.
+#   - Approvals, if wanted, on the `shmup-production` environment. Referencing
+#     it here creates it on the first run; approvals are attached in the
+#     environment's own settings.
+#   - PR validation, from a branch policy pointing at this pipeline — Azure
+#     Repos has no `pr:` trigger in YAML.
 
 trigger:
   branches:
@@ -31,7 +34,7 @@ variables:
   # read again by tests/rendered-html.test.mjs, so the suite verifies the
   # layout this pipeline actually ships. The empty prefix means "the site
   # root"; the public URL feeds metadataBase for the social-card links.
-  STARLINE_PUBLIC_URL: https://PLACEHOLDER-starline.azurestaticapps.net/
+  STARLINE_PUBLIC_URL: https://wonderful-mushroom-0edd54a0f.7.azurestaticapps.net/
 
 stages:
   - stage: Build
@@ -97,7 +100,7 @@ stages:
         displayName: Upload to the Static Web App
         pool:
           vmImage: ubuntu-latest
-        environment: PLACEHOLDER-starline-production
+        environment: shmup-production
         strategy:
           runOnce:
             deploy:
