@@ -35,6 +35,14 @@ const eslintConfig = defineConfig([
         version: "detect",
       },
     },
+    rules: {
+      // The Inspector's labels nest their text as <span><b>NAME</b><em>value</em></span>
+      // beside the wrapped control — depth 3 from the <label>, one past the
+      // rule's default search budget of 2, so it reported "must have
+      // accessible text" for markup whose accessible name is fine: a wrapping
+      // label's name is computed from its whole subtree. Deeper look, same rule.
+      "jsx-a11y/label-has-associated-control": ["error", { depth: 3 }],
+    },
   },
 ]);
 

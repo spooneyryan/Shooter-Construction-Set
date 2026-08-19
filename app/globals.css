@@ -10,6 +10,22 @@
   --panel-2: #0d1922;
   --line: rgba(133, 177, 195, .2);
   --deep: #050a0f;
+
+  /* The ElectricBlazor token bridge. The suite's components resolve every
+     colour through --eb-* custom properties; its own theme.css is deliberately
+     not loaded (see layout.tsx), so this is the only token layer they get —
+     Starline's palette wearing the contract's names. */
+  --eb-surface: #0b1720;
+  --eb-surface-raised: var(--panel-2);
+  --eb-surface-sunken: #071018;
+  --eb-text: var(--ink);
+  --eb-text-muted: var(--muted);
+  --eb-border: var(--line);
+  --eb-radius-sm: 0px;
+  --eb-radius-md: 0px;
+  --eb-shadow-1: none;
+  --eb-focus-ring: 1px solid var(--cyan);
+  --eb-duration-base: 160ms;
 }
 
 * { box-sizing: border-box; }
@@ -97,10 +113,17 @@ button { cursor: pointer; }
 .panel-heading { min-height: 42px; padding: 0 14px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line); color: #b5c8d0; font-family: var(--font-mono); font-size: 10px; letter-spacing: .12em; }
 .panel-heading small { color: #526d79; font-size: 9px; }
 .panel-heading button { padding: 5px 7px; border: 1px solid rgba(255,106,77,.4); background: rgba(255,106,77,.06); color: #ff8a72; font-family: var(--font-mono); font-size: 9px; letter-spacing: .08em; }
-.palette-tabs { margin: 9px 10px 0; display: grid; grid-template-columns: 1fr 1fr; border: 1px solid #29414c; }
-.palette-tabs button { min-height: 31px; border: 0; background: #0b1720; color: #607d89; font-family: var(--font-mono); font-size: 9px; letter-spacing: .08em; }
-.palette-tabs button + button { border-left: 1px solid #29414c; }
-.palette-tabs button.active { background: rgba(100,227,255,.1); color: var(--cyan); box-shadow: inset 0 -2px var(--cyan); }
+/* The OBJECTS / COMPONENTS switch is ElectricBlazor's tabbed card (bare,
+   segmented). The strip keeps the old .palette-tabs look via the suite's
+   stable class names, and the whole card joins the panel's flex column so the
+   accordion inside its tab panel still owns the scrolling. */
+.palette-tabs { min-height: 0; margin-top: 9px; display: flex; flex-direction: column; flex: 1 1 auto; }
+.palette-tabs .eb-tabs-header { margin: 0 10px; }
+.palette-tabs .eb-tabs-list { width: 100%; padding: 0; gap: 0; border: 1px solid #29414c; border-radius: 0; background: transparent; }
+.palette-tabs .eb-tabs-tab { min-height: 31px; border: 0; border-radius: 0; background: #0b1720; color: #607d89; font-family: var(--font-mono); font-size: 9px; letter-spacing: .08em; }
+.palette-tabs .eb-tabs-tab + .eb-tabs-tab { border-left: 1px solid #29414c; }
+.palette-tabs .eb-tabs-tab-active { background: rgba(100,227,255,.1); color: var(--cyan); box-shadow: inset 0 -2px var(--cyan); }
+.palette-tabs .eb-tabs-panel { min-height: 0; display: flex; flex-direction: column; flex: 1 1 auto; padding: 0; }
 .tool-strip { padding: 10px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; border-bottom: 1px solid var(--line); }
 .player-card { width: calc(100% - 20px); min-height: 54px; margin: 10px 10px 0; padding: 7px 8px; display: grid; grid-template-columns: 34px 1fr auto; align-items: center; gap: 8px; border: 1px solid rgba(100,227,255,.32); background: rgba(100,227,255,.045); color: #c7d9df; text-align: left; }
 .player-card > span:nth-child(2) { display: flex; flex-direction: column; gap: 3px; }
@@ -117,14 +140,23 @@ button { cursor: pointer; }
 .tool-strip button b { color: #aec1c8; font-family: var(--font-display); font-size: 15px; font-weight: 400; }
 .tool-strip button:hover, .tool-strip button.active { border-color: var(--cyan); color: var(--cyan); background: rgba(100,227,255,.06); }
 .tool-strip button.active b { color: var(--cyan); }
-.palette-list { min-height: 0; flex: 1 1 auto; padding: 2px 10px 10px; overflow-y: auto; }
-.palette-category h2 { margin: 7px 0 5px; }
-.palette-category h2 button { width: 100%; min-height: 28px; padding: 0 4px; display: flex; align-items: center; justify-content: space-between; border: 0; border-bottom: 1px solid rgba(133,177,195,.1); background: transparent; color: #688591; font-family: var(--font-mono); font-size: 9px; font-weight: 500; letter-spacing: .15em; }
-.palette-category h2 button:hover { color: var(--cyan); border-bottom-color: rgba(100,227,255,.3); }
-.palette-category h2 b { color: #536f7b; font-size: 15px; font-weight: 400; transform: rotate(0); transition: transform .16s ease; }
-.palette-category.collapsed h2 b { transform: rotate(-90deg); }
+.palette-list { min-height: 0; flex: 1 1 auto; padding: 6px 10px 10px; overflow-y: auto; }
 .palette-category-items { display: block; }
-.palette-category.collapsed .palette-category-items { display: none; }
+
+/* Both tool panels render their sections through ElectricBlazor's accordion
+   (EbAccordionItem, an EbCard underneath). The bridge in :root feeds it the
+   palette; these rules re-cut the card chrome to the cockpit's density, via
+   the suite's stable public class names. */
+.workspace .eb-accordion { --eb-accordion-gap: 7px; }
+.workspace .eb-card { background: rgba(9, 19, 27, .5); }
+.workspace .eb-card-header { min-height: 27px; padding: 2px 3px 2px 8px; background: rgba(11, 23, 32, .55); }
+.workspace .eb-card-header:hover .eb-card-title { color: var(--cyan); }
+.workspace .eb-card-title { font-family: var(--font-mono); font-weight: 500; }
+.workspace .eb-card-collapse-toggle { width: 23px; height: 23px; }
+.palette-list .eb-card-title { color: #688591; font-size: 9px; letter-spacing: .15em; }
+.palette-list .eb-card-body { padding: 5px 6px; }
+.inspector-sections .eb-card-title { color: #8fa5ae; font-size: 10px; letter-spacing: .11em; }
+.inspector-sections .eb-card-body { padding: 3px 9px 10px; }
 .asset-actions { margin: 8px 0 5px; display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
 .asset-actions button { min-height: 34px; border: 1px solid #2c4652; background: #0d1a22; color: var(--cyan); font-family: var(--font-mono); font-size: 8px; }
 .component-card-row { position: relative; }
@@ -224,6 +256,13 @@ button { cursor: pointer; }
 .field input:focus, .field select:focus { border-color: var(--cyan); }
 .field.wide { margin-bottom: 10px; }
 .field-grid { margin-bottom: 10px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+/* EbNumericInput in the Inspector's grid cells wears only its text half — the
+   commit-on-Enter box is the point; a slider for a 9000-unit position is not.
+   The .field input rule above dresses the box itself. */
+.field .eb-numeric-input { display: flex; flex-direction: column; gap: 5px; }
+.field .eb-numeric-input-label { color: #607985; font-family: var(--font-mono); font-size: 9px; font-weight: 500; letter-spacing: .09em; }
+.field .eb-numeric-input-row { display: block; }
+.field .eb-numeric-input-slider-wrap { display: none; }
 .type-tag { min-height: 43px; margin-bottom: 10px; padding: 6px 7px; display: grid; grid-template-columns: 1fr auto 31px; align-items: center; gap: 8px; border: 1px solid #233641; background: #0b1720; }
 .type-tag strong { color: var(--lime); font-family: var(--font-mono); font-size: 10px; font-weight: 500; letter-spacing: .08em; }
 .type-tag .sprite-icon { transform: scale(.72); }
@@ -232,8 +271,7 @@ button { cursor: pointer; }
 .range-field > span { display: flex; justify-content: space-between; align-items: center; }
 .range-field em { color: #a6bdc6; font-family: var(--font-mono); font-size: 9px; font-style: normal; }
 .range-field input { width: 100%; height: 3px; accent-color: var(--lime); }
-fieldset { margin: 17px 0 0; padding: 13px 0 0; border: 0; border-top: 1px solid var(--line); }
-fieldset legend { padding: 0 7px 0 0; color: #8fa5ae; font-family: var(--font-mono); font-size: 10px; letter-spacing: .11em; }
+.inspector-sections { margin-top: 14px; }
 .toggle-row { position: relative; min-height: 30px; display: flex; align-items: center; justify-content: space-between; color: #78909b; font-family: var(--font-mono); font-size: 9px; letter-spacing: .07em; }
 .toggle-row input { position: absolute; opacity: 0; }
 .toggle-row i { width: 30px; height: 16px; padding: 2px; display: block; border: 1px solid #324a55; background: #111d24; }
@@ -246,6 +284,18 @@ fieldset legend { padding: 0 7px 0 0; color: #8fa5ae; font-family: var(--font-mo
 .inventory-grid { display: grid; grid-template-columns: 1fr; gap: 4px; }
 .inventory-grid button { min-height: 28px; padding: 0 7px; border: 1px solid #293f4a; background: #0c1921; color: #647f8a; text-align: left; font-family: var(--font-mono); font-size: 8px; }
 .inventory-grid button.active { border-color: rgba(234,255,98,.45); color: var(--lime); background: rgba(234,255,98,.05); }
+
+/* The destructive confirms ride ElectricBlazor's dialog. It portals to
+   <body>, outside .workspace, so the section-card compaction above does not
+   reach it — these rules are its whole Starline fit. */
+.confirm-dialog { width: min(92vw, 400px); }
+.confirm-dialog .eb-card-title { color: var(--coral); font-family: var(--font-mono); font-size: 10px; letter-spacing: .11em; }
+.confirm-dialog .eb-card-body p { margin: 0; color: #9fb4bd; font-family: var(--font-mono); font-size: 11px; line-height: 1.65; }
+.confirm-dialog .eb-card-footer { display: flex; justify-content: flex-end; gap: 6px; }
+.confirm-dialog .eb-card-footer button { min-height: 30px; padding: 0 14px; border: 1px solid #34505d; background: #0e1c24; color: #8fa5ae; font-family: var(--font-mono); font-size: 9px; letter-spacing: .08em; }
+.confirm-dialog .eb-card-footer button:hover { border-color: var(--cyan); color: var(--cyan); }
+.confirm-dialog .eb-card-footer button.confirm-commit { border-color: rgba(255,106,77,.5); background: rgba(255,106,77,.08); color: #ff8a72; }
+.confirm-dialog .eb-card-footer button.confirm-commit:hover { border-color: var(--coral); color: var(--coral); }
 
 /* The editors' own look ships with @ccllc/studio (see layout.tsx); these
    four hooks are all that keeps them in Starline's theme — the sprite
@@ -290,8 +340,7 @@ kbd { min-width: 22px; padding: 3px 5px; display: inline-block; border: 1px soli
   .file-actions select { min-width: 115px; }
   .workspace, .workspace.is-playing { display: flex; flex-direction: column; overflow-y: auto; }
   .palette-panel { order: 2; max-height: none; border: 0; border-top: 1px solid var(--line); }
-  .palette-list { display: block; overflow: visible; }
-  .palette-category { display: block; }
+  .palette-list { overflow: visible; }
   .inspector-panel { order: 3; max-height: none; border-left: 0; border-top: 1px solid var(--line); overflow: visible; }
   .stage-panel { order: 1; min-height: 520px; }
   .stage-toolbar { grid-template-columns: 145px 1fr; }

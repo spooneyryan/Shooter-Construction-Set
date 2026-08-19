@@ -2,6 +2,9 @@ import type { Metadata } from "next";
 import { Geist_Mono, Space_Grotesk } from "next/font/google";
 import "./globals.css";
 import "@ccllc/studio/styles.css";
+// Components only, no theme.css: the token layer comes from globals.css, which
+// maps ElectricBlazor's --eb-* contract onto Starline's own palette.
+import "@electricblazor/react/styles.css";
 
 const display = Space_Grotesk({ variable: "--font-display", subsets: ["latin"] });
 const mono = Geist_Mono({ variable: "--font-mono", subsets: ["latin"] });

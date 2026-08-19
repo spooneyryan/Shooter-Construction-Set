@@ -1,11 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { createHistory, createLoop, createPerformanceMonitor, type PerfStats } from "@ccllc/arcade/core";
 import { createInput } from "@ccllc/arcade/platform";
 import { uniqueId } from "@ccllc/arcade/core";
 import { createTelemetry } from "@ccllc/arcade/telemetry";
 import { BulletPatternStudio, SpriteStudio } from "@ccllc/studio";
+import { EbAccordion, EbAccordionItem, EbDialog, EbNumericInput, EbTabbedCard } from "@electricblazor/react";
 import { drawSpriteAsset } from "@ccllc/studio/render";
 import {
   clamp,
@@ -258,7 +259,6 @@ export function StarlineGame() {
   const mainCanvasRef = useRef<HTMLCanvasElement>(null);
   const miniCanvasRef = useRef<HTMLCanvasElement>(null);
   const importRef = useRef<HTMLInputElement>(null);
-  const levelRef = useRef<Level>(defaultLevel());
   const modeRef = useRef<EditorMode>("build");
   const toolRef = useRef<Tool>("select");
   const selectedRef = useRef<string | null>(null);
@@ -294,7 +294,11 @@ export function StarlineGame() {
   // at it, which is the whole point of the split.
   const worldRef = useRef<World | null>(null);
 
-  const [level, setLevel] = useState<Level>(() => levelRef.current);
+  const [level, setLevel] = useState<Level>(defaultLevel);
+  // Seeded with the state's own first value — useRef reads its argument on the
+  // first render only — so ref and state start as one object without calling
+  // defaultLevel() twice. The mirror effect below keeps it current.
+  const levelRef = useRef(level);
   const [mode, setMode] = useState<EditorMode>("build");
   const [tool, setTool] = useState<Tool>("select");
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -315,12 +319,19 @@ export function StarlineGame() {
   const [fpsStats, setFpsStats] = useState<PerfStats | null>(null);
   const [showFps, setShowFps] = useState(false);
   const [controllerName, setControllerName] = useState("");
-  const [collapsedCategories, setCollapsedCategories] = useState<Record<string, boolean>>({});
+  const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>({});
   const [paletteTab, setPaletteTab] = useState<"objects" | "components">("objects");
   const [editingAsset, setEditingAsset] = useState<SpriteAsset | null>(null);
   const [editingPattern, setEditingPattern] = useState<{ pattern: BulletPatternDefinition; target: PatternEditorTarget } | null>(null);
   const editingPatternRef = useRef(false);
   useEffect(() => { editingPatternRef.current = editingPattern !== null; }, [editingPattern]);
+  // The destructive confirms, replacing window.confirm: what to ask, and what
+  // to do on yes. window.confirm blocked the whole tab and dodged the game's
+  // keyboard handling by accident; the dialog has to declare itself, hence the
+  // ref the keydown handler checks.
+  const [pendingConfirm, setPendingConfirm] = useState<{ title: string; message: string; action: () => void } | null>(null);
+  const pendingConfirmRef = useRef(false);
+  useEffect(() => { pendingConfirmRef.current = pendingConfirm !== null; }, [pendingConfirm]);
 
   useEffect(() => { levelRef.current = level; }, [level]);
   useEffect(() => { modeRef.current = mode; }, [mode]);
@@ -425,6 +436,11 @@ export function StarlineGame() {
       const draft = window.localStorage.getItem(DRAFT_KEY);
       if (draft) {
         const parsed = JSON.parse(draft) as Level;
+        // A deliberate second render: the exported HTML is built with the
+        // starter level, so the first client render has to match it, and
+        // localStorage only gets a say after mount. The rule is right that
+        // this cascades; here the cascade is the feature.
+        // eslint-disable-next-line react-hooks/set-state-in-effect
         if (Array.isArray(parsed.items)) installLevel(parsed, true);
       }
       const library = JSON.parse(window.localStorage.getItem(STORAGE_KEY) || "{}") as Record<string, Level>;
@@ -526,8 +542,14 @@ export function StarlineGame() {
   }, [flash, setSelection, updateItem, updateLevel]);
 
   const deleteComponent = useCallback((id: string) => {
-    if (!id.startsWith("component-") || !window.confirm("Delete this saved Component? Placed instances will keep their current settings.")) return;
-    updateLevel((current) => ({ ...current, components: current.components.filter((component) => component.id !== id), items: current.items.map((item) => item.componentId === id ? { ...item, componentId: undefined } : item), player: { ...current.player, inventory: current.player.inventory.filter((entry) => entry !== id), weaponSlots: current.player.weaponSlots.map((slot) => slot.weaponId === id ? { ...slot, weaponId: "weapon-pulse" } : slot), satellite: current.player.satellite.weaponId === id ? { ...current.player.satellite, weaponId: "weapon-pulse" } : current.player.satellite } })); flash("COMPONENT DELETED");
+    if (!id.startsWith("component-")) return;
+    setPendingConfirm({
+      title: "DELETE COMPONENT",
+      message: "Delete this saved Component? Placed instances will keep their current settings.",
+      action: () => {
+        updateLevel((current) => ({ ...current, components: current.components.filter((component) => component.id !== id), items: current.items.map((item) => item.componentId === id ? { ...item, componentId: undefined } : item), player: { ...current.player, inventory: current.player.inventory.filter((entry) => entry !== id), weaponSlots: current.player.weaponSlots.map((slot) => slot.weaponId === id ? { ...slot, weaponId: "weapon-pulse" } : slot), satellite: current.player.satellite.weaponId === id ? { ...current.player.satellite, weaponId: "weapon-pulse" } : current.player.satellite } })); flash("COMPONENT DELETED");
+      },
+    });
   }, [flash, updateLevel]);
 
   const saveSpriteAsset = useCallback((asset: SpriteAsset) => {
@@ -536,8 +558,13 @@ export function StarlineGame() {
 
   const deleteSpriteAsset = useCallback((id: string) => {
     const sprite = `asset:${id}` as Sprite; const uses = levelRef.current.items.filter((item) => item.sprite === sprite).length + levelRef.current.components.filter((component) => component.object?.sprite === sprite).length;
-    if (!window.confirm(uses ? `This sprite is used ${uses} time(s). Delete it and replace those uses with ORB?` : "Delete this sprite asset?")) return;
-    updateLevel((current) => ({ ...current, assets: current.assets.filter((asset) => asset.id !== id), items: current.items.map((item) => item.sprite === sprite ? { ...item, sprite: "orb" } : item), components: current.components.map((component) => component.object?.sprite === sprite ? { ...component, object: { ...component.object, sprite: "orb" } } : component) })); flash("SPRITE ASSET DELETED");
+    setPendingConfirm({
+      title: "DELETE SPRITE",
+      message: uses ? `This sprite is used ${uses} time(s). Delete it and replace those uses with ORB?` : "Delete this sprite asset?",
+      action: () => {
+        updateLevel((current) => ({ ...current, assets: current.assets.filter((asset) => asset.id !== id), items: current.items.map((item) => item.sprite === sprite ? { ...item, sprite: "orb" } : item), components: current.components.map((component) => component.object?.sprite === sprite ? { ...component, object: { ...component.object, sprite: "orb" } } : component) })); flash("SPRITE ASSET DELETED");
+      },
+    });
   }, [flash, updateLevel]);
 
   const saveLevel = useCallback(() => {
@@ -616,7 +643,7 @@ export function StarlineGame() {
 
   useEffect(() => {
     const keyDown = (event: KeyboardEvent) => {
-      if (editingPatternRef.current) return; // the pattern designer owns the keyboard while open
+      if (editingPatternRef.current || pendingConfirmRef.current) return; // the pattern designer / confirm dialog owns the keyboard while open
       const tag = (event.target as HTMLElement | null)?.tagName;
       const editing = tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA";
       if (editing) {
@@ -645,7 +672,11 @@ export function StarlineGame() {
       if (event.code === "KeyF" && !event.ctrlKey && !event.metaKey && !event.altKey) { event.preventDefault(); if (!event.repeat) void toggleFullscreen(); return; }
       // F8 for the frame-rate readout, matching the other two games.
       if (event.code === "F8") { event.preventDefault(); if (!event.repeat) setShowFps((value) => !value); return; }
-      if (current === "build" && selectionRef.current.length && ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.code)) {
+      // Not while a section header or the palette tab strip has focus: both
+      // walk the arrow keys themselves (the WAI-ARIA accordion and tabs
+      // patterns), and a nudge firing at the same time would drag the
+      // selection around as a side effect of browsing the panels.
+      if (current === "build" && selectionRef.current.length && !(event.target as HTMLElement | null)?.closest?.('.eb-card-collapse-toggle, [role="tablist"]') && ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.code)) {
         event.preventDefault();
         const ids = selectionRef.current; const step = event.shiftKey ? 25 : 5;
         updateLevel((level) => ({ ...level, items: level.items.map((item) => ids.includes(item.id) ? { ...item, x: clamp(item.x + (event.code === "ArrowLeft" ? -step : event.code === "ArrowRight" ? step : 0), 0, level.length), y: clamp(item.y + (event.code === "ArrowUp" ? -step : event.code === "ArrowDown" ? step : 0), 30, VIEW_H - 30) } : item) }), true, `nudge-${ids.join("-")}`);
@@ -1091,6 +1122,15 @@ export function StarlineGame() {
     const value = clamp(next, 0, Math.max(0, levelRef.current.length - VIEW_W)); setCamera(value); editorCameraRef.current = value;
   };
 
+  // Every collapsible section in both tool panels goes through here: one state
+  // record for palette categories and Inspector sections alike, keyed by a
+  // stable slug so a section keeps its state across selection changes, and
+  // expanded until the user says otherwise. The chrome is ElectricBlazor's
+  // accordion — Starline owns only which sections exist and which are shut.
+  const section = (key: string, title: string, children: ReactNode) => (
+    <EbAccordionItem key={key} title={title} expanded={!collapsedSections[key]} onExpandedChange={(expanded) => setCollapsedSections((current) => ({ ...current, [key]: !expanded }))}>{children}</EbAccordionItem>
+  );
+
   return (
     <main className="editor-app">
       <header className="topbar">
@@ -1123,7 +1163,7 @@ export function StarlineGame() {
           updateLevel((current) => ({ ...current, length }), true, "level-length"); setCameraSafe(Math.min(editorCameraRef.current, length - VIEW_W));
         }} /><em>u</em></label>
         <div className="file-actions">
-          <button type="button" onClick={() => { if (window.confirm("Start a new empty level? Your current draft will be replaced.")) { const next = { ...defaultLevel(), name: "Untitled Sector", items: [] }; installLevel(next, true); setCameraSafe(0); flash("NEW LEVEL CREATED"); } }}>NEW</button>
+          <button type="button" onClick={() => setPendingConfirm({ title: "NEW LEVEL", message: "Start a new empty level? Your current draft will be replaced.", action: () => { const next = { ...defaultLevel(), name: "Untitled Sector", items: [] }; installLevel(next, true); setCameraSafe(0); flash("NEW LEVEL CREATED"); } })}>NEW</button>
           <button type="button" onClick={saveLevel}>SAVE</button>
           <select value={loadName} onChange={(event) => setLoadName(event.target.value)} aria-label="Saved levels"><option value="">LOAD LEVEL...</option>{savedNames.map((name) => <option value={name} key={name}>{name}</option>)}</select>
           <button type="button" onClick={loadLevel} disabled={!loadName}>LOAD</button>
@@ -1136,25 +1176,36 @@ export function StarlineGame() {
       <section className={`workspace ${mode !== "build" ? "is-playing" : ""}`} id="workspace">
         <aside className="palette-panel">
           <div className="panel-heading"><span>FOUNDRY PALETTE</span><small>{level.items.length} PLACED</small></div>
-          <div className="palette-tabs"><button type="button" className={paletteTab === "objects" ? "active" : ""} onClick={() => setPaletteTab("objects")}>OBJECTS</button><button type="button" className={paletteTab === "components" ? "active" : ""} onClick={() => setPaletteTab("components")}>COMPONENTS</button></div>
           <button className="player-card" type="button" onClick={() => { setTool("select"); toolRef.current = "select"; setSelection([]); setInspectPlayer(true); }}><span className={`player-icon ${level.player.sprite.startsWith("asset:") ? "asset-custom" : level.player.sprite}`} /><span><strong>PLAYER SHIP</strong><small>{level.player.sprite.startsWith("asset:") ? "CUSTOM" : level.player.sprite.toUpperCase()} / {level.player.weaponSlots.length} WEAPON SLOT{level.player.weaponSlots.length === 1 ? "" : "S"}</small></span><b>EDIT</b></button>
           <div className="tool-strip">
             {(["select", "scroll", "erase"] as Tool[]).map((value) => <button type="button" className={tool === value ? "active" : ""} onClick={() => { setTool(value); toolRef.current = value; }} key={value}><b>{value === "select" ? "↖" : value === "scroll" ? "↔" : "⌫"}</b>{value.toUpperCase()}</button>)}
           </div>
-          <div className="palette-list">
-            {paletteTab === "objects" ? ["ENEMIES", "TERRAIN", "GROUPS", "POWERUPS", "UPGRADES", "DECORATIONS"].map((category) => <div className={`palette-category ${collapsedCategories[category] ? "collapsed" : ""}`} key={category}>
-              <h2><button type="button" aria-expanded={!collapsedCategories[category]} onClick={() => setCollapsedCategories((current) => ({ ...current, [category]: !current[category] }))}><span>{category}</span><b aria-hidden="true">⌄</b></button></h2>
+          {/* The OBJECTS / COMPONENTS switch is ElectricBlazor's tabbed card in
+              its bare form, moved below the player card and tools so the strip
+              sits directly on the list it switches — which is also what lets
+              the list live inside the tab panel it belongs to. */}
+          <EbTabbedCard<"objects" | "components">
+            items={[{ value: "objects", label: "OBJECTS" }, { value: "components", label: "COMPONENTS" }]}
+            value={paletteTab}
+            onValueChange={setPaletteTab}
+            ariaLabel="Palette tabs"
+            appearance="bare"
+            tabStyle="segmented"
+            equalWidthTabs
+            className="palette-tabs"
+            panelContent={(tab) => <EbAccordion allowMultiple className="palette-list">
+            {tab === "objects" ? ["ENEMIES", "TERRAIN", "GROUPS", "POWERUPS", "UPGRADES", "DECORATIONS"].map((category) => section(category, category,
               <div className="palette-category-items">
                 {palette.filter((entry) => entry.category === category).map((entry) => <button type="button" className={`palette-card ${tool === entry.key ? "active" : ""}`} onClick={() => { setTool(entry.key); toolRef.current = entry.key; setInspectPlayer(false); }} key={entry.key}>
                   <span className={`sprite-icon ${entry.sprite}`} /><span><strong>{entry.label}</strong><small>{entry.meta}</small></span><b>+</b>
                 </button>)}
-              </div>
-            </div>) : <>
+              </div>)) : <>
               <div className="asset-actions"><button type="button" onClick={() => setEditingAsset({ id: uid(), name: "New Raster", kind: "raster", width: 16, height: 16, pixels: Array(256).fill("") })}>+ RASTER SPRITE</button><button type="button" onClick={() => setEditingAsset({ id: uid(), name: "New Vector", kind: "vector", width: 256, height: 256, shapes: [] })}>+ VECTOR SPRITE</button></div>
-              {level.assets.length > 0 && <div className={`palette-category ${collapsedCategories.SPRITES ? "collapsed" : ""}`}><h2><button type="button" aria-expanded={!collapsedCategories.SPRITES} onClick={() => setCollapsedCategories((current) => ({ ...current, SPRITES: !current.SPRITES }))}><span>SPRITES</span><b>⌄</b></button></h2><div className="palette-category-items">{level.assets.map((asset) => <div className="component-card-row" key={asset.id}><button className="palette-card" type="button" onClick={() => setEditingAsset(structuredClone(asset))}><SpriteAssetPreview asset={asset} /><span><strong>{asset.name}</strong><small>{asset.kind.toUpperCase()} / {asset.width}×{asset.height}</small></span><b>EDIT</b></button><button className="component-delete" type="button" onClick={() => deleteSpriteAsset(asset.id)} title="Delete sprite">×</button></div>)}</div></div>}
-              {componentCategories.map((category) => { const entries = level.components.filter((component) => componentCategory(component) === category); if (!entries.length) return null; const collapseKey = `COMP-${category}`; return <div className={`palette-category ${collapsedCategories[collapseKey] ? "collapsed" : ""}`} key={category}><h2><button type="button" aria-expanded={!collapsedCategories[collapseKey]} onClick={() => setCollapsedCategories((current) => ({ ...current, [collapseKey]: !current[collapseKey] }))}><span>{category}</span><b>⌄</b></button></h2><div className="palette-category-items">{entries.map((component) => <div className="component-card-row" key={component.id}><button className={`palette-card ${tool === `component:${component.id}` ? "active" : ""}`} type="button" onClick={() => { if (component.object) { const value = `component:${component.id}` as Tool; setTool(value); toolRef.current = value; setInspectPlayer(false); } else applyEquipmentComponent(component); }}><span className={`sprite-icon ${component.object && !component.object.sprite.startsWith("asset:") ? component.object.sprite : component.kind === "weapon" ? "turret" : component.kind === "armor" ? "energy" : component.kind === "pattern" ? "blade" : "upgrade"}`} /><span><strong>{component.name}</strong><small>{component.object ? "PLACE COMPONENT" : component.kind === "weapon" ? `${component.weapon?.tag.toUpperCase()} WEAPON` : component.kind === "pattern" ? `${component.pattern?.spawns.length ?? 0} EMITTER PATTERN` : component.kind.toUpperCase()}</small></span><b>{component.object ? "+" : component.kind === "pattern" ? "EDIT / USE" : "USE"}</b></button>{component.id.startsWith("component-") && <button className="component-delete" type="button" onClick={() => deleteComponent(component.id)} title="Delete Component">×</button>}</div>)}</div></div>; })}
+              {level.assets.length > 0 && section("SPRITES", "SPRITES", <div className="palette-category-items">{level.assets.map((asset) => <div className="component-card-row" key={asset.id}><button className="palette-card" type="button" onClick={() => setEditingAsset(structuredClone(asset))}><SpriteAssetPreview asset={asset} /><span><strong>{asset.name}</strong><small>{asset.kind.toUpperCase()} / {asset.width}×{asset.height}</small></span><b>EDIT</b></button><button className="component-delete" type="button" onClick={() => deleteSpriteAsset(asset.id)} title="Delete sprite">×</button></div>)}</div>)}
+              {componentCategories.map((category) => { const entries = level.components.filter((component) => componentCategory(component) === category); if (!entries.length) return null; const collapseKey = `COMP-${category}`; return section(collapseKey, category, <div className="palette-category-items">{entries.map((component) => <div className="component-card-row" key={component.id}><button className={`palette-card ${tool === `component:${component.id}` ? "active" : ""}`} type="button" onClick={() => { if (component.object) { const value = `component:${component.id}` as Tool; setTool(value); toolRef.current = value; setInspectPlayer(false); } else applyEquipmentComponent(component); }}><span className={`sprite-icon ${component.object && !component.object.sprite.startsWith("asset:") ? component.object.sprite : component.kind === "weapon" ? "turret" : component.kind === "armor" ? "energy" : component.kind === "pattern" ? "blade" : "upgrade"}`} /><span><strong>{component.name}</strong><small>{component.object ? "PLACE COMPONENT" : component.kind === "weapon" ? `${component.weapon?.tag.toUpperCase()} WEAPON` : component.kind === "pattern" ? `${component.pattern?.spawns.length ?? 0} EMITTER PATTERN` : component.kind.toUpperCase()}</small></span><b>{component.object ? "+" : component.kind === "pattern" ? "EDIT / USE" : "USE"}</b></button>{component.id.startsWith("component-") && <button className="component-delete" type="button" onClick={() => deleteComponent(component.id)} title="Delete Component">×</button>}</div>)}</div>); })}
             </>}
-          </div>
+          </EbAccordion>}
+          />
           <p className="palette-hint">{paletteTab === "objects" ? "Choose an object, then click the playfield to place it." : "Place saved Objects, equip Components, or author custom sprite assets."}</p>
         </aside>
 
@@ -1202,31 +1253,32 @@ export function StarlineGame() {
             <div className="type-tag"><span>EDITING</span><strong>PLAYER SHIP</strong><span className={`player-icon ${level.player.sprite.startsWith("asset:") ? "asset-custom" : level.player.sprite}`} /></div>
             <label className="field wide"><span>SHIP SPRITE</span><select value={level.player.sprite} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, sprite: event.target.value as PlayerSpriteChoice } }), true, "player-sprite")}><optgroup label="PLAYER SHIPS">{["dart", "raven", "nova", "striker"].map((sprite) => <option value={sprite} key={sprite}>{sprite.toUpperCase()}</option>)}</optgroup>{level.assets.length > 0 && <optgroup label="CUSTOM SPRITES">{level.assets.map((asset) => <option value={`asset:${asset.id}`} key={asset.id}>{asset.name.toUpperCase()}</option>)}</optgroup>}</select></label>
             <label className="range-field"><span><b>SHIP HUE TINT</b><em>{level.player.tint}°</em></span><input type="range" min="0" max="359" value={level.player.tint} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, tint: Number(event.target.value) } }), true, "player-tint")} /></label>
-            <fieldset><legend>FLIGHT</legend>
+            <EbAccordion allowMultiple className="inspector-sections">
+            {section("flight", "FLIGHT", <>
               <label className="range-field"><span><b>X SPEED</b><em>{level.player.xSpeed}u/s</em></span><input type="range" min="100" max="800" step="10" value={level.player.xSpeed} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, xSpeed: Number(event.target.value) } }), true, "player-x-speed")} /></label>
               <label className="range-field"><span><b>Y SPEED</b><em>{level.player.ySpeed}u/s</em></span><input type="range" min="100" max="800" step="10" value={level.player.ySpeed} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, ySpeed: Number(event.target.value) } }), true, "player-y-speed")} /></label>
               <label className="range-field"><span><b>FORWARD LIMIT</b><em>{level.player.forwardLimit}%</em></span><input type="range" min="20" max="92" step="1" value={level.player.forwardLimit} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, forwardLimit: Number(event.target.value) } }), true, "player-forward-limit")} /></label>
               <p className="inspector-note">Sets the farthest point the ship can travel toward the right edge of the screen.</p>
-            </fieldset>
-            <fieldset><legend>GLOBAL FIRE MODIFIERS</legend>
+            </>)}
+            {section("fire-mods", "GLOBAL FIRE MODIFIERS", <>
               <label className="range-field"><span><b>SHOT SPEED</b><em>{level.player.shotSpeed}u/s</em></span><input type="range" min="200" max="1600" step="25" value={level.player.shotSpeed} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, shotSpeed: Number(event.target.value) } }), true, "player-shot-speed")} /></label>
               <label className="range-field"><span><b>SHOT POWER</b><em>{level.player.shotPower}</em></span><input type="range" min="100" max="1000" step="100" value={level.player.shotPower} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, shotPower: Number(event.target.value) } }), true, "player-shot-power")} /></label>
               <p className="inspector-note">Minimum player firepower is 100. Enemies at or below the current value are destroyed in one shot.</p>
-            </fieldset>
-            <fieldset><legend>WEAPON SLOTS & INVENTORY</legend>
+            </>)}
+            {section("slots", "WEAPON SLOTS & INVENTORY", <>
               <label className="range-field"><span><b>ACTIVE SLOTS</b><em>{level.player.weaponSlots.length}</em></span><input type="range" min="1" max="4" value={level.player.weaponSlots.length} onChange={(event) => updateLevel((current) => { const count = Number(event.target.value); const slots = current.player.weaponSlots.slice(0, count); while (slots.length < count) slots.push({ id: uid(), name: `SLOT ${slots.length + 1}`, accepts: "standard", weaponId: current.player.inventory[0] ?? "weapon-pulse" }); return { ...current, player: { ...current.player, weaponSlots: slots } }; }, true, "player-slot-count")} /></label>
               <label className="range-field"><span><b>INVENTORY LIMIT</b><em>{level.player.inventoryLimit}</em></span><input type="range" min="1" max="12" value={level.player.inventoryLimit} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, inventoryLimit: Number(event.target.value), inventory: current.player.inventory.slice(0, Number(event.target.value)) } }), true, "player-inventory-limit")} /></label>
               {level.player.weaponSlots.map((slot, index) => <div className="equipment-slot" key={slot.id}><strong>{slot.name}</strong><label className="field"><span>ACCEPTS</span><select value={slot.accepts} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, weaponSlots: current.player.weaponSlots.map((entry) => entry.id === slot.id ? { ...entry, accepts: event.target.value } : entry) } }))}><option value="any">ANY</option><option value="standard">STANDARD</option><option value="light">LIGHT</option><option value="heavy">HEAVY</option><option value="satellite">SATELLITE</option></select></label><label className="field"><span>WEAPON</span><select value={slot.weaponId} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, weaponSlots: current.player.weaponSlots.map((entry) => entry.id === slot.id ? { ...entry, weaponId: event.target.value } : entry) } }))}>{level.components.filter((component) => component.kind === "weapon" && weaponFitsSlot(component, slot.accepts)).map((component) => <option value={component.id} key={component.id}>{component.name.toUpperCase()}</option>)}</select></label>{(() => { const weaponComponent = level.components.find((component) => component.id === slot.weaponId); if (!weaponComponent?.weapon) return null; return <button className="inspector-action" type="button" onClick={() => setEditingPattern({ pattern: structuredClone(weaponComponent.weapon!.pattern ?? createPatternPreset("Pendulum Sweep")), target: { kind: "weapon", id: weaponComponent.id } })}>{weaponComponent.weapon.pattern ? "EDIT BULLET PATTERN" : "ADD BULLET PATTERN"}</button>; })()}<small>Fires simultaneously from mount {index + 1}.</small></div>)}
               <div className="inventory-grid">{level.components.filter((component) => component.kind === "weapon").map((component) => { const carried = level.player.inventory.includes(component.id); return <button type="button" className={carried ? "active" : ""} onClick={() => updateLevel((current) => { const inventory = carried ? current.player.inventory.filter((id) => id !== component.id) : [...current.player.inventory, component.id].slice(0, current.player.inventoryLimit); return { ...current, player: { ...current.player, inventory } }; })} key={component.id}>{carried ? "✓ " : "+ "}{component.name}</button>; })}</div>
-            </fieldset>
-            <fieldset><legend>ARMOR & FORCE FIELD</legend>
+            </>)}
+            {section("armor", "ARMOR & FORCE FIELD", <>
               <label className="field wide"><span>ARMOR TYPE</span><select value={level.player.armor.type} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, armor: defaultArmor(event.target.value as ArmorType) } }))}>{["none", "standard", "heavy", "ablative", "forcefield"].map((type) => <option value={type} key={type}>{type.toUpperCase()}</option>)}</select></label>
               <label className="range-field"><span><b>{level.player.armor.type === "forcefield" ? "SHIELD CAPACITY" : "ARMOR CAPACITY"}</b><em>{level.player.armor.capacity}</em></span><input type="range" min="1" max={level.player.armor.type === "forcefield" ? 1000 : 12} step={level.player.armor.type === "forcefield" ? 25 : 1} value={level.player.armor.capacity} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, armor: { ...current.player.armor, capacity: Number(event.target.value) } } }))} /></label>
               <label className="range-field"><span><b>DAMAGE TAKEN</b><em>{Math.round(level.player.armor.damageMultiplier * 100)}%</em></span><input type="range" min="0.1" max="1" step="0.05" value={level.player.armor.damageMultiplier} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, armor: { ...current.player.armor, damageMultiplier: Number(event.target.value) } } }))} /></label>
               {level.player.armor.type === "forcefield" && <><label className="range-field"><span><b>RECHARGE DELAY</b><em>{level.player.armor.rechargeDelay.toFixed(1)}s</em></span><input type="range" min="0" max="8" step="0.25" value={level.player.armor.rechargeDelay} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, armor: { ...current.player.armor, rechargeDelay: Number(event.target.value) } } }))} /></label><label className="range-field"><span><b>RECHARGE RATE</b><em>{level.player.armor.rechargeRate}/s</em></span><input type="range" min="0" max="250" step="5" value={level.player.armor.rechargeRate} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, armor: { ...current.player.armor, rechargeRate: Number(event.target.value) } } }))} /></label></>}
               <button className="inspector-action" type="button" onClick={() => saveArmorComponent(level.player.armor)}>SAVE AS ARMOR COMPONENT</button>
-            </fieldset>
-            <fieldset><legend>SATELLITE SHIP</legend>
+            </>)}
+            {section("satellite", "SATELLITE SHIP", <>
               <label className="toggle-row"><span>ENABLED</span><input type="checkbox" checked={level.player.satellite.enabled} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, satellite: { ...current.player.satellite, enabled: event.target.checked } } }))} /><i /></label>
               <label className="field wide"><span>CONTROL MODE</span><select value={level.player.satellite.mode} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, satellite: { ...current.player.satellite, mode: event.target.value as SatelliteMode } } }))}><option value="orbit">ORBIT</option><option value="tether">TETHERED FREE MOVE</option><option value="aim">AIM ON RADIUS</option></select></label>
               <label className="range-field"><span><b>RANGE</b><em>{level.player.satellite.range}u</em></span><input type="range" min="50" max="280" value={level.player.satellite.range} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, satellite: { ...current.player.satellite, range: Number(event.target.value) } } }))} /></label>
@@ -1235,58 +1287,60 @@ export function StarlineGame() {
               <label className="field wide"><span>SATELLITE ARMOR</span><select value={level.player.satellite.armor.type} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, satellite: { ...current.player.satellite, armor: defaultArmor(event.target.value as ArmorType) } } }))}>{["none", "standard", "heavy", "ablative", "forcefield"].map((type) => <option value={type} key={type}>{type.toUpperCase()}</option>)}</select></label>
               <label className="range-field"><span><b>{level.player.satellite.armor.type === "forcefield" ? "SATELLITE SHIELD" : "SATELLITE HULL"}</b><em>{level.player.satellite.armor.capacity}</em></span><input type="range" min="1" max={level.player.satellite.armor.type === "forcefield" ? 600 : 10} step={level.player.satellite.armor.type === "forcefield" ? 25 : 1} value={level.player.satellite.armor.capacity} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, satellite: { ...current.player.satellite, armor: { ...current.player.satellite.armor, capacity: Number(event.target.value) } } } }))} /></label>
               <button className="inspector-action" type="button" onClick={() => saveSatelliteComponent(level.player.satellite)}>SAVE AS SATELLITE COMPONENT</button>
-            </fieldset>
+            </>)}
+            </EbAccordion>
           </div> : !selected ? <div className="empty-inspector"><b>NO OBJECT SELECTED</b><p>Use the Select tool and choose an object to tune its behavior, or edit the player ship from the palette.</p></div> : <div className="inspector-form">
             {selectedIds.length > 1 && <div className="multi-selection-note"><strong>{selectedIds.length} OBJECTS SELECTED</strong><span>Move, duplicate, delete, rotate, or scale them together. The Inspector edits the primary Object.</span></div>}
             <div className="component-actions"><button type="button" onClick={() => saveObjectComponent(false)}>SAVE AS COMPONENT</button>{selected.componentId && <button type="button" onClick={() => saveObjectComponent(true)}>UPDATE COMPONENT</button>}</div>
             <label className="field wide"><span>NAME</span><input value={selected.name} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, name: event.target.value }))} /></label>
             <div className="type-tag"><span>TYPE</span><strong>{selected.type.toUpperCase()}</strong><i className={`sprite-icon ${selected.sprite.startsWith("asset:") ? "asset-custom" : selected.sprite}`} /></div>
             <div className="field-grid">
-              <label className="field"><span>POSITION X</span><input type="number" value={Math.round(selected.x)} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, x: clamp(Number(event.target.value), 0, level.length) }))} /></label>
-              <label className="field"><span>POSITION Y</span><input type="number" value={Math.round(selected.y)} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, y: clamp(Number(event.target.value), 0, VIEW_H) }))} /></label>
+              <div className="field"><EbNumericInput label="POSITION X" sliderEnabled={false} min={0} max={level.length} value={Math.round(selected.x)} onValueChange={(x) => updateItem(selected.id, (item) => ({ ...item, x }))} /></div>
+              <div className="field"><EbNumericInput label="POSITION Y" sliderEnabled={false} min={0} max={VIEW_H} value={Math.round(selected.y)} onValueChange={(y) => updateItem(selected.id, (item) => ({ ...item, y }))} /></div>
             </div>
             <label className="field wide"><span>SPRITE{selectedIds.length > 1 ? " (APPLY TO ALL)" : ""}</span><select value={selected.sprite} onChange={(event) => updateSelectedItems((item) => ({ ...item, sprite: event.target.value as Sprite }), "selection-sprite")}><optgroup label="BUILT-IN">{["orb", "blade", "diamond", "turret", "raider", "wraith", "carrier", "asteroid", "energy", "upgrade", "planet", "nebula", "wreck", "comet"].map((sprite) => <option value={sprite} key={sprite}>{sprite.toUpperCase()}</option>)}</optgroup>{level.assets.length > 0 && <optgroup label="CUSTOM SPRITES">{level.assets.map((asset) => <option value={`asset:${asset.id}`} key={asset.id}>{asset.name.toUpperCase()} ({asset.kind.toUpperCase()})</option>)}</optgroup>}</select></label>
             <label className="range-field"><span><b>HUE TINT{selectedIds.length > 1 ? " / ALL" : ""}</b><em>{Math.round(selected.tint)}°</em></span><input type="range" min="0" max="359" value={selected.tint} onChange={(event) => updateSelectedItems((item) => ({ ...item, tint: Number(event.target.value) }), "selection-tint")} /></label>
             <button className="mini-reset" type="button" onClick={() => updateSelectedItems((item) => ({ ...item, tint: 0 }), "selection-tint")}>RESET TINT</button>
             <label className="range-field"><span><b>SIZE{selectedIds.length > 1 ? " / ALL" : ""}</b><em>{selected.size}px</em></span><input type="range" min="12" max="220" value={selected.size} onChange={(event) => updateSelectedItems((item) => ({ ...item, size: Number(event.target.value) }), "selection-size")} /></label>
-            <fieldset><legend>TRANSFORM</legend>
+            <EbAccordion allowMultiple className="inspector-sections">
+            {section("transform", "TRANSFORM", <>
               <label className="range-field"><span><b>SCALE{selectedIds.length > 1 ? " / ALL" : ""}</b><em>{selected.scale.toFixed(2)}×</em></span><input type="range" min="0.25" max="4" step="0.05" value={selected.scale} onChange={(event) => updateSelectedItems((item) => ({ ...item, scale: Number(event.target.value) }), "selection-scale")} /></label>
               <label className="range-field"><span><b>ROTATION{selectedIds.length > 1 ? " / ALL" : ""}</b><em>{Math.round(selected.rotation)}°</em></span><input type="range" min="-180" max="180" step="1" value={selected.rotation} onChange={(event) => updateSelectedItems((item) => ({ ...item, rotation: Number(event.target.value) }), "selection-rotation")} /></label>
-            </fieldset>
+            </>)}
 
-            {(selected.type === "enemy" || selected.type === "terrain" || selected.type === "group") && <fieldset><legend>DURABILITY</legend>
+            {(selected.type === "enemy" || selected.type === "terrain" || selected.type === "group") && section("durability", "DURABILITY", <>
               <label className="range-field"><span><b>HIT POINTS</b><em>{selected.hitPoints} HP</em></span><input type="range" min="50" max="2000" step="50" value={selected.hitPoints} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, hitPoints: Number(event.target.value) }))} /></label>
               <label className="field wide"><span>ARMOR TYPE</span><select value={selected.armor?.type ?? "none"} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, armor: defaultArmor(event.target.value as ArmorType) }))}>{["none", "standard", "heavy", "ablative", "forcefield"].map((type) => <option value={type} key={type}>{type.toUpperCase()}</option>)}</select></label>
               {(selected.armor?.type === "forcefield") && <><label className="range-field"><span><b>SHIELD CAPACITY</b><em>{selected.armor.capacity}</em></span><input type="range" min="25" max="1000" step="25" value={selected.armor.capacity} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, armor: { ...(item.armor ?? defaultArmor("forcefield")), capacity: Number(event.target.value) } }))} /></label><label className="range-field"><span><b>RECHARGE RATE</b><em>{selected.armor.rechargeRate}/s</em></span><input type="range" min="0" max="250" step="5" value={selected.armor.rechargeRate} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, armor: { ...(item.armor ?? defaultArmor("forcefield")), rechargeRate: Number(event.target.value) } }))} /></label></>}
               <p className="inspector-note">{Math.max(1, Math.ceil(selected.hitPoints / level.player.shotPower))} hit{Math.ceil(selected.hitPoints / level.player.shotPower) === 1 ? "" : "s"} at base power {level.player.shotPower}.</p>
               {selected.armor && selected.armor.type !== "none" && <button className="inspector-action" type="button" onClick={() => saveArmorComponent(selected.armor!)}>SAVE ARMOR COMPONENT</button>}
-            </fieldset>}
+            </>)}
 
-            {selected.type === "group" && <fieldset><legend>FORMATION</legend>
-              <div className="field-grid"><label className="field"><span>PATTERN</span><select value={selected.group?.pattern} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, group: { ...(item.group ?? { count: 5, spacing: 60, pattern: "line" }), pattern: event.target.value as GroupPattern } }))}><option value="line">LINE</option><option value="vee">VEE</option><option value="ring">RING</option></select></label><label className="field"><span>COUNT</span><input type="number" min="2" max="16" value={selected.group?.count ?? 5} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, group: { ...(item.group ?? { pattern: "line", spacing: 60, count: 5 }), count: clamp(Number(event.target.value), 2, 16) } }))} /></label></div>
+            {selected.type === "group" && section("formation", "FORMATION", <>
+              <div className="field-grid"><label className="field"><span>PATTERN</span><select value={selected.group?.pattern} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, group: { ...(item.group ?? { count: 5, spacing: 60, pattern: "line" }), pattern: event.target.value as GroupPattern } }))}><option value="line">LINE</option><option value="vee">VEE</option><option value="ring">RING</option></select></label><div className="field"><EbNumericInput label="COUNT" sliderEnabled={false} min={2} max={16} value={selected.group?.count ?? 5} onValueChange={(count) => updateItem(selected.id, (item) => ({ ...item, group: { ...(item.group ?? { pattern: "line", spacing: 60, count: 5 }), count } }))} /></div></div>
               <label className="range-field"><span><b>SPACING</b><em>{selected.group?.spacing ?? 60}u</em></span><input type="range" min="30" max="140" value={selected.group?.spacing ?? 60} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, group: { ...(item.group ?? { pattern: "line", spacing: 60, count: 5 }), spacing: Number(event.target.value) } }))} /></label>
-            </fieldset>}
+            </>)}
 
-            <fieldset><legend>{selected.type === "decoration" ? "DECORATION MOTION" : "MOVEMENT"}</legend>
+            {section("movement", selected.type === "decoration" ? "DECORATION MOTION" : "MOVEMENT", <>
               <label className="field wide"><span>PATTERN</span><select value={selected.movement.pattern} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, movement: { ...item.movement, pattern: event.target.value as MovePattern } }))}><option value="straight">STRAIGHT</option><option value="sine">SINE WAVE</option><option value="zigzag">ZIGZAG</option><option value="stationary">STATIONARY</option></select></label>
               <label className="range-field"><span><b>SPEED</b><em>{selected.movement.speed}u/s</em></span><input type="range" min="0" max="240" value={selected.movement.speed} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, movement: { ...item.movement, speed: Number(event.target.value) } }))} /></label>
               {(selected.movement.pattern === "sine" || selected.movement.pattern === "zigzag") && <><label className="range-field"><span><b>AMPLITUDE</b><em>{selected.movement.amplitude}u</em></span><input type="range" min="10" max="200" value={selected.movement.amplitude} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, movement: { ...item.movement, amplitude: Number(event.target.value) } }))} /></label><label className="range-field"><span><b>FREQUENCY</b><em>{selected.movement.frequency.toFixed(2)}Hz</em></span><input type="range" min="0.1" max="1.5" step="0.05" value={selected.movement.frequency} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, movement: { ...item.movement, frequency: Number(event.target.value) } }))} /></label></>}
-            </fieldset>
+            </>)}
 
-            {selected.type === "decoration" && <fieldset><legend>DECORATION</legend>
+            {selected.type === "decoration" && section("decoration", "DECORATION", <>
               <label className="field wide"><span>DRAW LAYER</span><select value={selected.decoration?.layer ?? "background"} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, decoration: { ...(item.decoration ?? { layer: "background", opacity: .5, parallax: .5 }), layer: event.target.value as DecorationLayer } }))}><option value="background">BACKGROUND</option><option value="foreground">FOREGROUND</option></select></label>
               <label className="range-field"><span><b>OPACITY</b><em>{Math.round((selected.decoration?.opacity ?? .5) * 100)}%</em></span><input type="range" min="0.1" max="1" step="0.05" value={selected.decoration?.opacity ?? .5} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, decoration: { ...(item.decoration ?? { layer: "background", opacity: .5, parallax: .5 }), opacity: Number(event.target.value) } }))} /></label>
               <label className="range-field"><span><b>PARALLAX</b><em>{(selected.decoration?.parallax ?? .5).toFixed(2)}x</em></span><input type="range" min="0.1" max="2" step="0.05" value={selected.decoration?.parallax ?? .5} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, decoration: { ...(item.decoration ?? { layer: "background", opacity: .5, parallax: .5 }), parallax: Number(event.target.value) } }))} /></label>
-            </fieldset>}
+            </>)}
 
-            {(selected.type === "powerup" || selected.type === "upgrade") && <fieldset><legend>{selected.type === "powerup" ? "TIMED POWERUP" : "PERMANENT UPGRADE"}</legend>
+            {(selected.type === "powerup" || selected.type === "upgrade") && section("pickup", selected.type === "powerup" ? "TIMED POWERUP" : "PERMANENT UPGRADE", <>
               {selected.type === "powerup" && <label className="range-field"><span><b>DURATION</b><em>{selected.pickup?.duration ?? 8}s</em></span><input type="range" min="1" max="30" value={selected.pickup?.duration ?? 8} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, pickup: { ...(item.pickup ?? { duration: 8, xSpeedBoost: 0, ySpeedBoost: 0, shotSpeedBoost: 0, shotPowerBoost: 100, gun: "none" }), duration: Number(event.target.value) } }))} /></label>}
-              <div className="field-grid"><label className="field"><span>X SPEED +</span><input type="number" min="0" step="10" value={selected.pickup?.xSpeedBoost ?? 0} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, pickup: { ...(item.pickup ?? { duration: 8, xSpeedBoost: 0, ySpeedBoost: 0, shotSpeedBoost: 0, shotPowerBoost: 100, gun: "none" }), xSpeedBoost: Math.max(0, Number(event.target.value)) } }))} /></label><label className="field"><span>Y SPEED +</span><input type="number" min="0" step="10" value={selected.pickup?.ySpeedBoost ?? 0} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, pickup: { ...(item.pickup ?? { duration: 8, xSpeedBoost: 0, ySpeedBoost: 0, shotSpeedBoost: 0, shotPowerBoost: 100, gun: "none" }), ySpeedBoost: Math.max(0, Number(event.target.value)) } }))} /></label></div>
-              <div className="field-grid"><label className="field"><span>SHOT SPEED +</span><input type="number" min="0" step="25" value={selected.pickup?.shotSpeedBoost ?? 0} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, pickup: { ...(item.pickup ?? { duration: 8, xSpeedBoost: 0, ySpeedBoost: 0, shotSpeedBoost: 0, shotPowerBoost: 100, gun: "none" }), shotSpeedBoost: Math.max(0, Number(event.target.value)) } }))} /></label><label className="field"><span>SHOT POWER +</span><input type="number" min="0" step="100" value={selected.pickup?.shotPowerBoost ?? 0} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, pickup: { ...(item.pickup ?? { duration: 8, xSpeedBoost: 0, ySpeedBoost: 0, shotSpeedBoost: 0, shotPowerBoost: 100, gun: "none" }), shotPowerBoost: Math.max(0, Number(event.target.value)) } }))} /></label></div>
+              <div className="field-grid"><div className="field"><EbNumericInput label="X SPEED +" sliderEnabled={false} min={0} max={800} step={10} value={selected.pickup?.xSpeedBoost ?? 0} onValueChange={(xSpeedBoost) => updateItem(selected.id, (item) => ({ ...item, pickup: { ...(item.pickup ?? { duration: 8, xSpeedBoost: 0, ySpeedBoost: 0, shotSpeedBoost: 0, shotPowerBoost: 100, gun: "none" }), xSpeedBoost } }))} /></div><div className="field"><EbNumericInput label="Y SPEED +" sliderEnabled={false} min={0} max={800} step={10} value={selected.pickup?.ySpeedBoost ?? 0} onValueChange={(ySpeedBoost) => updateItem(selected.id, (item) => ({ ...item, pickup: { ...(item.pickup ?? { duration: 8, xSpeedBoost: 0, ySpeedBoost: 0, shotSpeedBoost: 0, shotPowerBoost: 100, gun: "none" }), ySpeedBoost } }))} /></div></div>
+              <div className="field-grid"><div className="field"><EbNumericInput label="SHOT SPEED +" sliderEnabled={false} min={0} max={1600} step={25} value={selected.pickup?.shotSpeedBoost ?? 0} onValueChange={(shotSpeedBoost) => updateItem(selected.id, (item) => ({ ...item, pickup: { ...(item.pickup ?? { duration: 8, xSpeedBoost: 0, ySpeedBoost: 0, shotSpeedBoost: 0, shotPowerBoost: 100, gun: "none" }), shotSpeedBoost } }))} /></div><div className="field"><EbNumericInput label="SHOT POWER +" sliderEnabled={false} min={0} max={1000} step={100} value={selected.pickup?.shotPowerBoost ?? 0} onValueChange={(shotPowerBoost) => updateItem(selected.id, (item) => ({ ...item, pickup: { ...(item.pickup ?? { duration: 8, xSpeedBoost: 0, ySpeedBoost: 0, shotSpeedBoost: 0, shotPowerBoost: 100, gun: "none" }), shotPowerBoost } }))} /></div></div>
               <label className="field wide"><span>GRANT GUN</span><select value={selected.pickup?.gun ?? "none"} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, pickup: { ...(item.pickup ?? { duration: 8, xSpeedBoost: 0, ySpeedBoost: 0, shotSpeedBoost: 0, shotPowerBoost: 100, gun: "none" }), gun: event.target.value as GunType | "none" } }))}><option value="none">NO NEW GUN</option><option value="pulse">PULSE</option><option value="spread">SPREAD</option><option value="rapid">RAPID</option></select></label>
-            </fieldset>}
+            </>)}
 
-            {(selected.type === "enemy" || selected.type === "group") && <fieldset><legend>WEAPON</legend>
+            {(selected.type === "enemy" || selected.type === "group") && section("weapon", "WEAPON", <>
               <label className="toggle-row"><span>WEAPON ENABLED</span><input type="checkbox" checked={selected.weapon.enabled} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, weapon: { ...item.weapon, enabled: event.target.checked } }))} /><i /></label>
               {selected.weapon.enabled && <><div className="field-grid"><label className="field"><span>PROJECTILE</span><select value={selected.weapon.projectile} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, weapon: { ...item.weapon, projectile: event.target.value as ProjectileSprite } }))}><option value="bolt">BOLT</option><option value="plasma">PLASMA</option></select></label><label className="field"><span>MOTION</span><select value={selected.weapon.projectileMovement} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, weapon: { ...item.weapon, projectileMovement: event.target.value as "straight" | "sine" } }))}><option value="straight">STRAIGHT</option><option value="sine">SINE</option></select></label></div>
                 <label className="range-field"><span><b>SHOTS / SEC</b><em>{selected.weapon.shotsPerSecond.toFixed(1)}</em></span><input type="range" min="0.1" max="4" step="0.1" value={selected.weapon.shotsPerSecond} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, weapon: { ...item.weapon, shotsPerSecond: Number(event.target.value) } }))} /></label>
@@ -1297,13 +1351,18 @@ export function StarlineGame() {
                 <button className="inspector-action pattern-designer-button" type="button" onClick={() => setEditingPattern({ pattern: structuredClone(selected.weapon.pattern ?? createPatternPreset("Pendulum Sweep")), target: { kind: "item", id: selected.id } })}>{selected.weapon.pattern ? "EDIT BULLET HELL PATTERN" : "OPEN BULLET HELL DESIGNER"}</button>
                 {selected.weapon.pattern && <button className="inspector-action" type="button" onClick={() => updateItem(selected.id, (item) => ({ ...item, weapon: { ...item.weapon, pattern: undefined } }))}>REMOVE PATTERN / USE STANDARD FIRE</button>}
               </>}
-            </fieldset>}
+            </>)}
+            </EbAccordion>
           </div>}
         </aside>
       </section>
 
       <footer className="shortcut-bar"><span><kbd>T</kbd> PLAYTEST</span><span><kbd>ESC</kbd> SELECT / BUILD</span><span><kbd>S</kbd> SCROLL</span><span><kbd>D</kbd> DUPLICATE</span><span><kbd>Q / E</kbd> ROTATE</span><span><kbd>CTRL / SHIFT</kbd> MULTI-SELECT</span><span><kbd>1–9</kbd> EQUIP</span><span><kbd>CTRL Z</kbd> UNDO</span><span className="gamepad-shortcut">GAMEPAD: <kbd>LS</kbd> MOVE <kbd>RS</kbd> SATELLITE <kbd>Y</kbd> CYCLE WEAPON <kbd>A / RT</kbd> FIRE</span><strong>THE FATE OF THE GALAXY IS IN YOUR HANDS.</strong></footer>
       {editingAsset && <SpriteStudio asset={editingAsset} onSave={saveSpriteAsset} onCancel={() => setEditingAsset(null)} />}
+      {pendingConfirm && <EbDialog visible title={pendingConfirm.title} onVisibleChange={(open) => { if (!open) setPendingConfirm(null); }} showCloseButton={false} className="confirm-dialog" footerContent={<>
+        <button type="button" onClick={() => setPendingConfirm(null)}>CANCEL</button>
+        <button type="button" className="confirm-commit" onClick={() => { const act = pendingConfirm.action; setPendingConfirm(null); act(); }}>CONFIRM</button>
+      </>}><p>{pendingConfirm.message}</p></EbDialog>}
       {editingPattern && <BulletPatternStudio pattern={editingPattern.pattern} onApply={applyPatternEditor} onSaveComponent={savePatternComponent} onCancel={() => setEditingPattern(null)} />}
     </main>
   );
