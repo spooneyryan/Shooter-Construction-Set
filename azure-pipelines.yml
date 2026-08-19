@@ -1,21 +1,24 @@
-# Build, publish, and deploy for the Starline static export.
+# Build and deploy for Starline, standalone on its own Azure Static Web App.
 #
-# The shape follows from how the game is hosted: Starline is one tenant of the
-# arcade — a single Azure Static Web App serving every game under
-# /games/<name>/ — and a Static Web Apps deployment replaces the *whole* site.
-# Deploying from here with the site's token would ship an arcade containing one
-# game. So this pipeline's authority ends at publishing a verified,
-# webroot-shaped artifact and waking the arcade deploy pipeline, which owns the
-# webroot, gathers every game's latest artifact, and performs the real
-# deployment.
+# Static Web Apps is the whole hosting story: the build is a pure static
+# export — no server rendering, no API routes, state in localStorage — so
+# there is nothing for an App Service to run. The Free tier carries it.
 #
-# Placeholders, marked PLACEHOLDER- throughout:
-#   - the Azure DevOps project and pipeline id of the arcade deploy
-#   - the environment name that deployment approvals hang off
-# One-time setup in Azure DevOps, outside this file: give this project's build
-# service "Queue builds" on the arcade pipeline and Reader on the GameBase
-# feed, and create the environment. PR validation on Azure Repos comes from a
-# branch policy pointing at this pipeline — there is no `pr:` trigger here.
+# This build targets the SWA's *root*, so the STARLINE_* knobs below override
+# the source defaults, which still point at the arcade's /games/starline/
+# staging. The earlier arcade-tenant pipeline (publish an overlay artifact,
+# wake the shared deploy) is in git history at 224cb96 if the game ever moves
+# back in with the other games.
+#
+# One-time setup, outside this file:
+#   1. Create the Static Web App (plan: Free; deployment source: "Other" —
+#      this pipeline deploys with a token, not a GitHub Action).
+#   2. Copy its deployment token (Overview -> Manage deployment token) into a
+#      SECRET pipeline variable named SWA_DEPLOYMENT_TOKEN.
+#   3. Put the site's real URL into STARLINE_PUBLIC_URL below.
+#   4. Create the environment named under the Deploy stage and hang any
+#      approvals off it. PR validation comes from a branch policy pointing at
+#      this pipeline — Azure Repos has no `pr:` trigger in YAML.
 
 trigger:
   branches:
@@ -24,18 +27,18 @@ trigger:
       - dev*
 
 variables:
-  # Baked into the export at build time (next.config.ts, app/layout.tsx). The
-  # pipeline is the one place the real public address is decided, so a future
-  # rehoming is an edit here, not in source.
-  STARLINE_ASSET_PREFIX: /games/starline
-  STARLINE_PUBLIC_URL: https://victorious-flower-0b12ecd10.7.azurestaticapps.net/games/starline/
+  # Baked into the export at build time (next.config.ts, app/layout.tsx) and
+  # read again by tests/rendered-html.test.mjs, so the suite verifies the
+  # layout this pipeline actually ships. The empty prefix means "the site
+  # root"; the public URL feeds metadataBase for the social-card links.
+  STARLINE_PUBLIC_URL: https://PLACEHOLDER-starline.azurestaticapps.net/
 
 stages:
   - stage: Build
     displayName: Build & verify
     jobs:
       - job: build
-        displayName: Install, lint, test, stage
+        displayName: Install, lint, test
         pool:
           vmImage: ubuntu-latest
         steps:
@@ -45,9 +48,8 @@ stages:
               versionSpec: 22.x
 
           # Writes feed credentials for the @ccllc scope into .npmrc for the
-          # duration of the run — the token half of what the .npmrc comment
-          # promises. A feed in this organization needs no service connection,
-          # only the feed permission named in the header.
+          # duration of the run. A feed in this organization needs no service
+          # connection, only Reader for the build service on the GameBase feed.
           - task: npmAuthenticate@0
             displayName: Authenticate GameBase feed
             inputs:
@@ -59,79 +61,55 @@ stages:
           - script: npm run lint
             displayName: Lint
 
-          # `npm test` builds first, then asserts on dist/client — so the tree
-          # staged below is the exact one the tests passed against, not a
-          # second build that merely should be identical.
+          # `npm test` builds first, then asserts on dist/client — the tree
+          # deployed below is the exact one the tests passed against. The
+          # empty prefix is set here, on the step, rather than in the
+          # variables block: a pipeline variable with an empty value is easy
+          # to lose in translation, and this is the one step that must see it.
           - script: npm test
-            displayName: Build & test
+            displayName: Build & test (root asset prefix)
+            env:
+              STARLINE_ASSET_PREFIX: ""
+              STARLINE_PUBLIC_URL: $(STARLINE_PUBLIC_URL)
 
-          # Fold the export into the shape the webroot serves. The build writes
-          # the page at dist/client/index.html but mirrors hashed assets under
-          # dist/client/games/starline/ (the assetPrefix); the site serves both
-          # from /games/starline/, so the two halves are merged here rather
-          # than making the arcade know about the split.
+          # If the empty prefix failed to reach the build, the export mirrors
+          # its assets under games/starline/ and the deployed site would 404
+          # on every script. The test suite follows the same variable, so it
+          # cannot catch that by itself — this can.
           - script: |
               set -euo pipefail
-              overlay="$(Build.ArtifactStagingDirectory)/overlay/games/starline"
-              mkdir -p "$overlay"
-              rsync -a --exclude=/games dist/client/ "$overlay/"
-              rsync -a dist/client/games/starline/ "$overlay/"
-            displayName: Stage arcade overlay
+              test -d dist/client/_next || { echo "##vso[task.logissue type=error]dist/client/_next is missing — the root asset prefix did not reach the build"; exit 1; }
+            displayName: Assert root layout
 
-          # Webroot-shaped (games/starline/...): the arcade lays it straight
-          # over the site root without knowing anything about this build.
           - task: PublishPipelineArtifact@1
-            displayName: Publish overlay artifact
+            displayName: Publish site artifact
             inputs:
-              targetPath: $(Build.ArtifactStagingDirectory)/overlay
-              artifact: starline-arcade-overlay
+              targetPath: dist/client
+              artifact: starline-site
 
   - stage: Deploy
-    displayName: Deploy via the arcade
+    displayName: Deploy to Static Web Apps
     dependsOn: Build
     # Every pushed branch builds; only master ships.
     condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/master'))
     jobs:
       - deployment: deploy
-        displayName: Wake the arcade deploy
+        displayName: Upload to the Static Web App
         pool:
           vmImage: ubuntu-latest
-        environment: PLACEHOLDER-arcade-production
+        environment: PLACEHOLDER-starline-production
         strategy:
           runOnce:
             deploy:
               steps:
-                # The artifact is for the arcade pipeline, not this job — skip
-                # the automatic download a deployment job would otherwise do.
-                - download: none
-
-                # Queue the arcade deploy, which downloads the latest
-                # starline-arcade-overlay (and every sibling game's artifact),
-                # assembles the full webroot, and runs the actual Static Web
-                # Apps deployment. `{}` runs it on its default branch; the
-                # ownership stays honest because this repository never holds
-                # the deployment token for a site it is only part of.
-                - script: |
-                    set -euo pipefail
-                    curl --fail-with-body -sS -X POST \
-                      -H "Authorization: Bearer $SYSTEM_ACCESSTOKEN" \
-                      -H "Content-Type: application/json" \
-                      -d '{}' \
-                      "$(System.CollectionUri)PLACEHOLDER-arcade-project/_apis/pipelines/PLACEHOLDER-arcade-pipeline-id/runs?api-version=7.1"
-                  displayName: Queue arcade deploy
-                  env:
-                    SYSTEM_ACCESSTOKEN: $(System.AccessToken)
-
-                # If Starline ever gets a Static Web App of its own, the direct
-                # deployment replaces the step above — correct only when the
-                # site is only this game, and the STARLINE_* variables at the
-                # top change with the new address:
-                #
-                # - download: current
-                #   artifact: starline-arcade-overlay
-                # - task: AzureStaticWebApp@0
-                #   inputs:
-                #     workingDirectory: $(Pipeline.Workspace)/starline-arcade-overlay
-                #     app_location: games/starline
-                #     skip_app_build: true
-                #     azure_static_web_apps_api_token: $(PLACEHOLDER-swa-deployment-token)
+                # The deployment job downloads starline-site to
+                # $(Pipeline.Workspace)/starline-site automatically; the site
+                # is prebuilt, so the task only uploads it.
+                - task: AzureStaticWebApp@0
+                  displayName: Deploy prebuilt export
+                  inputs:
+                    cwd: $(Pipeline.Workspace)/starline-site
+                    app_location: /
+                    skip_app_build: true
+                    skip_api_build: true
+                    azure_static_web_apps_api_token: $(SWA_DEPLOYMENT_TOKEN)

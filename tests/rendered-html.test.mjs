@@ -21,9 +21,16 @@ import test from "node:test";
 
 const clientRoot = new URL("../dist/client/", import.meta.url);
 
+// The build mirrors its hashed assets under the asset prefix (next.config.ts
+// reads the same variable), so the test follows the knob rather than the
+// default: a pipeline building for a different home — the standalone Static
+// Web App builds for the site root with an empty prefix — verifies the layout
+// it actually shipped instead of the one the arcade would have.
+const assetPrefix = process.env.STARLINE_ASSET_PREFIX ?? "/games/starline";
+
 /** Every emitted JavaScript chunk, whatever the build hashed them to. */
 async function chunks() {
-  const dir = new URL("games/starline/_next/static/chunks/", clientRoot);
+  const dir = new URL(`.${assetPrefix}/_next/static/chunks/`, clientRoot);
   const names = await readdir(dir);
   const out = [];
   for (const name of names.filter((n) => n.endsWith(".js"))) {

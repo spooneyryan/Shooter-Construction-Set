@@ -51,17 +51,22 @@ narrowest possible suppression, with the why alongside it.
 
 ## CI/CD
 
-[azure-pipelines.yml](azure-pipelines.yml) is the pipeline. Every pushed
-`master`/`dev*` branch builds: feed auth (`npmAuthenticate`), `npm ci`, lint,
-`npm test`, then the export is folded into a webroot-shaped artifact
-(`starline-arcade-overlay`, contents under `games/starline/`). On `master`
-only, the Deploy stage queues the **arcade's** deploy pipeline, which gathers
-every game's artifact and performs the real Static Web Apps deployment. This
-repo deliberately never holds the site's deployment token: an SWA deployment
-replaces the whole site, and the site is not only this game. `PLACEHOLDER-`
-values (arcade project, pipeline id, environment name) must be filled in
-before the Deploy stage is live; PR validation comes from a branch policy
-pointing at the pipeline, not from YAML.
+[azure-pipelines.yml](azure-pipelines.yml) builds and deploys Starline to its
+**own Azure Static Web App** (Free tier — the export is pure static files, so
+there is no server for an App Service to run). Every pushed `master`/`dev*`
+branch builds: feed auth (`npmAuthenticate`), `npm ci`, lint, then `npm test`
+with `STARLINE_ASSET_PREFIX` set **empty** — this deployment serves the site
+root, not the arcade's `/games/starline/`, and the post-build tests read the
+same variable so they verify the layout actually shipped. A follow-up step
+asserts `dist/client/_next` exists in case the empty variable ever fails to
+reach the build. On `master` only, the Deploy stage uploads the prebuilt
+`dist/client` via `AzureStaticWebApp@0` using a **secret pipeline variable
+`SWA_DEPLOYMENT_TOKEN`** (from the SWA's "Manage deployment token").
+`PLACEHOLDER-` values (public URL, environment name) must be filled in; PR
+validation comes from a branch policy, not YAML. The earlier arcade-tenant
+design — publish a `/games/starline/` overlay artifact and wake the shared
+arcade deploy — lives in git history at `224cb96` if the game rejoins the
+arcade.
 
 ## The private feed
 
