@@ -31,7 +31,7 @@ variables:
   # read again by tests/rendered-html.test.mjs, so the suite verifies the
   # layout this pipeline actually ships. The empty prefix means "the site
   # root"; the public URL feeds metadataBase for the social-card links.
-  STARLINE_PUBLIC_URL: https://PLACEHOLDER-starline.azurestaticapps.net/
+  STARLINE_PUBLIC_URL: https://wonderful-mushroom-0edd54a0f.7.azurestaticapps.net
 
 stages:
   - stage: Build
