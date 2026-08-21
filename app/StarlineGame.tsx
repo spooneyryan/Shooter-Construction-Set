@@ -1,8 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { createHistory, createLoop, createPerformanceMonitor, DocumentError, type PerfStats } from "@ccllc/arcade/core";
+import { createHistory, createLoop, createPerformanceMonitor, defineLibrary, DocumentError, type PerfStats } from "@ccllc/arcade/core";
 import { createInput } from "@ccllc/arcade/platform";
+import { createSelection, createEditorCommands, createKeymap } from "@ccllc/arcade/editor";
 import { uniqueId } from "@ccllc/arcade/core";
 import { createTelemetry } from "@ccllc/arcade/telemetry";
 import { BulletPatternStudio, SpriteStudio } from "@ccllc/studio";
@@ -93,6 +94,13 @@ type CanvasDrag =
   | { kind: "scroll"; startX: number; startCamera: number }
   | { kind: "end"; startSnapshot: string };
 
+// Storage keys, above the two definitions that take them: both are read at
+// module evaluation, and a const referenced before its own line is a TDZ
+// ReferenceError rather than undefined.
+const STORAGE_KEY = "starline-level-library-v1";
+const DRAFT_KEY = "starline-level-draft-v1";
+const SETTINGS_KEY = "starline-editor-settings-v1";
+
 // The level as a document. The library owns the envelope, the version
 // negotiation and the transport; `normalizeLevel` -- which defineLevelFormat
 // wires in as the sanitizer -- stays the authority on Starline's own fields,
@@ -106,9 +114,28 @@ type CanvasDrag =
 // tag at all, and those still parse.
 const levelDocument = defineLevelFormat({ format: "starline-level" });
 
-const STORAGE_KEY = "starline-level-library-v1";
-const DRAFT_KEY = "starline-level-draft-v1";
-const SETTINGS_KEY = "starline-editor-settings-v1";
+// The saved-level shelf. Keys stay exactly what they were, because a library
+// that derived its own from a namespace would orphan every sector anyone has
+// saved -- which is why the module takes them rather than inventing them.
+//
+// `migrate` is what carries the old shape across: this game stored a plain
+// object of name to level, and the first write after this rewrites it as the
+// module's own list. It runs once and then never again.
+//
+// What arrives with the swap, none of which this game had: a cap, so a runaway
+// save loop cannot fill the origin's quota; entry-level validation, so one
+// corrupt sector is dropped instead of taking the whole shelf down with it;
+// and a storage probe that degrades to memory rather than throwing, which is
+// the difference between a private-mode browser losing saves and crashing.
+const levelLibrary = defineLibrary<Level>({
+  format: levelDocument,
+  key: STORAGE_KEY,
+  draftKey: DRAFT_KEY,
+  limit: 60,
+  migrate: (raw) => (raw && typeof raw === "object" && !Array.isArray(raw)
+    ? Object.entries(raw as Record<string, Level>).map(([name, document]) => ({ name, document }))
+    : []),
+});
 
 // A fixed step, at last. The loop used to run on a variable delta with a 34 ms
 // clamp and a comment saying this was what replays and any input-synchronised
@@ -290,8 +317,15 @@ export function StarlineGame() {
   const importRef = useRef<HTMLInputElement>(null);
   const modeRef = useRef<EditorMode>("build");
   const toolRef = useRef<Tool>("select");
-  const selectedRef = useRef<string | null>(null);
-  const selectionRef = useRef<string[]>([]);
+  // Selection and commands, created together because the commands need the
+  // selection and reading one ref to build another during render is exactly
+  // what react-hooks/refs forbids. Built in the initialiser instead, which runs
+  // once and reads nothing.
+  //
+  // `replace` is where this game keeps its say: the library decides WHICH items
+  // a command touches and what happens to the selection afterwards, and this
+  // decides what writing them back means -- normalising the level, recording a
+  // snapshot, and giving the snapshot the coalesce key the library worked out.
   const editorCameraRef = useRef(0);
   const viewportRef = useRef({ scale: 1, offsetX: 0, offsetY: 0 });
   const satellitePointerRef = useRef({ x: VIEW_W * .7, y: VIEW_H / 2, active: false });
@@ -328,6 +362,44 @@ export function StarlineGame() {
   // first render only — so ref and state start as one object without calling
   // defaultLevel() twice. The mirror effect below keeps it current.
   const levelRef = useRef(level);
+
+  // Built on first use, not during render. Both instances are made together
+  // because the commands need the selection, and the closures below read refs
+  // -- which the React Compiler forbids during render, counting a useState
+  // initialiser as render just as it counts the component body. The one place
+  // left that is neither is the first call out of a callback or an effect.
+  const editorRef = useRef<{
+    selection: ReturnType<typeof createSelection>;
+    commands: ReturnType<typeof createEditorCommands<LevelItem>>;
+  } | null>(null);
+  const editorFor = useCallback(() => {
+    if (editorRef.current) return editorRef.current;
+    const selection = createSelection();
+    // `replace` is where this game keeps its say. The library decides WHICH
+    // items a command touches and what becomes of the selection afterwards;
+    // this decides what writing them back means -- normalising the level,
+    // recording a snapshot, and giving that snapshot the coalesce key the
+    // library worked out from the reason and the selection.
+    editorRef.current = {
+      selection,
+      commands: createEditorCommands<LevelItem>({
+        selection,
+        items: () => levelRef.current.items,
+        replace: (items, { coalesceKey }) => {
+          const next = normalizeLevel({ ...levelRef.current, items });
+          levelRef.current = next; setLevel(next);
+          historyRef.current.commit(next, coalesceKey);
+        },
+        identify: (item) => item.id,
+        clone: (item) => {
+          const copy = structuredClone(item);
+          copy.id = uid(); copy.name = `${item.name} Copy`;
+          return copy;
+        },
+      }),
+    };
+    return editorRef.current;
+  }, []);
   const [mode, setMode] = useState<EditorMode>("build");
   const [tool, setTool] = useState<Tool>("select");
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -374,8 +446,13 @@ export function StarlineGame() {
   useEffect(() => { levelRef.current = level; }, [level]);
   useEffect(() => { modeRef.current = mode; }, [mode]);
   useEffect(() => { toolRef.current = tool; }, [tool]);
-  useEffect(() => { selectedRef.current = selectedId; }, [selectedId]);
-  useEffect(() => { selectionRef.current = selectedIds; }, [selectedIds]);
+  // One direction now: the model is the source, React mirrors it. The two
+  // effects this replaces ran the other way -- state to ref -- so every read
+  // through a ref was one render behind the model that had already changed.
+  useEffect(() => editorFor().selection.subscribe(({ ids, primary }) => {
+    setSelectedIds([...ids]);
+    setSelectedId(primary);
+  }), [editorFor]);
   useEffect(() => { editorCameraRef.current = camera; }, [camera]);
 
   const flash = useCallback((message: string) => {
@@ -383,10 +460,13 @@ export function StarlineGame() {
     window.setTimeout(() => setNotice("READY"), 1800);
   }, []);
 
+  // Deduplicating and defaulting the primary to the last id are the model's
+  // rules now, and it adds the one this did not have: a primary that is not a
+  // member falls back instead of pointing at nothing.
   const setSelection = useCallback((ids: string[], primary?: string | null) => {
-    const unique = [...new Set(ids)]; const nextPrimary = primary === undefined ? unique.at(-1) ?? null : primary;
-    selectionRef.current = unique; selectedRef.current = nextPrimary; setSelectedIds(unique); setSelectedId(nextPrimary); setInspectPlayer(false);
-  }, []);
+    editorFor().selection.set(ids, primary);
+    setInspectPlayer(false);
+  }, [editorFor]);
 
   // The undo stack reports its own state; the two button-enabled flags follow it
   // rather than being recomputed at every call site the way they used to be.
@@ -414,10 +494,12 @@ export function StarlineGame() {
     if (!restored) return;
     const next = normalizeLevel(restored);
     levelRef.current = next; setLevel(next);
-    const validSelection = selectionRef.current.filter((id) => next.items.some((item) => item.id === id)); setSelection(validSelection, validSelection.includes(selectedRef.current ?? "") ? selectedRef.current : validSelection.at(-1) ?? null);
+    // The whole of what the four hand-written lines here used to do, including
+    // keeping the primary when it survived and falling back when it did not.
+    editorFor().selection.retain((id) => next.items.some((item) => item.id === id));
     const safeCamera = clamp(editorCameraRef.current, 0, Math.max(0, next.length - VIEW_W)); editorCameraRef.current = safeCamera; setCamera(safeCamera);
     flash(direction < 0 ? "UNDO" : "REDO");
-  }, [flash, setSelection]);
+  }, [editorFor, flash]);
 
   const toggleFullscreen = useCallback(async () => {
     try {
@@ -477,9 +559,10 @@ export function StarlineGame() {
       const shared = levelDocument.readShareFromLocation();
       let restored: Level | null = shared.document;
       if (!restored) {
-        const draft = window.localStorage.getItem(DRAFT_KEY);
-        // A draft too corrupt to parse must not take the editor down with it.
-        try { restored = draft ? levelDocument.parse(draft) : null; } catch { restored = null; }
+        // Already parsed, and already null rather than a throw if the stored
+        // draft will not read -- so the try/catch this replaces is the
+        // library's problem now.
+        restored = levelLibrary.readDraft();
       }
       // A deliberate second render: the exported HTML is built with the
       // starter level, so the first client render has to match it, and
@@ -490,8 +573,7 @@ export function StarlineGame() {
       // Same two-phase load and the same reason: a link that will not decode
       // has to say so, and there is nowhere earlier to say it from.
       if (shared.error) flash("SHARED LINK UNREADABLE");
-      const library = JSON.parse(window.localStorage.getItem(STORAGE_KEY) || "{}") as Record<string, Level>;
-      const names = Object.keys(library).sort();
+      const names = levelLibrary.list().map((saved) => saved.name).sort();
       setSavedNames(names);
       setLoadName(names[0] || "");
     } catch { /* use the starter level */ }
@@ -520,7 +602,7 @@ export function StarlineGame() {
   useEffect(() => {
     if (mode !== "build") return;
     const timer = window.setTimeout(() => {
-      try { window.localStorage.setItem(DRAFT_KEY, levelDocument.serialize(level)); } catch { /* storage can be unavailable */ }
+      levelLibrary.saveDraft(level);
     }, 300);
     return () => window.clearTimeout(timer);
   }, [level, mode]);
@@ -535,32 +617,42 @@ export function StarlineGame() {
     updateLevel((current) => ({ ...current, items: current.items.map((item) => item.id === id ? updater(item) : item) }), record, `item-${id}`);
   }, [updateLevel]);
 
+  // The library's default coalesce key is the reason plus the selection, which
+  // is what the key built here by hand already was.
   const updateSelectedItems = useCallback((updater: (item: LevelItem) => LevelItem, coalesceKey: string) => {
-    const ids = selectionRef.current; updateLevel((current) => ({ ...current, items: current.items.map((item) => ids.includes(item.id) ? updater(item) : item) }), true, `${coalesceKey}-${ids.join("-")}`);
-  }, [updateLevel]);
+    editorFor().commands.update(updater, { reason: coalesceKey });
+  }, [editorFor]);
 
   const duplicateSelected = useCallback(() => {
-    const sources = levelRef.current.items.filter((item) => selectionRef.current.includes(item.id));
-    if (!sources.length || modeRef.current !== "build") return;
-    const copies = sources.map((source) => { const copy: LevelItem = structuredClone(source); copy.id = uid(); copy.name = `${source.name} Copy`; copy.x = Math.min(levelRef.current.length, source.x + 80); copy.y = clamp(source.y + 45, 30, VIEW_H - 30); return copy; });
-    updateLevel((current) => ({ ...current, items: [...current.items, ...copies] })); setSelection(copies.map((item) => item.id), copies.at(-1)?.id); flash(`${copies.length} OBJECT${copies.length === 1 ? "" : "S"} DUPLICATED`);
-  }, [flash, setSelection, updateLevel]);
+    if (modeRef.current !== "build") return;
+    // Where a copy lands is geometry, so it stays here; that the copies are
+    // what ends up selected is the library's, and is why the next drag moves
+    // the new ones rather than the originals.
+    const copies = editorFor().commands.duplicate({
+      offset: (copy) => ({
+        ...copy,
+        x: Math.min(levelRef.current.length, copy.x + 80),
+        y: clamp(copy.y + 45, 30, VIEW_H - 30),
+      }),
+    });
+    if (copies.length) flash(`${copies.length} OBJECT${copies.length === 1 ? "" : "S"} DUPLICATED`);
+  }, [editorFor, flash]);
 
   const deleteSelected = useCallback(() => {
-    const ids = selectionRef.current;
-    if (!ids.length) return;
-    updateLevel((current) => ({ ...current, items: current.items.filter((item) => !ids.includes(item.id)) }));
-    setSelection([]); flash(`${ids.length} OBJECT${ids.length === 1 ? "" : "S"} REMOVED`);
-  }, [flash, setSelection, updateLevel]);
+    // Clearing the selection is the library's doing and not optional there:
+    // ids left pointing at deleted items are how an Inspector edits a ghost.
+    const removed = editorFor().commands.remove();
+    if (removed) flash(`${removed} OBJECT${removed === 1 ? "" : "S"} REMOVED`);
+  }, [editorFor, flash]);
 
   const saveObjectComponent = useCallback((updateExisting = false) => {
-    const source = levelRef.current.items.find((item) => item.id === selectedRef.current); if (!source) return;
+    const source = levelRef.current.items.find((item) => item.id === editorFor().selection.primary); if (!source) return;
     const existing = source.componentId ? levelRef.current.components.find((component) => component.id === source.componentId) : undefined;
     const id = updateExisting && existing ? existing.id : `component-${uid()}`; const name = window.prompt(updateExisting && existing ? "Update Component name:" : "Component name:", existing?.name ?? source.name)?.trim(); if (!name) return;
     const object = structuredClone(source); object.id = "template"; object.name = name; object.componentId = id;
     updateLevel((current) => ({ ...current, items: current.items.map((item) => item.id === source.id ? { ...item, componentId: id } : item), components: [...current.components.filter((component) => component.id !== id), { id, name, kind: source.type, object }] }));
     flash(existing ? "COMPONENT UPDATED" : "COMPONENT SAVED");
-  }, [flash, updateLevel]);
+  }, [editorFor, flash, updateLevel]);
 
   const saveWeaponComponent = useCallback((weapon: Weapon, suggested: string) => {
     const name = window.prompt("Weapon Component name:", suggested)?.trim(); if (!name) return;
@@ -604,7 +696,7 @@ export function StarlineGame() {
   }, [editingPattern, flash, updateItem, updateLevel]);
 
   const applyEquipmentComponent = useCallback((component: ComponentDefinition) => {
-    const target = levelRef.current.items.find((item) => item.id === selectedRef.current);
+    const target = levelRef.current.items.find((item) => item.id === editorFor().selection.primary);
     if (component.kind === "weapon" && component.weapon) {
       if (target && (target.type === "enemy" || target.type === "group")) { updateItem(target.id, (item) => ({ ...item, weapon: { ...structuredClone(component.weapon!), power: Math.max(1, Math.round(component.weapon!.power / 100)) } })); flash("WEAPON APPLIED TO OBJECT"); return; }
       updateLevel((current) => { const inventory = current.player.inventory.includes(component.id) ? current.player.inventory : [...current.player.inventory.slice(0, Math.max(0, current.player.inventoryLimit - 1)), component.id]; const slots = current.player.weaponSlots.map((slot, index) => index === 0 && (slot.accepts === component.weapon?.tag || slot.accepts === "any") ? { ...slot, weaponId: component.id } : slot); return { ...current, player: { ...current.player, inventory, weaponSlots: slots } }; }); flash("WEAPON ADDED / EQUIPPED");
@@ -615,7 +707,7 @@ export function StarlineGame() {
       setEditingPattern({ pattern: structuredClone(component.pattern), target: { kind: "pattern", id: component.id } }); flash("PATTERN DESIGNER OPEN"); return;
     }
     setSelection([]); setInspectPlayer(true);
-  }, [flash, setSelection, updateItem, updateLevel]);
+  }, [editorFor, flash, setSelection, updateItem, updateLevel]);
 
   const deleteComponent = useCallback((id: string) => {
     if (!id.startsWith("component-")) return;
@@ -644,24 +736,21 @@ export function StarlineGame() {
   }, [flash, updateLevel]);
 
   const saveLevel = useCallback(() => {
-    try {
-      const current = levelRef.current;
-      const library = JSON.parse(window.localStorage.getItem(STORAGE_KEY) || "{}") as Record<string, Level>;
-      library[current.name.trim() || "Untitled Sector"] = current;
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(library));
-      const names = Object.keys(library).sort();
-      setSavedNames(names); setLoadName(current.name); flash("LEVEL SAVED TO THIS DEVICE");
-    } catch { flash("SAVE FAILED"); }
+    const current = levelRef.current;
+    const name = current.name.trim() || "Untitled Sector";
+    // Upsert by name, so Save over a sector of the same name replaces it
+    // rather than growing a second copy of it every time.
+    const entry = levelLibrary.save(current, { name });
+    if (!entry) { flash("SAVE FAILED — THIS BROWSER BLOCKED LOCAL SAVES"); return; }
+    setSavedNames(levelLibrary.list().map((saved) => saved.name).sort());
+    setLoadName(entry.name); flash("LEVEL SAVED TO THIS DEVICE");
   }, [flash]);
 
   const loadLevel = useCallback(() => {
     if (!loadName) return;
-    try {
-      const library = JSON.parse(window.localStorage.getItem(STORAGE_KEY) || "{}") as Record<string, Level>;
-      const next = library[loadName];
-      if (!next) return;
-      installLevel(next, true); setCamera(0); editorCameraRef.current = 0; flash(`LOADED ${loadName.toUpperCase()}`);
-    } catch { flash("LOAD FAILED"); }
+    const next = levelLibrary.readByName(loadName);
+    if (!next) { flash("THAT SAVED LEVEL IS NO LONGER AVAILABLE"); return; }
+    installLevel(next, true); setCamera(0); editorCameraRef.current = 0; flash(`LOADED ${loadName.toUpperCase()}`);
   }, [flash, installLevel, loadName]);
 
   const exportLevel = useCallback(() => {
@@ -724,59 +813,89 @@ export function StarlineGame() {
   }, [flash]);
 
   useEffect(() => {
-    const keyDown = (event: KeyboardEvent) => {
-      if (editingPatternRef.current || pendingConfirmRef.current || showSettingsRef.current) return; // the pattern designer / confirm / settings dialog owns the keyboard while open
-      const tag = (event.target as HTMLElement | null)?.tagName;
-      const editing = tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA";
-      if (editing) {
-        if ((event.ctrlKey || event.metaKey) && event.code === "KeyS") { event.preventDefault(); saveLevel(); }
-        return;
-      }
-      const current = modeRef.current;
-      if (current === "build" && (event.ctrlKey || event.metaKey) && event.code === "KeyZ") { event.preventDefault(); applyHistory(event.shiftKey ? 1 : -1); return; }
-      if (current === "build" && (event.ctrlKey || event.metaKey) && event.code === "KeyY") { event.preventDefault(); applyHistory(1); return; }
-      if (current === "build" && event.code === "KeyT") { event.preventDefault(); enterPlay(); return; }
-      if (current !== "build" && event.code === "Escape") { event.preventDefault(); exitPlay(); return; }
-      if (current === "build" && (event.code === "Delete" || event.code === "Backspace")) { event.preventDefault(); deleteSelected(); return; }
-      if ((event.ctrlKey || event.metaKey) && event.code === "KeyS") { event.preventDefault(); saveLevel(); return; }
-      if (current === "build" && event.code === "Escape") {
-        event.preventDefault();
-        if (toolRef.current !== "select") { setTool("select"); toolRef.current = "select"; flash("SELECT MODE"); }
-        else { setSelection([]); setInspectPlayer(false); flash("SELECTION CLEARED"); }
-        return;
-      }
-      if (current === "build" && event.code === "KeyD") { event.preventDefault(); if (!event.repeat) duplicateSelected(); return; }
-      if (current === "build" && event.code === "KeyS") { event.preventDefault(); setTool("scroll"); toolRef.current = "scroll"; flash("SCROLL TOOL"); return; }
-      if (current === "build" && selectionRef.current.length && (event.code === "KeyQ" || event.code === "KeyE")) {
-        event.preventDefault(); const delta = (event.code === "KeyQ" ? -1 : 1) * (event.shiftKey ? 1 : 15); const ids = selectionRef.current;
-        updateLevel((level) => ({ ...level, items: level.items.map((item) => ids.includes(item.id) ? { ...item, rotation: item.rotation + delta } : item) }), true, `rotate-${ids.join("-")}`); return;
-      }
-      if (event.code === "KeyF" && !event.ctrlKey && !event.metaKey && !event.altKey) { event.preventDefault(); if (!event.repeat) void toggleFullscreen(); return; }
+    // The shortcut table as data. What it replaces was a forty-line if-chain
+    // that repeated `event.ctrlKey || event.metaKey` at every branch and
+    // `!event.ctrlKey && !event.metaKey` at most of the bare letters -- three
+    // rules restated per binding, which is three chances per binding to get one
+    // wrong. They are the keymap's now: ctrl means Ctrl or Cmd, a bare letter
+    // does not fire while either is held, and nothing fires while the user is
+    // typing except the save shortcut, which opts in.
+    const build = () => modeRef.current === "build";
+    const hasSelection = () => build() && editorFor().selection.size > 0;
+    // Not while a section header or the palette tab strip has focus: both walk
+    // the arrow keys themselves (the WAI-ARIA accordion and tabs patterns), and
+    // a nudge firing at the same time would drag the selection around as a side
+    // effect of browsing the panels.
+    const nudgeable = (event: KeyboardEvent) =>
+      hasSelection() && !(event.target as HTMLElement | null)?.closest?.('.eb-card-collapse-toggle, [role="tablist"]');
+    const rotateBy = (fine: boolean) => (event: KeyboardEvent) => {
+      const delta = (event.code === "KeyQ" ? -1 : 1) * (fine ? 1 : 15);
+      editorFor().commands.update((item) => ({ ...item, rotation: item.rotation + delta }), { reason: "rotate" });
+    };
+    const nudgeBy = (step: number) => (event: KeyboardEvent) => {
+      const dx = event.code === "ArrowLeft" ? -step : event.code === "ArrowRight" ? step : 0;
+      const dy = event.code === "ArrowUp" ? -step : event.code === "ArrowDown" ? step : 0;
+      editorFor().commands.update((item) => ({
+        ...item,
+        x: clamp(item.x + dx, 0, levelRef.current.length),
+        y: clamp(item.y + dy, 30, VIEW_H - 30),
+      }), { reason: "nudge" });
+    };
+    const keymap = createKeymap([
+      // Shift distinguishes these two rather than being read inside one, which
+      // is the whole reason the modifier match is exact.
+      { code: "KeyZ", ctrl: true, shift: true, when: build, label: "Redo", run: () => applyHistory(1) },
+      { code: "KeyZ", ctrl: true, when: build, label: "Undo", run: () => applyHistory(-1) },
+      { code: "KeyY", ctrl: true, when: build, label: "Redo", run: () => applyHistory(1) },
+      // The one shortcut that survives a focused text field: losing an edit
+      // because focus was still in the name box is worse than the alternative.
+      { code: "KeyS", ctrl: true, allowInTextEntry: true, label: "Save", run: () => saveLevel() },
+      { code: "KeyT", when: build, label: "Playtest", run: () => enterPlay() },
+      { code: "Escape", when: () => !build(), label: "Leave playtest", run: () => exitPlay() },
+      { code: ["Delete", "Backspace"], when: build, label: "Delete", run: () => deleteSelected() },
+      {
+        code: "Escape", when: build, label: "Select tool / clear selection",
+        run: () => {
+          if (toolRef.current !== "select") { setTool("select"); toolRef.current = "select"; flash("SELECT MODE"); }
+          else { setSelection([]); setInspectPlayer(false); flash("SELECTION CLEARED"); }
+        },
+      },
+      { code: "KeyD", when: build, label: "Duplicate", run: () => duplicateSelected() },
+      { code: "KeyS", when: build, label: "Scroll tool", run: () => { setTool("scroll"); toolRef.current = "scroll"; flash("SCROLL TOOL"); } },
+      { code: ["KeyQ", "KeyE"], shift: true, when: hasSelection, label: "Rotate 1°", run: rotateBy(true) },
+      { code: ["KeyQ", "KeyE"], when: hasSelection, label: "Rotate 15°", run: rotateBy(false) },
+      { code: "KeyF", label: "Full screen", run: () => void toggleFullscreen() },
       // F8 for the frame-rate readout, matching the other two games.
-      if (event.code === "F8") { event.preventDefault(); if (!event.repeat) setShowFps((value) => !value); return; }
-      // Not while a section header or the palette tab strip has focus: both
-      // walk the arrow keys themselves (the WAI-ARIA accordion and tabs
-      // patterns), and a nudge firing at the same time would drag the
-      // selection around as a side effect of browsing the panels.
-      if (current === "build" && selectionRef.current.length && !(event.target as HTMLElement | null)?.closest?.('.eb-card-collapse-toggle, [role="tablist"]') && ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.code)) {
-        event.preventDefault();
-        const ids = selectionRef.current; const step = event.shiftKey ? 25 : 5;
-        updateLevel((level) => ({ ...level, items: level.items.map((item) => ids.includes(item.id) ? { ...item, x: clamp(item.x + (event.code === "ArrowLeft" ? -step : event.code === "ArrowRight" ? step : 0), 0, level.length), y: clamp(item.y + (event.code === "ArrowUp" ? -step : event.code === "ArrowDown" ? step : 0), 30, VIEW_H - 30) } : item) }), true, `nudge-${ids.join("-")}`);
-        return;
-      }
-      if (current === "gameover" || current === "victory") {
-        if (event.code === "Enter") enterPlay();
-        return;
-      }
-      if (current === "playing" && (event.code === "KeyP")) { setMode("paused"); modeRef.current = "paused"; return; }
-      if (current === "paused" && event.code === "KeyP") { setMode("playing"); modeRef.current = "playing"; return; }
-      if (current === "playing" && /^Digit[1-9]$/.test(event.code)) { event.preventDefault(); equipInventoryWeapon(Number(event.code.slice(-1)) - 1); return; }
-      // Movement and fire are gone from here: createInput owns those codes now,
+      { code: "F8", label: "FPS", run: () => setShowFps((value) => !value) },
+      // allowRepeat, unlike every other binding here: holding an arrow should
+      // keep nudging, where holding D should duplicate exactly once.
+      { code: ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"], shift: true, allowRepeat: true, when: () => build(), label: "Nudge 25", run: nudgeBy(25) },
+      { code: ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"], allowRepeat: true, when: () => build(), label: "Nudge 5", run: nudgeBy(5) },
+      // passive: these three never preventDefaulted before, and Enter in
+      // particular has to stay available to whatever else is listening.
+      { code: "Enter", passive: true, when: () => modeRef.current === "gameover" || modeRef.current === "victory", run: () => enterPlay() },
+      { code: "KeyP", passive: true, when: () => modeRef.current === "playing", label: "Pause", run: () => { setMode("paused"); modeRef.current = "paused"; } },
+      { code: "KeyP", passive: true, when: () => modeRef.current === "paused", label: "Resume", run: () => { setMode("playing"); modeRef.current = "playing"; } },
+      {
+        code: ["Digit1", "Digit2", "Digit3", "Digit4", "Digit5", "Digit6", "Digit7", "Digit8", "Digit9"],
+        when: () => modeRef.current === "playing", label: "Equip",
+        run: (event) => equipInventoryWeapon(Number(event.code.slice(-1)) - 1),
+      },
+      // Movement and fire are not here: createInput owns those codes,
       // preventDefaults them, and releases them on blur.
+    ]);
+    const keyDown = (event: KeyboardEvent) => {
+      // The pattern designer, the confirm and the settings dialog each own the
+      // keyboard outright while open, which is a gate over the whole table
+      // rather than a condition on any one binding.
+      if (editingPatternRef.current || pendingConfirmRef.current || showSettingsRef.current) return;
+      // The nudge bindings need the event to decide, which `when` cannot see.
+      if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.code) && !nudgeable(event)) return;
+      keymap.handle(event);
     };
     window.addEventListener("keydown", keyDown, { passive: false });
     return () => { window.removeEventListener("keydown", keyDown); };
-  }, [applyHistory, deleteSelected, duplicateSelected, enterPlay, equipInventoryWeapon, exitPlay, flash, saveLevel, setSelection, toggleFullscreen, updateLevel]);
+  }, [applyHistory, deleteSelected, duplicateSelected, editorFor, enterPlay, equipInventoryWeapon, exitPlay, flash, saveLevel, setSelection, toggleFullscreen, updateLevel]);
 
   useEffect(() => {
     const canvas = mainCanvasRef.current;
@@ -858,7 +977,7 @@ export function StarlineGame() {
       const cameraX = editorCameraRef.current;
       drawBackground(cameraX, false, 0);
       const drawPlacedItem = (item: LevelItem) => {
-        const selectedItem = selectionRef.current.includes(item.id);
+        const selectedItem = editorFor().selection.ids.includes(item.id);
         const offsets = groupOffsets(item.group, item.rotation, item.scale);
         offsets.forEach((offset, index) => {
           const screenX = item.x + offset.x - cameraX;
@@ -885,7 +1004,7 @@ export function StarlineGame() {
         context.fillStyle = worldX % 1000 === 0 ? "rgba(234,255,98,.7)" : "rgba(126,174,194,.45)";
         context.font = "11px monospace"; context.fillText(worldX.toString().padStart(5, "0"), x + 7, 20);
       }
-      const selected = current.items.find((item) => item.id === selectedRef.current);
+      const selected = current.items.find((item) => item.id === editorFor().selection.primary);
       if (selected && selected.movement.pattern !== "stationary") {
         context.save(); context.translate(-cameraX, 0); context.strokeStyle = "rgba(100,227,255,.45)"; context.lineWidth = 2; context.setLineDash([5, 7]); context.beginPath();
         for (let step = -260; step <= 260; step += 8) {
@@ -899,7 +1018,7 @@ export function StarlineGame() {
       }
       current.items.filter((item) => item.type !== "decoration").forEach(drawPlacedItem);
       current.items.filter((item) => item.type === "decoration" && item.decoration?.layer === "foreground").forEach(drawPlacedItem);
-      const selectedItems = current.items.filter((item) => selectionRef.current.includes(item.id)); const geometry = selectionGeometry(selectedItems);
+      const selectedItems = current.items.filter((item) => editorFor().selection.ids.includes(item.id)); const geometry = selectionGeometry(selectedItems);
       if (geometry) {
         const left = geometry.left - cameraX; const right = geometry.right - cameraX; const top = geometry.top; const bottom = geometry.bottom; const centerX = geometry.center.x - cameraX;
         context.save(); context.shadowBlur = 0; context.setLineDash([6, 5]); context.strokeStyle = "rgba(234,255,98,.78)"; context.lineWidth = 2; context.strokeRect(left, top, right - left, bottom - top); context.setLineDash([]);
@@ -1064,7 +1183,7 @@ export function StarlineGame() {
     });
     loop.start();
     return () => { loop.stop(); observer.disconnect(); };
-  }, [enterPlay, equipInventoryWeapon, exitPlay, spawnBursts]);
+  }, [editorFor, enterPlay, equipInventoryWeapon, exitPlay, spawnBursts]);
 
   const canvasPoint = (event: React.PointerEvent<HTMLCanvasElement>) => {
     const rect = event.currentTarget.getBoundingClientRect();
@@ -1095,24 +1214,24 @@ export function StarlineGame() {
     const currentTool = toolRef.current;
     if (Math.abs(world.x - levelRef.current.length) <= 18) { dragRef.current = { kind: "end", startSnapshot: JSON.stringify(levelRef.current) }; return; }
     if (currentTool === "scroll") { dragRef.current = { kind: "scroll", startX: screen.x, startCamera: editorCameraRef.current }; return; }
-    if (currentTool === "select" && selectionRef.current.length) {
-      const selectedItems = levelRef.current.items.filter((item) => selectionRef.current.includes(item.id)); const geometry = selectionGeometry(selectedItems);
+    if (currentTool === "select" && editorFor().selection.ids.length) {
+      const selectedItems = levelRef.current.items.filter((item) => editorFor().selection.ids.includes(item.id)); const geometry = selectionGeometry(selectedItems);
       if (geometry) {
         const origins = selectedItems.map((item) => ({ id: item.id, x: item.x, y: item.y, rotation: item.rotation, scale: item.scale }));
         const rotateDistance = Math.hypot(world.x - geometry.center.x, world.y - (geometry.top - 34)); const scaleDistance = Math.hypot(world.x - geometry.right, world.y - geometry.bottom);
         if (rotateDistance <= 18 || scaleDistance <= 22) {
-          dragRef.current = { kind: "transform", mode: rotateDistance <= 18 ? "rotate" : "scale", ids: selectionRef.current.slice(), center: geometry.center, startAngle: Math.atan2(world.y - geometry.center.y, world.x - geometry.center.x), startDistance: Math.max(1, Math.hypot(world.x - geometry.center.x, world.y - geometry.center.y)), origins, startSnapshot: JSON.stringify(levelRef.current) }; return;
+          dragRef.current = { kind: "transform", mode: rotateDistance <= 18 ? "rotate" : "scale", ids: editorFor().selection.ids.slice(), center: geometry.center, startAngle: Math.atan2(world.y - geometry.center.y, world.x - geometry.center.x), startDistance: Math.max(1, Math.hypot(world.x - geometry.center.x, world.y - geometry.center.y)), origins, startSnapshot: JSON.stringify(levelRef.current) }; return;
         }
       }
     }
     const hit = findItem(world);
     if (currentTool === "erase") {
-      if (hit) { updateLevel((current) => ({ ...current, items: current.items.filter((item) => item.id !== hit.id) })); if (selectionRef.current.includes(hit.id)) setSelection(selectionRef.current.filter((id) => id !== hit.id)); flash("OBJECT REMOVED"); }
+      if (hit) { updateLevel((current) => ({ ...current, items: current.items.filter((item) => item.id !== hit.id) })); if (editorFor().selection.ids.includes(hit.id)) setSelection(editorFor().selection.ids.filter((id) => id !== hit.id)); flash("OBJECT REMOVED"); }
       return;
     }
     if (currentTool === "select") {
       if (!hit) { if (!event.ctrlKey && !event.metaKey && !event.shiftKey) setSelection([]); return; }
-      let ids = selectionRef.current.slice();
+      let ids = editorFor().selection.ids.slice();
       if (event.ctrlKey || event.metaKey) ids = ids.includes(hit.id) ? ids.filter((id) => id !== hit.id) : [...ids, hit.id];
       else if (event.shiftKey) { if (!ids.includes(hit.id)) ids.push(hit.id); }
       else if (!ids.includes(hit.id)) ids = [hit.id];
