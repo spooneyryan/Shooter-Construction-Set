@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { createHistory, createLoop, createPerformanceMonitor, type PerfStats } from "@ccllc/arcade/core";
+import { createHistory, createLoop, createPerformanceMonitor, DocumentError, type PerfStats } from "@ccllc/arcade/core";
 import { createInput } from "@ccllc/arcade/platform";
 import { uniqueId } from "@ccllc/arcade/core";
 import { createTelemetry } from "@ccllc/arcade/telemetry";
@@ -14,6 +14,7 @@ import {
   createWorld,
   weaponFitsSlot,
   defaultArmor,
+  defineLevelFormat,
   groupOffsets,
   idleInput,
   makeItem,
@@ -61,9 +62,23 @@ type ProjectileSprite = "bolt" | "plasma";
 // this renderer has artwork for, and an id it does not recognise falls
 // through to the default rather than being a type error at the call site.
 
+/**
+ * A DocumentError already says what was wrong and in what way -- a file from
+ * another application, one from a newer build, truncated JSON -- so it is worth
+ * showing instead of the single generic line the hand-rolled import showed for
+ * all of them alike. Anything else is a bug or a blocked clipboard, and gets
+ * the caller's fallback.
+ */
+function documentMessage(error: unknown, fallback: string) {
+  return error instanceof DocumentError ? error.message.toUpperCase() : fallback;
+}
+
 /** Short ids, the shape this game's saved levels already carry. */
 const uid = () => uniqueId("item");
 type Tool = "select" | "scroll" | "erase" | PaletteKey | `component:${string}`;
+type PaletteTab = "objects" | "components" | "enhancements";
+/** Toolbar Behavior: whether a tool panel keeps one section open, or several. */
+type SectionMode = "single" | "multiple";
 type PatternEditorTarget = { kind: "item"; id: string } | { kind: "weapon"; id: string } | { kind: "pattern"; id: string };
 
 // Render-side only. Particles are not simulation state — nothing in the world
@@ -78,8 +93,22 @@ type CanvasDrag =
   | { kind: "scroll"; startX: number; startCamera: number }
   | { kind: "end"; startSnapshot: string };
 
+// The level as a document. The library owns the envelope, the version
+// negotiation and the transport; `normalizeLevel` -- which defineLevelFormat
+// wires in as the sanitizer -- stays the authority on Starline's own fields,
+// the only half that is genuinely this game's. It is a stateless definition
+// rather than component state, so it lives out here; the report sink is
+// deliberately not wired, because the only telemetry instance is built inside
+// the component and reading it from render is what react-hooks/refs forbids.
+//
+// The format tag is effectively permanent: change it and every level saved
+// under the old one is refused as foreign. Levels saved before this carry no
+// tag at all, and those still parse.
+const levelDocument = defineLevelFormat({ format: "starline-level" });
+
 const STORAGE_KEY = "starline-level-library-v1";
 const DRAFT_KEY = "starline-level-draft-v1";
+const SETTINGS_KEY = "starline-editor-settings-v1";
 
 // A fixed step, at last. The loop used to run on a variable delta with a 34 ms
 // clamp and a comment saying this was what replays and any input-synchronised
@@ -320,7 +349,14 @@ export function StarlineGame() {
   const [showFps, setShowFps] = useState(false);
   const [controllerName, setControllerName] = useState("");
   const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>({});
-  const [paletteTab, setPaletteTab] = useState<"objects" | "components">("objects");
+  // Which section each tool panel opened last. Under "single" Toolbar Behavior
+  // that is the whole answer to what is expanded; under "multiple" it is only a
+  // record, kept current so switching to "single" leaves the section you last
+  // opened up rather than shutting the panel entirely.
+  const [openSections, setOpenSections] = useState<Record<string, string>>({});
+  const [sectionMode, setSectionMode] = useState<SectionMode>("multiple");
+  const [showSettings, setShowSettings] = useState(false);
+  const [paletteTab, setPaletteTab] = useState<PaletteTab>("objects");
   const [editingAsset, setEditingAsset] = useState<SpriteAsset | null>(null);
   const [editingPattern, setEditingPattern] = useState<{ pattern: BulletPatternDefinition; target: PatternEditorTarget } | null>(null);
   const editingPatternRef = useRef(false);
@@ -332,6 +368,8 @@ export function StarlineGame() {
   const [pendingConfirm, setPendingConfirm] = useState<{ title: string; message: string; action: () => void } | null>(null);
   const pendingConfirmRef = useRef(false);
   useEffect(() => { pendingConfirmRef.current = pendingConfirm !== null; }, [pendingConfirm]);
+  const showSettingsRef = useRef(false);
+  useEffect(() => { showSettingsRef.current = showSettings; }, [showSettings]);
 
   useEffect(() => { levelRef.current = level; }, [level]);
   useEffect(() => { modeRef.current = mode; }, [mode]);
@@ -433,27 +471,56 @@ export function StarlineGame() {
   useEffect(() => {
     starsRef.current = createStars(155);
     try {
-      const draft = window.localStorage.getItem(DRAFT_KEY);
-      if (draft) {
-        const parsed = JSON.parse(draft) as Level;
-        // A deliberate second render: the exported HTML is built with the
-        // starter level, so the first client render has to match it, and
-        // localStorage only gets a say after mount. The rule is right that
-        // this cascades; here the cascade is the feature.
-        // eslint-disable-next-line react-hooks/set-state-in-effect
-        if (Array.isArray(parsed.items)) installLevel(parsed, true);
+      // A shared link wins over the local draft: the player followed it to see
+      // somebody else's sector, not to resume their own. Reading it also clears
+      // the fragment, so a reload does not reopen it over the later edits.
+      const shared = levelDocument.readShareFromLocation();
+      let restored: Level | null = shared.document;
+      if (!restored) {
+        const draft = window.localStorage.getItem(DRAFT_KEY);
+        // A draft too corrupt to parse must not take the editor down with it.
+        try { restored = draft ? levelDocument.parse(draft) : null; } catch { restored = null; }
       }
+      // A deliberate second render: the exported HTML is built with the
+      // starter level, so the first client render has to match it, and
+      // localStorage only gets a say after mount. The rule is right that
+      // this cascades; here the cascade is the feature.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      if (restored) installLevel(restored, true);
+      // Same two-phase load and the same reason: a link that will not decode
+      // has to say so, and there is nowhere earlier to say it from.
+      if (shared.error) flash("SHARED LINK UNREADABLE");
       const library = JSON.parse(window.localStorage.getItem(STORAGE_KEY) || "{}") as Record<string, Level>;
       const names = Object.keys(library).sort();
       setSavedNames(names);
       setLoadName(names[0] || "");
     } catch { /* use the starter level */ }
-  }, [installLevel]);
+  }, [flash, installLevel]);
+
+  // Toolbar Behavior belongs to the user, not to the level, so it is stored
+  // beside the level library rather than inside it — and like the draft above,
+  // it can only be read after mount, because the exported HTML was built
+  // without it.
+  useEffect(() => {
+    try {
+      const stored = JSON.parse(window.localStorage.getItem(SETTINGS_KEY) || "{}") as { sectionMode?: SectionMode };
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      if (stored.sectionMode === "single" || stored.sectionMode === "multiple") setSectionMode(stored.sectionMode);
+    } catch { /* storage can be unavailable */ }
+  }, []);
+
+  // Written where the choice is made rather than from an effect on the value:
+  // one control changes it, and an effect would race the restore above and put
+  // the default back over the stored choice on the way in.
+  const applySectionMode = useCallback((next: SectionMode) => {
+    setSectionMode(next);
+    try { window.localStorage.setItem(SETTINGS_KEY, JSON.stringify({ sectionMode: next })); } catch { /* storage can be unavailable */ }
+  }, []);
 
   useEffect(() => {
     if (mode !== "build") return;
     const timer = window.setTimeout(() => {
-      try { window.localStorage.setItem(DRAFT_KEY, JSON.stringify(level)); } catch { /* storage can be unavailable */ }
+      try { window.localStorage.setItem(DRAFT_KEY, levelDocument.serialize(level)); } catch { /* storage can be unavailable */ }
     }, 300);
     return () => window.clearTimeout(timer);
   }, [level, mode]);
@@ -510,6 +577,15 @@ export function StarlineGame() {
   const saveSatelliteComponent = useCallback((satellite: SatelliteSettings) => {
     const name = window.prompt("Satellite Component name:", "Custom Satellite")?.trim(); if (!name) return;
     updateLevel((current) => ({ ...current, components: [...current.components, { id: `component-${uid()}`, name, kind: "satellite", satellite: structuredClone(satellite) }] })); flash("SATELLITE COMPONENT SAVED");
+  }, [flash, updateLevel]);
+
+  // Saving a built-in Enhancement copies it under a fresh `component-` id
+  // rather than referencing it. normalizeLevel reinstates the built-in library
+  // on every load, replacing same-id entries, so a copy is the only form of one
+  // the user can edit and keep.
+  const saveAsComponent = useCallback((source: ComponentDefinition) => {
+    const name = window.prompt("Component name:", source.name)?.trim(); if (!name) return;
+    updateLevel((current) => ({ ...current, components: [...current.components, { ...structuredClone(source), id: `component-${uid()}`, name }] })); flash("COMPONENT SAVED");
   }, [flash, updateLevel]);
 
   const savePatternComponent = useCallback((pattern: BulletPatternDefinition) => {
@@ -589,21 +665,27 @@ export function StarlineGame() {
   }, [flash, installLevel, loadName]);
 
   const exportLevel = useCallback(() => {
-    const current = levelRef.current;
-    const blob = new Blob([JSON.stringify(current, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url; link.download = `${current.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "starline-level"}.json`;
-    link.click(); URL.revokeObjectURL(url); flash("JSON EXPORTED");
+    try { levelDocument.download(levelRef.current); flash("JSON EXPORTED"); }
+    catch (error) { flash(documentMessage(error, "EXPORT FAILED")); }
   }, [flash]);
 
   const importLevel = useCallback(async (file: File) => {
     try {
-      const parsed = JSON.parse(await file.text()) as Level;
-      if (typeof parsed.length !== "number" || !Array.isArray(parsed.items)) throw new Error("Invalid level");
+      const parsed = await levelDocument.readFile(file);
       installLevel(parsed, true); setCamera(0); editorCameraRef.current = 0; flash("LEVEL IMPORTED");
-    } catch { flash("INVALID LEVEL FILE"); }
+    } catch (error) { flash(documentMessage(error, "INVALID LEVEL FILE")); }
   }, [flash, installLevel]);
+
+  // A whole sector in the URL fragment: no server and no account, the same
+  // trade Pinball already makes. The cap is the library's 256 KB default, and a
+  // sector carrying several hand-drawn sprite assets can reach it -- which is
+  // what the "too large to share" refusal is for.
+  const shareLevel = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(levelDocument.shareLink(levelRef.current));
+      flash("SHARE LINK COPIED");
+    } catch (error) { flash(documentMessage(error, "SHARE FAILED")); }
+  }, [flash]);
 
   // The renderer decides what an explosion looks like. The world only asks for
   // one, which is what lets the simulation stay free of Math.random.
@@ -643,7 +725,7 @@ export function StarlineGame() {
 
   useEffect(() => {
     const keyDown = (event: KeyboardEvent) => {
-      if (editingPatternRef.current || pendingConfirmRef.current) return; // the pattern designer / confirm dialog owns the keyboard while open
+      if (editingPatternRef.current || pendingConfirmRef.current || showSettingsRef.current) return; // the pattern designer / confirm / settings dialog owns the keyboard while open
       const tag = (event.target as HTMLElement | null)?.tagName;
       const editing = tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA";
       if (editing) {
@@ -1113,6 +1195,12 @@ export function StarlineGame() {
 
   const selected = level.items.find((item) => item.id === selectedId) ?? null;
   const componentCategories = ["ENEMIES", "TERRAIN", "GROUPS", "POWERUPS", "UPGRADES", "DECORATIONS", "WEAPONS", "PATTERNS", "ARMOR", "SATELLITES"];
+  // Components are what the user saved; Enhancements are the fixed library that
+  // arrives with every level. The id prefix already told the two apart — it is
+  // what gates the delete button — so the split needed nothing added to the
+  // level format and no migration for levels saved before it.
+  const savedComponents = level.components.filter((component) => component.id.startsWith("component-"));
+  const enhancements = level.components.filter((component) => !component.id.startsWith("component-"));
   const componentCategory = (component: ComponentDefinition) => component.kind === "enemy" ? "ENEMIES" : component.kind === "terrain" ? "TERRAIN" : component.kind === "group" ? "GROUPS" : component.kind === "powerup" ? "POWERUPS" : component.kind === "upgrade" ? "UPGRADES" : component.kind === "decoration" ? "DECORATIONS" : component.kind === "weapon" ? "WEAPONS" : component.kind === "pattern" ? "PATTERNS" : component.kind === "armor" ? "ARMOR" : "SATELLITES";
   const setCameraSafe = (next: number) => {
     if (next + VIEW_W > levelRef.current.length) {
@@ -1122,14 +1210,30 @@ export function StarlineGame() {
     const value = clamp(next, 0, Math.max(0, levelRef.current.length - VIEW_W)); setCamera(value); editorCameraRef.current = value;
   };
 
-  // Every collapsible section in both tool panels goes through here: one state
-  // record for palette categories and Inspector sections alike, keyed by a
+  // Every collapsible section in both tool panels goes through here: state
+  // recorded for palette categories and Inspector sections alike, keyed by a
   // stable slug so a section keeps its state across selection changes, and
   // expanded until the user says otherwise. The chrome is ElectricBlazor's
   // accordion — Starline owns only which sections exist and which are shut.
-  const section = (key: string, title: string, children: ReactNode) => (
-    <EbAccordionItem key={key} title={title} expanded={!collapsedSections[key]} onExpandedChange={(expanded) => setCollapsedSections((current) => ({ ...current, [key]: !expanded }))}>{children}</EbAccordionItem>
+  // The group names the panel a section sits in. It only bites under "single"
+  // Toolbar Behavior, where each panel keeps its own one open section: the
+  // accordion collapses the siblings it can see, and the group is what stops
+  // the palette and the Inspector from closing each other.
+  const section = (key: string, title: string, children: ReactNode, group = "inspector") => (
+    <EbAccordionItem key={key} title={title} expanded={sectionMode === "single" ? openSections[group] === key : !collapsedSections[key]} onExpandedChange={(expanded) => {
+      setOpenSections((current) => expanded ? { ...current, [group]: key } : current[group] === key ? { ...current, [group]: "" } : current);
+      setCollapsedSections((current) => ({ ...current, [key]: !expanded }));
+    }}>{children}</EbAccordionItem>
   );
+
+  // A saved Component and a built-in Enhancement are the same card in two
+  // tabs; only the corner action differs, because only one of the two is the
+  // user's to delete.
+  const componentSections = (entries: ComponentDefinition[], prefix: string) => componentCategories.map((category) => {
+    const inCategory = entries.filter((component) => componentCategory(component) === category);
+    if (!inCategory.length) return null;
+    return section(`${prefix}-${category}`, category, <div className="palette-category-items">{inCategory.map((component) => <div className="component-card-row" key={component.id}><button className={`palette-card ${tool === `component:${component.id}` ? "active" : ""}`} type="button" onClick={() => { if (component.object) { const value = `component:${component.id}` as Tool; setTool(value); toolRef.current = value; setInspectPlayer(false); } else applyEquipmentComponent(component); }}><span className={`sprite-icon ${component.object && !component.object.sprite.startsWith("asset:") ? component.object.sprite : component.kind === "weapon" ? "turret" : component.kind === "armor" ? "energy" : component.kind === "pattern" ? "blade" : "upgrade"}`} /><span><strong>{component.name}</strong><small>{component.object ? "PLACE COMPONENT" : component.kind === "weapon" ? `${component.weapon?.tag.toUpperCase()} WEAPON` : component.kind === "pattern" ? `${component.pattern?.spawns.length ?? 0} EMITTER PATTERN` : component.kind.toUpperCase()}</small></span><b>{component.object ? "+" : component.kind === "pattern" ? "EDIT / USE" : "USE"}</b></button>{component.id.startsWith("component-") ? <button className="component-delete" type="button" onClick={() => deleteComponent(component.id)} title="Delete Component">×</button> : <button className="component-save" type="button" onClick={() => saveAsComponent(component)} title="Save as Component">+</button>}</div>)}</div>, "palette");
+  });
 
   return (
     <main className="editor-app">
@@ -1152,6 +1256,7 @@ export function StarlineGame() {
               ))}
             </span>
           )}
+          <button className="fullscreen-button settings-button" type="button" onClick={() => setShowSettings(true)}><b>⚙</b> SETTINGS</button>
           {mode === "build" ? <button className="test-button" type="button" onClick={enterPlay}><kbd>T</kbd> TEST RUN <b>▶</b></button> : <button className="exit-button" type="button" onClick={exitPlay}><kbd>ESC</kbd> RETURN TO BUILD</button>}
         </div>
       </header>
@@ -1169,6 +1274,7 @@ export function StarlineGame() {
           <button type="button" onClick={loadLevel} disabled={!loadName}>LOAD</button>
           <button type="button" onClick={() => importRef.current?.click()}>IMPORT</button>
           <button type="button" onClick={exportLevel}>EXPORT</button>
+          <button type="button" onClick={() => void shareLevel()}>SHARE</button>
           <input ref={importRef} className="hidden-input" type="file" accept="application/json,.json" onChange={(event) => { const file = event.target.files?.[0]; if (file) void importLevel(file); event.target.value = ""; }} />
         </div>
       </section>
@@ -1180,33 +1286,36 @@ export function StarlineGame() {
           <div className="tool-strip">
             {(["select", "scroll", "erase"] as Tool[]).map((value) => <button type="button" className={tool === value ? "active" : ""} onClick={() => { setTool(value); toolRef.current = value; }} key={value}><b>{value === "select" ? "↖" : value === "scroll" ? "↔" : "⌫"}</b>{value.toUpperCase()}</button>)}
           </div>
-          {/* The OBJECTS / COMPONENTS switch is ElectricBlazor's tabbed card in
-              its bare form, moved below the player card and tools so the strip
-              sits directly on the list it switches — which is also what lets
-              the list live inside the tab panel it belongs to. */}
-          <EbTabbedCard<"objects" | "components">
-            items={[{ value: "objects", label: "OBJECTS" }, { value: "components", label: "COMPONENTS" }]}
+          {/* The OBJECTS / COMPONENTS / ENHANCEMENTS switch is ElectricBlazor's
+              tabbed card in its bare form, moved below the player card and
+              tools so the strip sits directly on the list it switches — which
+              is also what lets the list live inside the tab panel it belongs
+              to. The third tab arrived with the Components split; equal-width
+              tabs went with it, since ENHANCEMENTS does not fit a third of a
+              214px column. */}
+          <EbTabbedCard<PaletteTab>
+            items={[{ value: "objects", label: "OBJECTS" }, { value: "components", label: "COMPONENTS" }, { value: "enhancements", label: "ENHANCEMENTS" }]}
             value={paletteTab}
             onValueChange={setPaletteTab}
             ariaLabel="Palette tabs"
             appearance="bare"
             tabStyle="segmented"
-            equalWidthTabs
             className="palette-tabs"
-            panelContent={(tab) => <EbAccordion allowMultiple className="palette-list">
+            panelContent={(tab) => <EbAccordion allowMultiple={sectionMode === "multiple"} className="palette-list">
             {tab === "objects" ? ["ENEMIES", "TERRAIN", "GROUPS", "POWERUPS", "UPGRADES", "DECORATIONS"].map((category) => section(category, category,
               <div className="palette-category-items">
                 {palette.filter((entry) => entry.category === category).map((entry) => <button type="button" className={`palette-card ${tool === entry.key ? "active" : ""}`} onClick={() => { setTool(entry.key); toolRef.current = entry.key; setInspectPlayer(false); }} key={entry.key}>
                   <span className={`sprite-icon ${entry.sprite}`} /><span><strong>{entry.label}</strong><small>{entry.meta}</small></span><b>+</b>
                 </button>)}
-              </div>)) : <>
+              </div>, "palette")) : tab === "components" ? <>
               <div className="asset-actions"><button type="button" onClick={() => setEditingAsset({ id: uid(), name: "New Raster", kind: "raster", width: 16, height: 16, pixels: Array(256).fill("") })}>+ RASTER SPRITE</button><button type="button" onClick={() => setEditingAsset({ id: uid(), name: "New Vector", kind: "vector", width: 256, height: 256, shapes: [] })}>+ VECTOR SPRITE</button></div>
-              {level.assets.length > 0 && section("SPRITES", "SPRITES", <div className="palette-category-items">{level.assets.map((asset) => <div className="component-card-row" key={asset.id}><button className="palette-card" type="button" onClick={() => setEditingAsset(structuredClone(asset))}><SpriteAssetPreview asset={asset} /><span><strong>{asset.name}</strong><small>{asset.kind.toUpperCase()} / {asset.width}×{asset.height}</small></span><b>EDIT</b></button><button className="component-delete" type="button" onClick={() => deleteSpriteAsset(asset.id)} title="Delete sprite">×</button></div>)}</div>)}
-              {componentCategories.map((category) => { const entries = level.components.filter((component) => componentCategory(component) === category); if (!entries.length) return null; const collapseKey = `COMP-${category}`; return section(collapseKey, category, <div className="palette-category-items">{entries.map((component) => <div className="component-card-row" key={component.id}><button className={`palette-card ${tool === `component:${component.id}` ? "active" : ""}`} type="button" onClick={() => { if (component.object) { const value = `component:${component.id}` as Tool; setTool(value); toolRef.current = value; setInspectPlayer(false); } else applyEquipmentComponent(component); }}><span className={`sprite-icon ${component.object && !component.object.sprite.startsWith("asset:") ? component.object.sprite : component.kind === "weapon" ? "turret" : component.kind === "armor" ? "energy" : component.kind === "pattern" ? "blade" : "upgrade"}`} /><span><strong>{component.name}</strong><small>{component.object ? "PLACE COMPONENT" : component.kind === "weapon" ? `${component.weapon?.tag.toUpperCase()} WEAPON` : component.kind === "pattern" ? `${component.pattern?.spawns.length ?? 0} EMITTER PATTERN` : component.kind.toUpperCase()}</small></span><b>{component.object ? "+" : component.kind === "pattern" ? "EDIT / USE" : "USE"}</b></button>{component.id.startsWith("component-") && <button className="component-delete" type="button" onClick={() => deleteComponent(component.id)} title="Delete Component">×</button>}</div>)}</div>); })}
-            </>}
+              {level.assets.length > 0 && section("SPRITES", "SPRITES", <div className="palette-category-items">{level.assets.map((asset) => <div className="component-card-row" key={asset.id}><button className="palette-card" type="button" onClick={() => setEditingAsset(structuredClone(asset))}><SpriteAssetPreview asset={asset} /><span><strong>{asset.name}</strong><small>{asset.kind.toUpperCase()} / {asset.width}×{asset.height}</small></span><b>EDIT</b></button><button className="component-delete" type="button" onClick={() => deleteSpriteAsset(asset.id)} title="Delete sprite">×</button></div>)}</div>, "palette")}
+              {componentSections(savedComponents, "COMP")}
+              {!savedComponents.length && !level.assets.length && <p className="palette-empty">Nothing saved yet. Select an Object and choose SAVE AS COMPONENT, or keep a copy of one of the Enhancements.</p>}
+            </> : componentSections(enhancements, "ENH")}
           </EbAccordion>}
           />
-          <p className="palette-hint">{paletteTab === "objects" ? "Choose an object, then click the playfield to place it." : "Place saved Objects, equip Components, or author custom sprite assets."}</p>
+          <p className="palette-hint">{paletteTab === "objects" ? "Choose an object, then click the playfield to place it." : paletteTab === "components" ? "What you have saved: place your Objects, equip your Components, or author custom sprite assets." : "The built-in library. Apply one to the current selection, or keep an editable copy of it with +."}</p>
         </aside>
 
         <section className="stage-panel">
@@ -1253,7 +1362,7 @@ export function StarlineGame() {
             <div className="type-tag"><span>EDITING</span><strong>PLAYER SHIP</strong><span className={`player-icon ${level.player.sprite.startsWith("asset:") ? "asset-custom" : level.player.sprite}`} /></div>
             <label className="field wide"><span>SHIP SPRITE</span><select value={level.player.sprite} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, sprite: event.target.value as PlayerSpriteChoice } }), true, "player-sprite")}><optgroup label="PLAYER SHIPS">{["dart", "raven", "nova", "striker"].map((sprite) => <option value={sprite} key={sprite}>{sprite.toUpperCase()}</option>)}</optgroup>{level.assets.length > 0 && <optgroup label="CUSTOM SPRITES">{level.assets.map((asset) => <option value={`asset:${asset.id}`} key={asset.id}>{asset.name.toUpperCase()}</option>)}</optgroup>}</select></label>
             <label className="range-field"><span><b>SHIP HUE TINT</b><em>{level.player.tint}°</em></span><input type="range" min="0" max="359" value={level.player.tint} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, tint: Number(event.target.value) } }), true, "player-tint")} /></label>
-            <EbAccordion allowMultiple className="inspector-sections">
+            <EbAccordion allowMultiple={sectionMode === "multiple"} className="inspector-sections">
             {section("flight", "FLIGHT", <>
               <label className="range-field"><span><b>X SPEED</b><em>{level.player.xSpeed}u/s</em></span><input type="range" min="100" max="800" step="10" value={level.player.xSpeed} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, xSpeed: Number(event.target.value) } }), true, "player-x-speed")} /></label>
               <label className="range-field"><span><b>Y SPEED</b><em>{level.player.ySpeed}u/s</em></span><input type="range" min="100" max="800" step="10" value={level.player.ySpeed} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, ySpeed: Number(event.target.value) } }), true, "player-y-speed")} /></label>
@@ -1302,7 +1411,7 @@ export function StarlineGame() {
             <label className="range-field"><span><b>HUE TINT{selectedIds.length > 1 ? " / ALL" : ""}</b><em>{Math.round(selected.tint)}°</em></span><input type="range" min="0" max="359" value={selected.tint} onChange={(event) => updateSelectedItems((item) => ({ ...item, tint: Number(event.target.value) }), "selection-tint")} /></label>
             <button className="mini-reset" type="button" onClick={() => updateSelectedItems((item) => ({ ...item, tint: 0 }), "selection-tint")}>RESET TINT</button>
             <label className="range-field"><span><b>SIZE{selectedIds.length > 1 ? " / ALL" : ""}</b><em>{selected.size}px</em></span><input type="range" min="12" max="220" value={selected.size} onChange={(event) => updateSelectedItems((item) => ({ ...item, size: Number(event.target.value) }), "selection-size")} /></label>
-            <EbAccordion allowMultiple className="inspector-sections">
+            <EbAccordion allowMultiple={sectionMode === "multiple"} className="inspector-sections">
             {section("transform", "TRANSFORM", <>
               <label className="range-field"><span><b>SCALE{selectedIds.length > 1 ? " / ALL" : ""}</b><em>{selected.scale.toFixed(2)}×</em></span><input type="range" min="0.25" max="4" step="0.05" value={selected.scale} onChange={(event) => updateSelectedItems((item) => ({ ...item, scale: Number(event.target.value) }), "selection-scale")} /></label>
               <label className="range-field"><span><b>ROTATION{selectedIds.length > 1 ? " / ALL" : ""}</b><em>{Math.round(selected.rotation)}°</em></span><input type="range" min="-180" max="180" step="1" value={selected.rotation} onChange={(event) => updateSelectedItems((item) => ({ ...item, rotation: Number(event.target.value) }), "selection-rotation")} /></label>
@@ -1363,6 +1472,10 @@ export function StarlineGame() {
         <button type="button" onClick={() => setPendingConfirm(null)}>CANCEL</button>
         <button type="button" className="confirm-commit" onClick={() => { const act = pendingConfirm.action; setPendingConfirm(null); act(); }}>CONFIRM</button>
       </>}><p>{pendingConfirm.message}</p></EbDialog>}
+      {showSettings && <EbDialog visible title="EDITOR SETTINGS" onVisibleChange={(open) => { if (!open) setShowSettings(false); }} className="settings-dialog" footerContent={<button type="button" onClick={() => setShowSettings(false)}>DONE</button>}>
+        <label className="field wide"><span>TOOLBAR BEHAVIOR</span><select value={sectionMode} onChange={(event) => applySectionMode(event.target.value as SectionMode)}><option value="multiple">SEVERAL SECTIONS OPEN</option><option value="single">ONE SECTION AT A TIME</option></select></label>
+        <p className="inspector-note">Governs the collapsible sections in the palette and the Inspector alike. Kept in this browser rather than in the level.</p>
+      </EbDialog>}
       {editingPattern && <BulletPatternStudio pattern={editingPattern.pattern} onApply={applyPatternEditor} onSaveComponent={savePatternComponent} onCancel={() => setEditingPattern(null)} />}
     </main>
   );

@@ -4,7 +4,100 @@ This file is the planning backlog for ideas that are not yet approved for implem
 
 When a future item is completed, move it to the **Completed Features** archive at the end of this file and renumber the archive sequentially as `C-00`, `C-01`, and so on. Reuse the vacated `F-` number for the remaining active backlog so that both sections stay compact.
 
-There are currently no active `F-` items.
+## F-00 — Equip a saved Pattern Component on the player
+
+A saved **Pattern Component** can be applied to an enemy or a group — select one, click the card — but there is no path to the player's guns. Clicking a Pattern card with nothing selected opens the designer on the definition itself, and a player weapon slot offers only ADD/EDIT BULLET PATTERN, which authors the pattern belonging to that slot's weapon rather than choosing one already saved. The satellite has the same gap: it picks a Weapon Component, and that weapon's pattern is reachable only through the designer.
+
+Add a way to assign an existing Pattern Component to a player weapon slot and to the satellite — a pattern picker beside the weapon select is the obvious form, and the Enhancements/Components card could equip the current slot the way a Weapon Component does. Decide whether assigning stores a copy on the weapon, which is the shape the data already has since `Weapon` carries its `pattern` inline, or a reference that later edits to the Component would track; what happens to a slot's pattern when its weapon changes; and how the Inspector shows which Component a slot's pattern came from and clears it back to standard fire.
+
+## F-01 — Adjustable sidebar widths
+
+Both tool panels are fixed columns: `.workspace` is a three-column grid of 214px, the stage, and 264px, with a narrower pair below 1050px. Give the palette and the Inspector a drag handle on their inner edge so either can be widened — worth more now that the palette carries three tabs whose labels only just fit, and the Inspector holds the weapon, armor and satellite sections.
+
+Store the widths as a user preference beside Toolbar Behavior in `starline-editor-settings-v1` rather than in the level. Define minimums and a maximum that keeps the stage above its `minmax(460px, 1fr)` floor, make the handles keyboard-operable, and decide how a stored width interacts with the responsive breakpoints and with the stacked layout below 760px, where the columns become rows and a width means nothing.
+
+## F-02 — Vertical overhead shooter mode
+
+Add a level mode that scrolls vertically instead of horizontally. Nearly everything in the game assumes the horizontal axis: the world advances along x, `level.length` measures the sector that way, the camera and the minimap are horizontal, the player's `forwardLimit` is a percentage across the screen, and the editor playfield is a wide strip with a horizontal scrubber. The scroll axis belongs to the simulation, so this begins as a change in `@ccllc/arcade` — a different repository — with the renderer, the editor camera, the minimap and the palette placement rules following here.
+
+Decide whether the axis is a property of the level or of a separate game mode, how existing levels declare themselves (a defaulted field keeps old levels loading), what the playfield aspect becomes in the editor, and whether movement patterns like sine and zigzag are expressed relative to the scroll axis or stay absolute. Enemy formations, decoration parallax, and the satellite's tether all need the same treatment.
+
+## F-03 — Overhead twin-stick shooter mode
+
+A second new mode, this one with no scroll axis at all: an arena the player moves freely inside, one stick flying the ship and the other aiming and firing, in the shape of *Geometry Wars*. The input half has a precedent — the satellite (`C-09`) already established a twin-stick map where the left stick flies and the right stick aims, with a mouse-and-keyboard fallback — so the new work is the arena itself: bounds instead of a sector length, spawn waves instead of placed positions along a line, and a camera that follows or holds.
+
+Like `F-02` this is simulation work in `@ccllc/arcade` before it is editor work here. Define how a level authored for an arena is laid out in the editor when there is no scroll to travel along, how waves are described, and what the existing item types mean without a scroll axis — terrain, decorations and parallax all assume one.
+
+## F-04 — Bullet colour for ordinary weapon fire
+
+The bullet-pattern designer already picks colours, per array, but ordinary fire cannot be recoloured. A player Weapon Component carries a `color` — the built-ins are lime, cyan and amber — and nothing in the Inspector edits it; an enemy's `Weapon` has no colour field at all, so its shots take their colour from the projectile type the renderer is given. Expose a colour control for both.
+
+The two halves are not the same size of change: surfacing the existing `ComponentWeapon.color` is work in this repository, while giving an enemy `Weapon` a colour adds a field to the level contract in `@ccllc/arcade`. Decide the default for levels saved before it, whether the projectile sprite choice keeps any say once a colour is set, and whether the muzzle flash, impact burst and shield-absorb effects follow the bullet colour or stay as they are.
+
+## F-05 — Presentation mode
+
+A hotkey that strips everything that is not the game — topbar, level bar, both tool panels, the stage toolbar, minimap and shortcut bar — leaving the playfield alone on screen for showing a level off. This is not fullscreen, which `F` already does while keeping all the chrome; the two should compose, so presentation mode inside fullscreen gives a bare game on a bare screen.
+
+**`P` is not free.** It is pause/resume during play, and the pause overlay tells the user so. Pick one: bind presentation mode to `P` only in build mode, give it another key, or move pause. Also decide whether it is a mode the editor enters and leaves, what returns from it (Escape is already crowded), whether it forces playtest or can present a paused editor view, and how it interacts with the responsive layouts.
+
+## F-06 — Import raster image files as sprite assets
+
+Let the user bring a PNG, GIF or JPEG in as a sprite asset instead of drawing every sprite by hand in the raster editor. The importer has to resolve the image onto the editor's pixel grid: choose or infer a canvas resolution, resample to it, decide how transparency and near-transparent edges are treated, and optionally quantise the palette so the result stays editable as pixel art rather than becoming an unpaintable photo.
+
+The raster editor lives in `@ccllc/studio`, so the import UI belongs there, while the size limits belong to whatever this repository is willing to carry: assets travel inside the level through `localStorage`, export files and share links, and a photograph pasted at full resolution would blow all three. Define the ceiling, what happens when an import exceeds it, and how imported assets are attributed in the asset list.
+
+## F-07 — Import SVG files as vector sprite assets
+
+Bring SVG artwork in as a **vector** sprite asset: parse the file into the vector editor's own shape model so it arrives editable — nodes, fills, strokes, ordering and transforms — rather than being flattened to a preview or rasterised onto a pixel grid. Half of that is already solved, since the vector editor stores editable source data rather than a flattened image; the import is the mapping from arbitrary SVG onto that model.
+
+Imported SVG is untrusted input and must be validated before it is trusted, in the same spirit as `normalizeLevel`: no scripts, no external references, no remote fetches. Define what becomes of the constructs the vector document has no shape for — gradients, filters, clip paths, masks, text, and transforms it cannot express — whether they are approximated, dropped with a warning, or refuse the import outright, and how a file that is mostly unsupported reports what was lost. The vector editor lives in `@ccllc/studio`, so the parser and its UI belong there.
+
+## F-08 — Editable backdrops
+
+The backdrop is hardcoded in the renderer: one purple nebula gradient and 155 procedurally scattered stars, generated at mount. A level carries no background of its own — `Level` holds version, name, length, player, items, assets and components — so every sector looks the same behind the action. Let the level author its backdrop: a base colour or gradient, star density and colour or none at all, and one or more parallax layers that can use a sprite asset.
+
+This adds a field to the level contract in `@ccllc/arcade` and rendering here. Define the layer model and how it relates to the existing background decorations, which already scroll at their own parallax and largely cover this ground for discrete objects; the useful distinction is probably that a backdrop tiles or stretches while a decoration is placed. Keep the starfield's presentation-side freedom — it is not simulation state and is allowed its `Math.random` — and give old levels the current look by default.
+
+## F-09 — Foreground terrain
+
+Terrain today is a single colliding layer drawn with everything else: only `enemy` and `terrain` items take player bullets, while decorations, which do have a `foreground` draw layer with opacity and parallax, are scenery that nothing can hit. Neither gives a ceiling or a rock face that passes in front of the ship and still stops a shot.
+
+Add terrain that draws in front of the player while keeping its collision, and decide the pieces that follow: whether "foreground" is a flag on the existing terrain type or a new type, whether foreground terrain is opaque or takes the decoration layer's opacity, how it reads in the editor when it covers the objects being placed, and how the player is meant to survive a screen where the danger is drawn over the ship. Collision belongs to the simulation in `@ccllc/arcade`; the draw order belongs here.
+
+## F-10 — GameBase co-op compatibility
+
+Make a run playable as lockstep co-op on the GameBase system. Most of the foundation is already there and needs nothing: the simulation in `@ccllc/arcade/shmup` runs a fixed 120 Hz step, never reads a clock, never calls `Math.random`, and already does its trigonometry through the deterministic `sin`/`cos`/`atan2` helpers in `@ccllc/arcade/core` — the only `Math` trig left in that package sits inside comments explaining the rule. Starline's own `Math.random` is confined to particles and the starfield, which are render-side and are allowed to differ between players. `@ccllc/arcade/net` ships the rest of the machinery: WebSocket and loopback transports, a seeded xorshift128 generator, and an input log recording `[step, bitstring]` against a named action list.
+
+Starline does not import `@ccllc/arcade/net` at all, so wiring it is the first work — but two things block a straight wiring job, and both are decisions before they are code:
+
+- **The world is single-player.** `WorldInput` carries one `dx`/`dy`/`fire`, and a `World` owns one `state.player`. A second ship is a change to the simulation model in `@ccllc/arcade`: lives, score, weapon slots, satellites, respawn and the victory condition all assume one player today.
+- **Not all of Starline's input fits the log.** The recorder captures booleans per named action, and its `axis()` derives an axis from two of them, but `WorldInput.satellitePointer` is a continuous `{x, y}` read straight off the canvas pointer, and `satelliteAxis` comes from analog pad axes. The mouse-aimed satellite control that is half of `C-09` has no representation in a bitstring. Either the log format grows analog channels, or aiming is quantised for co-op and the pointer scheme stays host-local.
+
+The remainder is session work: a lobby or invite path, agreeing the level and its custom sprite assets before the first step so both peers normalize to identical data, a step-scheduling policy for latency, and a desync check — the input log and `replayRun` together already give a way to prove two peers agree. `ACTIONS` in this repository is already the named action list `createInputRecorder` wants, and `createLoopbackPair` makes a two-player test possible without a server.
+
+One nit found while reading for this: the editor's motion-path preview predicts a selected object's sine and zigzag path with `Math.sin`/`Math.asin` while the simulation flies it with the shared helpers, so the drawn path can differ slightly from the real one. It is presentation and cannot desync anything, but it is the one place in this repository where the two trigonometries disagree about the same curve.
+
+## F-11 — Adopt more of the ElectricBlazor suite
+
+Starline uses four of the roughly sixty components `@electricblazor/react` ships: the accordion behind both tool panels, the tabbed card behind the palette switch, the numeric input in the Inspector, and the dialog behind the confirms and the settings. Everything else is hand-written — 41 buttons, 34 range sliders, 17 selects and two checkbox toggles in `StarlineGame.tsx` alone, each with its own rules in `globals.css`. Replace what the suite already does better, and take the capability where the suite has one and Starline has none.
+
+The clearest candidates, roughly in order of what they would pay back:
+
+| Hand-rolled today | Suite equivalent |
+| --- | --- |
+| Every `<button>` and its CSS | `EbButton` (variants, disabled, focus ring) |
+| 34 `.range-field` sliders | `EbNumericInput` with its slider enabled — already imported, currently passed `sliderEnabled={false}` and hidden in CSS |
+| The NEW / SAVE / LOAD / IMPORT / EXPORT row | `EbSaveMenu` (`@electricblazor/react/save`) |
+| `.palette-card` grids | `EbTile` / `EbTileGrid` (`/tile`) |
+| Weapon slots and inventory order | `EbSortableList` with `moveItem` |
+| Fixed side-panel widths (`F-01`) | `EbSplitter`, with `normalizeBounds`, `clampRatio` and `ratioFromPointer` |
+| Bullet colour fields (`F-04`) | `EbColorPicker` / `EbColorSwatch` / `EbCssColorField` (`/color`) |
+
+`F-01` and `F-04` should be built on those rather than hand-rolled, so the two entries are worth reading together with this one.
+
+Two things bound the sweep. **The suite has no select and no toggle** — there is no `EbSelect` or `EbSwitch` anywhere in the package — so the 17 selects and the two checkbox toggles stay native whatever else moves. And **the colour pickers stay rejected for hue tint**: they pick colours, while tint is a hue *rotation*, and a swatch showing a colour the game never renders is worse than the slider. That rejection is recorded in AGENTS.md and is specific to tint; it does not extend to `F-04`, where a bullet colour really is a colour.
+
+Adopt per component rather than in one pass, with the test being whether the result survives the cockpit's density: Starline runs 8–10px mono type and roughly 31px controls, tighter than the suite's defaults, and the palette's tab strip already needed overrides to fit two tabs and more to fit three. Keep the swaps that hold up and revert the ones that fight it. The mechanics are settled and should not change: `styles.css` is imported once in `layout.tsx` and already carries every component's stylesheet, including the subpath ones, so a new component needs no new stylesheet; `theme.css` is never loaded, because the `--eb-*` bridge in `globals.css` maps the suite's tokens onto Starline's palette; and appearance overrides go through the suite's stable public class names scoped under `.workspace`. The package is a committed tarball, so a component that needs a newer release means re-packing `vendor/` first.
 
 # Completed Implementation Plan
 
@@ -192,3 +285,26 @@ Add performance and readability safeguards: a configurable projectile cap, warni
 > sprite editors (C-04/C-05 territory) received. Starline carries only the
 > wiring: open the designer, store patterns in the level, and render what the
 > world fires. This file's C-10 spec remains the design record.
+## C-11 — Scrollable palette pane and per-section scrolling
+
+The Object/Component pane scrolls as one column. The panel heading, player card, tool strip and OBJECTS/COMPONENTS/ENHANCEMENTS strip travel with the list rather than staying pinned above it, and `.palette-panel` is the pane's only scrollport — the accordion inside the tab panel, which used to own the scrolling, now takes its natural height. Each expanded palette section additionally scrolls inside its own card once it outgrows 46vh, so one crowded category cannot push every sibling section past the bottom of the pane.
+
+The stacked layout below 760px keeps neither scrollport, because the page itself scrolls there and a nested one would fight it. The Inspector was left on its existing whole-panel scroll; capping its sections would have trapped the sliders inside short scrollports for no gain.
+
+> Completed 2026-08-19. The pane taking a scrollbar of its own costs the 214px column about 15px of width, which is why both side panels now ask for a thin one, and why the tab strip sizes its tabs to their labels instead of splitting the width three ways.
+
+## C-12 — Toolbar Behavior setting
+
+An **EDITOR SETTINGS** dialog, opened from the topbar and sharing the confirm dialog's chrome, carries a single **TOOLBAR BEHAVIOR** choice: *several sections open* — the original behavior, and still the default — or *one section at a time*. It governs the collapsible sections in the palette and in the Inspector alike, each panel keeping its own one open section so that opening a palette category never shuts an Inspector section.
+
+The choice is a property of the user rather than of the level, so it is stored in `starline-editor-settings-v1` in localStorage, stays out of level save/load, export/import and undo history, and is restored after mount for the same reason the level draft is: the exported HTML was built without it. It is written where the choice is made rather than from an effect on the value, so the restore cannot be raced by a write of the default.
+
+> Completed 2026-08-19. Switching to *one section at a time* leaves whichever section each panel opened last still open; a panel that has not opened one yet — a fresh load, for instance — starts fully collapsed, which is the honest reading of the setting rather than an oversight.
+
+## C-13 — Saved Components separated from built-in Enhancements
+
+The palette's COMPONENTS tab held two different things: the definitions the user had saved, and the fixed equipment library that arrives with every level. **Components** now means only the former — a saved Object with its settings, or a saved weapon, armor, satellite or pattern — alongside the custom sprite assets, which are authored content by the same argument. The built-in library moved to a third **ENHANCEMENTS** tab, where each card carries a **+** action that saves an editable copy of it into Components under a fresh id.
+
+No change to the level format and no migration were needed: the id prefix already told the two apart, since `normalizeLevel` reinstates the built-ins on every load with fixed ids (`weapon-pulse`, `armor-forcefield`, …) while anything the user saves is minted as `component-…` — the same test that has always gated the delete button. A saved copy is the only form of a built-in that can be edited and kept, because the library replaces same-id entries as a level loads.
+
+> Completed 2026-08-19. Both tabs render the same card through one helper; only the corner action differs, because only one of the two is the user's to delete.
