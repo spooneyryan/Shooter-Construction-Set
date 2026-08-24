@@ -321,4 +321,4 @@ Custom assets key on identity rather than content: they are documents the Sprite
 
 Needed `@ccllc/arcade` to move from `^1.3.5` to a build carrying the `render` module. The 2.x major was the coop wire protocol and does not apply here, which the arcade's own journal had already established for Pinball; the bump was a version and a lockfile, with no source change.
 
-> Completed 2026-08-24. Pinned to `2.0.2-dev.178` off the dev channel, because `render` is newer than any release — the pin should move to a stable `^2.0.x` once GameBase cuts one.
+> Completed 2026-08-24. Landed first against `2.0.2-dev.178` off the dev channel, because `render` was newer than any release; GameBase cut **2.0.2** the same day and both `@ccllc/arcade` and `@ccllc/studio` now sit on `^2.0.2`. Studio moved with it deliberately rather than being left behind on `^1.3.5`: the two release in lockstep from one repository and studio's types are built against the arcade's, so a 1.3.5 studio beside a 2.0.2 arcade is drift waiting to be found later.
