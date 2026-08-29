@@ -61,9 +61,16 @@ same variable so they verify the layout actually shipped. A follow-up step
 asserts `dist/client/_next` exists in case the empty variable ever fails to
 reach the build. On `master` only, the Deploy stage uploads the prebuilt
 `dist/client` via `AzureStaticWebApp@0` using a **secret pipeline variable
-`SWA_DEPLOYMENT_TOKEN`** (from the SWA's "Manage deployment token").
-`PLACEHOLDER-` values (public URL, environment name) must be filled in; PR
-validation comes from a branch policy, not YAML. The earlier arcade-tenant
+`SWA_DEPLOYMENT_TOKEN`**. The target is the **`shmup`** Static Web App at
+`https://wonderful-mushroom-0edd54a0f.7.azurestaticapps.net/`, deploying to
+the `shmup-production` environment; PR validation comes from a branch policy,
+not YAML.
+
+Note the source defaults still describe the arcade (`/games/starline` in
+`next.config.ts`, the arcade URL in `layout.tsx`), so a plain local
+`npm run build` produces an arcade-shaped export. The pipeline overrides both,
+which is the only build that ships. Flip the defaults if the arcade staging is
+retired. The earlier arcade-tenant
 design — publish a `/games/starline/` overlay artifact and wake the shared
 arcade deploy — lives in git history at `224cb96` if the game rejoins the
 arcade.

@@ -1,36 +1,27 @@
-# Azure DevOps: validate and deploy Starline's static export to its own Azure
-# Static Web App.
+# Build and deploy for Starline, standalone on its own Azure Static Web App.
 #
-# Existing Azure setup this file assumes:
-#   - Static Web App: shmup (resource group max12charact_group)
-#   - Production branch: master
+# Static Web Apps is the whole hosting story: the build is a pure static
+# export — no server rendering, no API routes, state in localStorage — so
+# there is nothing for an App Service to run. The Free tier carries it.
 #
-# The game is a static export — `output: "export"`, one `"use client"`
-# component, levels in localStorage — so Static Web Apps is the whole hosting
-# story and there is nothing for a server to run. The Cloudflare Worker and the
-# D1/Drizzle wiring in this repository are template scaffolding the game does
-# not use; nothing here builds or deploys them.
+# This build targets the SWA's *root*, so the STARLINE_* knobs below override
+# the source defaults, which still point at the arcade's /games/starline/
+# staging. The earlier arcade-tenant pipeline (publish an overlay artifact,
+# wake the shared deploy) is in git history at 224cb96 if the game ever moves
+# back in with the other games.
 #
-# TWO SERVICE CONNECTIONS ARE REQUIRED, and neither exists yet in this project:
+# Target: the "shmup" Static Web App. Its deployment token is already held in
+# the secret pipeline variable SWA_DEPLOYMENT_TOKEN, and its address is in
+# STARLINE_PUBLIC_URL below.
 #
-#   1. "Starline GameBase NPM" — an npm service connection for
-#      https://pkgs.dev.azure.com/ccllc/Games/_packaging/GameBase/npm/registry/
-#      holding a PAT issued in the *ccllc* organization with Packaging (Read).
-#      This repository lives in MorrisonHotel and the feed lives in ccllc, so
-#      the build identity cannot reach it on its own — an earlier note in this
-#      file claimed the feed was in this organization and needed no connection,
-#      which is why `npm ci` fails with E401 without one.
-#
-#   2. "shmup-ServCon" — an Azure Resource Manager service connection scoped to
-#      the subscription holding the app, whose identity has Contributor on the
-#      Static Web App or on max12charact_group. AzureStaticWebApp authenticates
-#      with a deployment token rather than an ARM connection, so the token is
-#      read off the app itself below and nothing is pasted into a secret
-#      variable. Listing that secret is what needs Contributor; Website
-#      Contributor is not enough.
-#
-# For pull-request validation in Azure Repos, add this pipeline as a Build
-# Validation branch policy; Azure Repos does not use the YAML `pr` trigger.
+# What is still outside this file:
+#   - Reader on the GameBase feed for this project's build service, so
+#     npmAuthenticate can restore the @ccllc packages.
+#   - Approvals, if wanted, on the `shmup-production` environment. Referencing
+#     it here creates it on the first run; approvals are attached in the
+#     environment's own settings.
+#   - PR validation, from a branch policy pointing at this pipeline — Azure
+#     Repos has no `pr:` trigger in YAML.
 
 trigger:
   branches:
@@ -38,120 +29,90 @@ trigger:
       - master
       - dev*
 
-pool:
-  vmImage: "ubuntu-latest"
-
 variables:
-  staticWebAppName: "shmup"
-  azureServiceConnection: "shmup-ServCon"
-  # The built site, and the folder uploaded verbatim.
-  releaseDir: "dist/client"
   # Baked into the export at build time (next.config.ts, app/layout.tsx) and
-  # read again by tests/rendered-html.test.mjs, so the suite verifies the layout
-  # this pipeline actually ships. This is the app's own hostname because the
-  # build targets the root of its own Static Web App rather than the shared
-  # arcade's /games/starline/ staging.
-  STARLINE_PUBLIC_URL: "https://wonderful-mushroom-0edd54a0f.7.azurestaticapps.net/"
+  # read again by tests/rendered-html.test.mjs, so the suite verifies the
+  # layout this pipeline actually ships. The empty prefix means "the site
+  # root"; the public URL feeds metadataBase for the social-card links.
+  STARLINE_PUBLIC_URL: https://wonderful-mushroom-0edd54a0f.7.azurestaticapps.net/
 
-steps:
-  - checkout: self
-    clean: true
+stages:
+  - stage: Build
+    displayName: Build & verify
+    jobs:
+      - job: build
+        displayName: Install, lint, test
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - task: NodeTool@0
+            displayName: Use Node 22
+            inputs:
+              versionSpec: 22.x
 
-  - task: UseNode@1
-    inputs:
-      version: "22.x"
-    displayName: "Install Node.js"
+          # Writes feed credentials for the @ccllc scope into .npmrc for the
+          # duration of the run. A feed in this organization needs no service
+          # connection, only Reader for the build service on the GameBase feed.
+          - task: npmAuthenticate@0
+            displayName: Authenticate GameBase feed
+            inputs:
+              workingFile: .npmrc
 
-  # @ccllc/arcade and @ccllc/studio come from the GameBase feed in the ccllc
-  # organization, and this pipeline runs in MorrisonHotel, so the build-service
-  # identity cannot reach it on its own. The named npm service connection holds
-  # ccllc credentials with Packaging read; npmAuthenticate injects them for the
-  # registry the repository .npmrc names.
-  - task: npmAuthenticate@0
-    inputs:
-      workingFile: .npmrc
-      customEndpoint: "Starline GameBase NPM"
-    displayName: "Authenticate to the GameBase feed"
+          - script: npm ci
+            displayName: Install
 
-  # That PAT expires, and when it does npm ci fails with a bare E401 several
-  # hundred lines into its own output, which reads like a broken lockfile
-  # rather than an expired credential. One cheap authenticated call first turns
-  # that into a sentence naming what to rotate.
-  - script: |
-      set -euo pipefail
-      if ! npm view @ccllc/arcade version > /dev/null 2>&1; then
-        echo "##vso[task.logissue type=error]The GameBase feed rejected this build's credentials. Rotate the PAT stored in the 'Starline GameBase NPM' service connection: it must be issued in the ccllc organization with Packaging (Read) scope."
-        exit 1
-      fi
-      npm ci
-    displayName: "Install dependencies"
+          - script: npm run lint
+            displayName: Lint
 
-  - script: npm run lint
-    displayName: "Lint"
+          # `npm test` builds first, then asserts on dist/client — the tree
+          # deployed below is the exact one the tests passed against. The
+          # empty prefix is set here, on the step, rather than in the
+          # variables block: a pipeline variable with an empty value is easy
+          # to lose in translation, and this is the one step that must see it.
+          - script: npm test
+            displayName: Build & test (root asset prefix)
+            env:
+              STARLINE_ASSET_PREFIX: ""
+              STARLINE_PUBLIC_URL: $(STARLINE_PUBLIC_URL)
 
-  # `npm test` builds first and then asserts on dist/client, so the tree
-  # deployed below is the exact one the tests passed against. The empty asset
-  # prefix is set here on the step rather than in the variables block: a
-  # pipeline variable with an empty value is easy to lose in translation, and
-  # this is the step that must see it.
-  - script: npm test
-    displayName: "Build and test at the site root"
-    env:
-      STARLINE_ASSET_PREFIX: ""
-      STARLINE_PUBLIC_URL: $(STARLINE_PUBLIC_URL)
+          # If the empty prefix failed to reach the build, the export mirrors
+          # its assets under games/starline/ and the deployed site would 404
+          # on every script. The test suite follows the same variable, so it
+          # cannot catch that by itself — this can.
+          - script: |
+              set -euo pipefail
+              test -d dist/client/_next || { echo "##vso[task.logissue type=error]dist/client/_next is missing — the root asset prefix did not reach the build"; exit 1; }
+            displayName: Assert root layout
 
-  # If the empty prefix failed to reach the build, the export mirrors its assets
-  # under games/starline/ and the deployed site 404s on every script. The test
-  # suite follows the same variable, so it cannot catch that by itself.
-  - script: |
-      set -euo pipefail
-      test -d "$(releaseDir)/_next" || {
-        echo "##vso[task.logissue type=error]$(releaseDir)/_next is missing — the root asset prefix did not reach the build."
-        exit 1
-      }
-    displayName: "Assert the root layout"
+          - task: PublishPipelineArtifact@1
+            displayName: Publish site artifact
+            inputs:
+              targetPath: dist/client
+              artifact: starline-site
 
-  # Kept for rollback and manual upload: the same folder the deploy sends.
-  - task: PublishPipelineArtifact@1
-    inputs:
-      targetPath: "$(releaseDir)"
-      artifact: "starline-site"
-    displayName: "Publish release artifact"
-
-  - task: AzureCLI@2
+  - stage: Deploy
+    displayName: Deploy to Static Web Apps
+    dependsOn: Build
+    # Every pushed branch builds; only master ships.
     condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/master'))
-    inputs:
-      azureSubscription: "$(azureServiceConnection)"
-      scriptType: "bash"
-      scriptLocation: "inlineScript"
-      # Add --resource-group if the name is ever ambiguous in the subscription.
-      inlineScript: |
-        set -euo pipefail
-        token="$(az staticwebapp secrets list \
-          --name "$(staticWebAppName)" \
-          --query "properties.apiKey" \
-          --output tsv)"
-        if [ -z "$token" ]; then
-          echo "##vso[task.logissue type=error]No deployment token came back for $(staticWebAppName). Check that the service connection can list its secrets."
-          exit 1
-        fi
-        echo "##vso[task.setvariable variable=swaDeploymentToken;issecret=true]$token"
-    displayName: "Read the Static Web Apps deployment token"
-
-  - task: AzureStaticWebApp@0
-    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/master'))
-    inputs:
-      azure_static_web_apps_api_token: "$(swaDeploymentToken)"
-      # The export is already built and verified above, so Oryx is skipped
-      # rather than rebuilding the same files more slowly. With the build
-      # skipped, app_location is the folder that gets uploaded and
-      # output_location has nothing left to point at.
-      app_location: "$(releaseDir)"
-      output_location: ""
-      api_location: ""
-      skip_app_build: true
-      skip_api_build: true
-      # Names the production branch so this lands in the production environment
-      # rather than a named preview one.
-      production_branch: "master"
-    displayName: "Deploy to Azure Static Web Apps"
+    jobs:
+      - deployment: deploy
+        displayName: Upload to the Static Web App
+        pool:
+          vmImage: ubuntu-latest
+        environment: shmup-production
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                # The deployment job downloads starline-site to
+                # $(Pipeline.Workspace)/starline-site automatically; the site
+                # is prebuilt, so the task only uploads it.
+                - task: AzureStaticWebApp@0
+                  displayName: Deploy prebuilt export
+                  inputs:
+                    cwd: $(Pipeline.Workspace)/starline-site
+                    app_location: /
+                    skip_app_build: true
+                    skip_api_build: true
+                    azure_static_web_apps_api_token: $(SWA_DEPLOYMENT_TOKEN)
