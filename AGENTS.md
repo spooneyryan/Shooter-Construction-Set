@@ -218,3 +218,61 @@ Consequences you must respect:
 - `npm --prefix` from outside the project can corrupt `package.json` with a
   self-referencing `file:` dependency (see the arcade README). Run npm from
   the repo root.
+
+
+## Product standard
+
+Build exemplary code
+
+- clean, readable, and lightweight
+
+- highly reusable
+
+- fairly highly configurable without becoming feature-heavy
+
+- comparable in quality and polish to Telerik, but intentionally leaner
+
+- browser-compatible by default
+
+- CSS that is very well organized and thoughtfully implemented
+
+
+If user says he has some ideas for later, flesh them out and add them to a file called future.md. Create it if need be.
+
+Favor simple, durable abstractions over large option surfaces. Every component should be easy to understand, easy to consume, and safe to ship.
+
+## Ending a work session
+
+A **work session** ends whenever you finish what was asked and go idle waiting for the next
+prompt &mdash; not only at the end of a large multi-slice request.
+After every turn, whenever a notable chunk of work was done, add an entry to journal.md. Create it if need be.
+  
+Make this a habit rather than something to be asked for each time:
+
+1. **Commit.** Never go idle on an uncommitted working tree. Unattended changes are easy for another session to trip over, and sessions here run in parallel worktrees.
+2. **Merge the work to `dev-claude`**, the branch that collects finished session work. Create it if it does not exist yet (`git branch dev-claude` from the current tip, then push it).
+3. `dev-claude` lives in the **primary checkout**, not in a session's own worktree under `.claude/worktrees/`. Merge outward into it; do not leave the work stranded on the session branch, and do not treat the copy inside a worktree as the real one.
+
+Prefer a rebase onto `dev-claude`'s tip before pushing, so the branch keeps a linear history when several sessions land on it. A plain fast-forward needs no rebase. Never force-push it - another session's work is likely sitting there.
+
+- **Commits here can reach `origin` without an explicit push.** Tooling outside the session has been observed pushing branches and rebasing `Main-RELEASE` onto a session's commit. Check the server with `git ls-remote --heads origin` rather than trusting local refs, and never tell the user something is unpushed without looking.
+
+- **Pushing `Main-RELEASE` publishes.** It is the pipeline's trigger, so it packs every NuGet project and pushes with skip-duplicate, publishes `@electricblazor/react` to the npm registry (skipped when the feed already has that version), and redeploys both demo sites. Land session work on `dev-claude`, and treat a `Main-RELEASE` push as a deliberate release.
+
+Close every work session with the block below, after any other comments. Bold each heading, keep one blank line between sections, and leave the `[[SUMMARY]]` marker unbolded on its own line. Length guidance is in the template; stay within it.
+
+`Things You Have To Do` is for work that only the user can carry out — credentials, approvals, machine configuration, anything outside the repository. `Git Status` reports the actual state of the working tree: branch, whether anything was committed, and what is left uncommitted.
+  
+
+[[SUMMARY]]
+
+**What Got Done:** 1-4 sentences.
+--
+**What Didn't Get Done:** 1-3 sentences.
+--
+**What I Suggest Doing Next:** 1-4 sentences.
+--
+**Things You Have To Do:** 1-4 sentences.
+--
+**Git Status:** 1-3 sentences.
+--
