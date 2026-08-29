@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { createHistory, createLoop, createPerformanceMonitor, defineLibrary, DocumentError, type PerfStats } from "@ccllc/arcade/core";
+import { createHistory, createLoop, createPerformanceMonitor, defineLibrary, defineSettings, DocumentError, type PerfStats } from "@ccllc/arcade/core";
 import { createInput } from "@ccllc/arcade/platform";
 import { createSelection, createEditorCommands, createKeymap } from "@ccllc/arcade/editor";
 import { uniqueId } from "@ccllc/arcade/core";
@@ -101,6 +101,39 @@ type CanvasDrag =
 const STORAGE_KEY = "starline-level-library-v1";
 const DRAFT_KEY = "starline-level-draft-v1";
 const SETTINGS_KEY = "starline-editor-settings-v1";
+
+// Editor preferences, which belong to the person rather than the level and so
+// live beside the library rather than inside it. One field today; the point of
+// the schema is that the second one costs a line instead of another
+// parse/clamp/write triple written out by hand.
+//
+// The store derives its own key from the namespace, so it does NOT read the key
+// above -- that one is read once, below, to carry a choice already made across.
+const editorSettings = defineSettings<{ sectionMode: SectionMode }>({
+  namespace: "starline-editor",
+  version: 1,
+  fields: {
+    sectionMode: { type: "enum", values: ["single", "multiple"], default: "multiple" },
+  },
+});
+
+/**
+ * The one-time carry-over from the hand-rolled key. Toolbar Behavior is a
+ * cosmetic preference and losing it would cost a click, but the rule that a
+ * library must not orphan what a game already stored does not have a size
+ * threshold -- and honouring it here is five lines.
+ */
+function adoptLegacyEditorSettings() {
+  try {
+    const raw = window.localStorage.getItem(SETTINGS_KEY);
+    if (!raw) return;
+    const stored = JSON.parse(raw) as { sectionMode?: unknown };
+    if (stored.sectionMode === "single" || stored.sectionMode === "multiple") {
+      editorSettings.set("sectionMode", stored.sectionMode);
+    }
+    window.localStorage.removeItem(SETTINGS_KEY);
+  } catch { /* a preference is not worth failing a load over */ }
+}
 
 // The level as a document. The library owns the envelope, the version
 // negotiation and the transport; `normalizeLevel` -- which defineLevelFormat
@@ -654,11 +687,11 @@ export function StarlineGame() {
   // it can only be read after mount, because the exported HTML was built
   // without it.
   useEffect(() => {
-    try {
-      const stored = JSON.parse(window.localStorage.getItem(SETTINGS_KEY) || "{}") as { sectionMode?: SectionMode };
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      if (stored.sectionMode === "single" || stored.sectionMode === "multiple") setSectionMode(stored.sectionMode);
-    } catch { /* storage can be unavailable */ }
+    adoptLegacyEditorSettings();
+    // Clamped and defaulted by the schema, so there is nothing to validate here
+    // and no try/catch: a blocked browser gives the store memory, not a throw.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setSectionMode(editorSettings.get("sectionMode"));
   }, []);
 
   // Written where the choice is made rather than from an effect on the value:
@@ -666,7 +699,7 @@ export function StarlineGame() {
   // the default back over the stored choice on the way in.
   const applySectionMode = useCallback((next: SectionMode) => {
     setSectionMode(next);
-    try { window.localStorage.setItem(SETTINGS_KEY, JSON.stringify({ sectionMode: next })); } catch { /* storage can be unavailable */ }
+    editorSettings.set("sectionMode", next);
   }, []);
 
   useEffect(() => {
