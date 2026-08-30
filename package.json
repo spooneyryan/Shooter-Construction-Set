@@ -9,13 +9,13 @@
     "dev": "vinext dev",
     "build": "vinext build",
     "start": "vinext start",
-    "test": "npm run build && node --test tests/rendered-html.test.mjs",
+    "test": "npm run build && node --experimental-strip-types --test tests/rendered-html.test.mjs tests/explosions.test.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "db:generate": "drizzle-kit generate"
   },
   "dependencies": {
-    "@ccllc/arcade": "^2.0.5",
-    "@ccllc/studio": "^2.0.5",
+    "@ccllc/arcade": "^2.0.8-dev.240",
+    "@ccllc/studio": "^2.0.8-dev.240",
     "@electricblazor/react": "file:vendor/electricblazor-react-0.9.2.tgz",
     "drizzle-orm": "0.45.2",
     "react": "19.2.8",

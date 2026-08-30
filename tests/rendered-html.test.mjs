@@ -105,3 +105,32 @@ test("the bullet-pattern designer is wired in, and its engine stayed in the pack
   assert.match(game, /kind: "pattern"/, "pattern components are wired");
   assert.doesNotMatch(game, /function advanceBulletPattern/, "the engine belongs to @ccllc/arcade/shmup, not the app");
 });
+
+test("the explosion designer is wired in, and its engine stayed in the package", async () => {
+  const all = await chunks();
+  // The designer's own header copy, and the role label the game's renderer
+  // reads back — string literals, so they survive minification the way the
+  // pattern designer's does.
+  assert.ok(
+    all.some((source) => source.includes("EXPLOSION DESIGNER")),
+    "the explosion designer did not make it into the bundle",
+  );
+  // `burst.contract` is the report id @ccllc/arcade/burst emits, so its
+  // presence proves the burst module itself was bundled and not just the app's
+  // wiring around it.
+  assert.ok(
+    all.some((source) => source.includes("SHOT DESTROYED")),
+    "the designed explosion roles are missing — app/explosions.ts did not make it in",
+  );
+
+  // Same intent as the pattern designer above: the game wires the feature and
+  // owns none of its arithmetic. Every particle, colour ramp and pixel snap
+  // belongs to @ccllc/arcade/burst, so the app must not grow its own.
+  const game = await readFile(new URL("../app/StarlineGame.tsx", import.meta.url), "utf8");
+  assert.match(game, /<BurstDesigner/, "the designer is mounted");
+  assert.match(game, /drawBurst\(context/, "the renderer draws through the package");
+  assert.doesNotMatch(game, /function advanceBurst/, "the burst engine belongs to @ccllc/arcade/burst, not the app");
+  // The hand-rolled particle spray this replaced. Its return would mean the
+  // designed explosions had been quietly bypassed.
+  assert.doesNotMatch(game, /particlesRef/, "the ad-hoc particle system is gone");
+});

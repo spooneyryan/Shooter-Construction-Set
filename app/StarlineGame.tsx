@@ -8,6 +8,7 @@ import { uniqueId } from "@ccllc/arcade/core";
 import { createTelemetry } from "@ccllc/arcade/telemetry";
 import { createSpriteCache } from "@ccllc/arcade/render";
 import { BulletPatternStudio, SpriteStudio } from "@ccllc/studio";
+import { advanceBurst, burstFrame, createBurstRuntime, drawBurst, type BurstRuntime } from "@ccllc/arcade/burst";
 import { EbAccordion, EbAccordionItem, EbDialog, EbNumericInput, EbTabbedCard } from "@electricblazor/react";
 import { drawSpriteAsset } from "@ccllc/studio/render";
 import {
@@ -48,6 +49,8 @@ import {
   type WorldInput,
 } from "@ccllc/arcade/shmup";
 import { defaultLevel, starterLevels } from "./starter-level";
+import BurstDesigner from "./BurstDesigner";
+import { defaultExplosions, loadExplosions, roleForCount, saveExplosions, tintedBurst, type ExplosionSet } from "./explosions";
 
 type EditorMode = "build" | "playing" | "paused" | "gameover" | "victory";
 
@@ -84,10 +87,13 @@ type PaletteTab = "objects" | "components" | "enhancements";
 type SectionMode = "single" | "multiple";
 type PatternEditorTarget = { kind: "item"; id: string } | { kind: "weapon"; id: string } | { kind: "pattern"; id: string };
 
-// Render-side only. Particles are not simulation state — nothing in the world
-// reads one — so they live here, where Math.random is free to be Math.random.
-type Particle = Point & { vx: number; vy: number; life: number; size: number; color: string };
+// Render-side only. Stars are not simulation state — nothing in the world reads
+// one — so they live here, where Math.random is free to be Math.random.
 type Star = Point & { size: number; speed: number; alpha: number };
+
+/** Enough for a screen of simultaneous deaths; past that the oldest are already
+ *  fading and dropping them costs nothing anyone can see. */
+const MAX_LIVE_BURSTS = 28;
 
 type TransformOrigin = { id: string; x: number; y: number; rotation: number; scale: number };
 type CanvasDrag =
@@ -437,10 +443,16 @@ export function StarlineGame() {
   const dragRef = useRef<CanvasDrag | null>(null);
   const miniDragRef = useRef<{ offset: number } | null>(null);
   const starsRef = useRef<Star[]>([]);
-  // Particles are the renderer's, not the world's. The world asks for an
-  // explosion at a point in a colour; what that means in pixels is decided here,
-  // which is why Math.random can still be Math.random.
-  const particlesRef = useRef<Particle[]>([]);
+  // Explosions are the renderer's, not the world's. The world asks for one at a
+  // point in a colour; which designed burst that means is decided here.
+  //
+  // These used to be a hand-rolled particle spray built with Math.random on the
+  // spot. They are documents now, so the same explosion can be designed, saved
+  // and previewed instead of only ever being read off this one line -- and it is
+  // seeded rather than random, which is what makes the designer's preview show
+  // the thing the game will actually draw.
+  const burstsRef = useRef<BurstRuntime[]>([]);
+  const explosionsRef = useRef<ExplosionSet>(defaultExplosions());
   // Frame statistics, and somewhere for them to go. Both are created once and
   // held in refs: the loop reads them every frame and must not be torn down and
   // rebuilt by a render. Telemetry is off — there is no collector — but it is
@@ -546,6 +558,16 @@ export function StarlineGame() {
   useEffect(() => { pendingConfirmRef.current = pendingConfirm !== null; }, [pendingConfirm]);
   const showSettingsRef = useRef(false);
   useEffect(() => { showSettingsRef.current = showSettings; }, [showSettings]);
+  // The designed explosions belong to this browser rather than to the level:
+  // the level format is the library's, and a field it does not declare would be
+  // dropped by normalizeLevel on the next save. Same standing as the editor
+  // preferences beside them. See F-14 for the per-enemy version, which is a
+  // change to @ccllc/arcade rather than one that can be made here.
+  const [explosions, setExplosions] = useState<ExplosionSet>(defaultExplosions);
+  const [designingBursts, setDesigningBursts] = useState(false);
+  const designingBurstsRef = useRef(false);
+  useEffect(() => { designingBurstsRef.current = designingBursts; }, [designingBursts]);
+  useEffect(() => { explosionsRef.current = explosions; }, [explosions]);
 
   useEffect(() => { levelRef.current = level; }, [level]);
   useEffect(() => { modeRef.current = mode; }, [mode]);
@@ -693,6 +715,14 @@ export function StarlineGame() {
     // and no try/catch: a blocked browser gives the store memory, not a throw.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setSectionMode(editorSettings.get("sectionMode"));
+  }, []);
+
+  // The designed explosions, on the same two-phase load and for the same
+  // reason: the export was built with the defaults, so the first client render
+  // has to match them and localStorage only gets a say after mount.
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setExplosions(loadExplosions());
   }, []);
 
   // Written where the choice is made rather than from an effect on the value:
@@ -864,8 +894,14 @@ export function StarlineGame() {
     installLevel(next, true); setCamera(0); editorCameraRef.current = 0; flash(`LOADED ${loadName.toUpperCase()}`);
   }, [flash, installLevel, loadName]);
 
+  // `parse` before handing a level to the format, in both places below. The
+  // editor holds a plain `Level`; the format's document type is that plus the
+  // envelope it stamps (`format`, `savedAt`), and since 2.0.6 the declarations
+  // say so. Nothing changes at runtime -- `serialize` parses whatever it is
+  // given anyway -- so this makes the call sites state the conversion that was
+  // always happening one layer down.
   const exportLevel = useCallback(() => {
-    try { levelDocument.download(levelRef.current); flash("JSON EXPORTED"); }
+    try { levelDocument.download(levelDocument.parse(levelRef.current)); flash("JSON EXPORTED"); }
     catch (error) { flash(documentMessage(error, "EXPORT FAILED")); }
   }, [flash]);
 
@@ -882,28 +918,34 @@ export function StarlineGame() {
   // what the "too large to share" refusal is for.
   const shareLevel = useCallback(async () => {
     try {
-      await navigator.clipboard.writeText(levelDocument.shareLink(levelRef.current));
+      await navigator.clipboard.writeText(levelDocument.shareLink(levelDocument.parse(levelRef.current)));
       flash("SHARE LINK COPIED");
     } catch (error) { flash(documentMessage(error, "SHARE FAILED")); }
   }, [flash]);
 
   // The renderer decides what an explosion looks like. The world only asks for
   // one, which is what lets the simulation stay free of Math.random.
+  //
+  // `count` is the world's only size signal, and its call sites cluster into
+  // three groups; `roleForCount` is that mapping, and it lives beside the
+  // designs rather than here so the designer can label each role with the
+  // engine's own numbers.
   const spawnBursts = useCallback((bursts: Burst[]) => {
-    const particles = particlesRef.current;
+    const live = burstsRef.current;
+    const set = explosionsRef.current;
     for (const request of bursts) {
-      for (let i = 0; i < request.count; i += 1) {
-        const angle = Math.random() * Math.PI * 2;
-        const speed = 60 + Math.random() * 240;
-        particles.push({ x: request.x, y: request.y, vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed, life: .3 + Math.random() * .55, size: 2 + Math.random() * 5, color: request.color });
-      }
+      const explosion = set[roleForCount(request.count)];
+      live.push(createBurstRuntime(tintedBurst(explosion, request.color), request.x, request.y));
     }
+    // A wall of simultaneous deaths is the one case that can pile these up, and
+    // the oldest are the ones already fading out.
+    if (live.length > MAX_LIVE_BURSTS) live.splice(0, live.length - MAX_LIVE_BURSTS);
   }, []);
 
   const enterPlay = useCallback(() => {
     const world = createWorld(levelRef.current);
     worldRef.current = world;
-    particlesRef.current = [];
+    burstsRef.current = [];
     inputRef.current?.releaseAll();
     satellitePointerRef.current = { x: VIEW_W * .7, y: VIEW_H / 2, active: false };
     mouseFireRef.current = false;
@@ -999,7 +1041,7 @@ export function StarlineGame() {
       // The pattern designer, the confirm and the settings dialog each own the
       // keyboard outright while open, which is a gate over the whole table
       // rather than a condition on any one binding.
-      if (editingPatternRef.current || pendingConfirmRef.current || showSettingsRef.current) return;
+      if (editingPatternRef.current || pendingConfirmRef.current || showSettingsRef.current || designingBurstsRef.current) return;
       // The nudge bindings need the event to decide, which `when` cannot see.
       if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.code) && !nudgeable(event)) return;
       keymap.handle(event);
@@ -1205,9 +1247,12 @@ export function StarlineGame() {
       world.step(dt, input);
       spawnBursts(world.drainBursts());
 
-      const particles = particlesRef.current;
-      particles.forEach((particle) => { particle.x += particle.vx * dt; particle.y += particle.vy * dt; particle.vx *= .985; particle.vy *= .985; particle.life -= dt; });
-      particlesRef.current = particles.filter((particle) => particle.life > 0);
+      // `advanceBurst` reports false once a burst has finished showing, so the
+      // module owns when one is over rather than this loop re-deriving it.
+      const live = burstsRef.current;
+      for (let index = live.length - 1; index >= 0; index -= 1) {
+        if (!advanceBurst(live[index], dt)) live.splice(index, 1);
+      }
 
       const outcome = world.state.outcome;
       if (outcome) {
@@ -1256,8 +1301,15 @@ export function StarlineGame() {
       }
       context.shadowBlur = 0;
       runtime.enemies.filter((item) => item.type !== "decoration").forEach(drawRuntimeItem);
-      for (const particle of particlesRef.current) {
-        context.globalAlpha = Math.min(1, particle.life * 2.5); context.fillStyle = particle.color; context.fillRect(particle.x - renderCam, particle.y, particle.size, particle.size);
+      // A burst's frame carries absolute world coordinates, so the camera is a
+      // translate here rather than a subtraction threaded through the module.
+      if (burstsRef.current.length) {
+        const grid = explosionsRef.current.pixelGrid;
+        context.save(); context.translate(-renderCam, 0);
+        for (const runtime of burstsRef.current) {
+          drawBurst(context, burstFrame(runtime), grid > 0 ? { pixelGrid: grid, palette: runtime.burst.palette } : {});
+        }
+        context.restore();
       }
       context.globalAlpha = 1;
       runtime.enemies.filter((item) => item.type === "decoration" && item.decoration?.layer === "foreground").forEach(drawRuntimeItem);
@@ -1564,6 +1616,7 @@ export function StarlineGame() {
               ))}
             </span>
           )}
+          <button className="fullscreen-button burst-button" type="button" onClick={() => setDesigningBursts(true)}><b>✳</b> EXPLOSIONS</button>
           <button className="fullscreen-button settings-button" type="button" onClick={() => setShowSettings(true)}><b>⚙</b> SETTINGS</button>
           {mode === "build" ? <button className="test-button" type="button" onClick={enterPlay}><kbd>T</kbd> TEST RUN <b>▶</b></button> : <button className="exit-button" type="button" onClick={exitPlay}><kbd>ESC</kbd> RETURN TO BUILD</button>}
         </div>
@@ -1790,6 +1843,7 @@ export function StarlineGame() {
         <p className="inspector-note">Governs the collapsible sections in the palette and the Inspector alike. Kept in this browser rather than in the level.</p>
       </EbDialog>}
       {editingPattern && <BulletPatternStudio pattern={editingPattern.pattern} onApply={applyPatternEditor} onSaveComponent={savePatternComponent} onCancel={() => setEditingPattern(null)} />}
+      {designingBursts && <BurstDesigner explosions={explosions} onCancel={() => setDesigningBursts(false)} onApply={(next) => { setExplosions(next); saveExplosions(next); setDesigningBursts(false); flash("EXPLOSIONS SAVED"); }} />}
     </main>
   );
 }

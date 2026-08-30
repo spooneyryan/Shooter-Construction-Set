@@ -91,6 +91,27 @@ Adopt per component rather than in one pass, with the test being whether the res
 
 The ten features should be delivered as a series of compatible foundations rather than ten isolated additions. The key is to establish stable data models and generic editor operations first, then let the editor, asset, and combat workstreams progress in parallel.
 
+## F-10 — Per-enemy explosions
+
+C-17 gives the sector three explosions chosen by how big the engine says a
+burst is. What it cannot give is *this raider explodes differently from that
+carrier*, because the renderer is never told which enemy died — a `Burst`
+carries a point, a colour and a count, and nothing else.
+
+Closing that is a change to `@ccllc/arcade`, not one that can be made here,
+and it is worth stating precisely because the local workaround is tempting
+and wrong: correlating the burst's position against `world.state.enemies` at
+drain time would guess, and guess wrong on the frame two things die together.
+
+The library-side shape is small. `LevelItem` grows an optional explosion
+reference; `Burst` grows the id of the item it came from; the renderer looks
+it up and falls back to the count-based role when there is none. Decide where
+the explosion documents themselves live — inline on the item, or in
+`Level.components` as a new `ComponentKind` beside `pattern`, which is the
+shape the editor already knows how to save, list and reuse. The second is
+almost certainly right, and it would make an explosion a saved Component that
+several enemies share.
+
 ## Phase 0 — Architecture, schemas, and migration safety
 
 1. Design the next version of the level format with explicit reusable structures for transforms, sprite appearance, asset references, Components, weapons, armor, player slots, inventory, and satellites.
@@ -334,3 +355,39 @@ recorded trade for not burning a third control. Ships with the **Null Point
 Arena** sample. Terrain holds its spawn point and is not yet useful there;
 that, a scroll-axis starfield for vertical, and a rotated vertical editor view
 are the follow-ups this left open.
+
+## C-17 — Designed explosions, and the explosion designer
+
+The renderer used to answer every `drainBursts()` request with the same
+hand-rolled spray — a loop of `Math.random` particles drawn as identical
+squares, in the colour the world asked for. Explosions are documents now.
+`@ccllc/arcade/burst` owns what one is; `app/explosions.ts` owns which three
+Starline ships with, and `app/BurstDesigner.tsx` is the panel that edits them
+(topbar: **✳ EXPLOSIONS**).
+
+**Three roles, chosen by the engine's own numbers.** A `Burst` is
+`{ x, y, color, count }`, and `count` is the only size signal it carries —
+but the engine's call sites cluster, so the mapping is two thresholds rather
+than a field the level format would have to grow: chip hits at 5–7, shots and
+shields giving out at 10–14, and everything that dies outright at 18–24.
+`tests/explosions.test.mjs` drives the real world headless, kills real
+enemies, and asserts those clusters still hold, because the design rests on
+an assumption about somebody else's code.
+
+**The world's colour still means something.** Each role carries a `tint`: how
+far the engine's colour for the event pulls the design's own colours toward
+it. A chip hit follows the bullet almost completely, a death mostly keeps its
+own fire. Without it the whole sector explodes in one hue and the engine's
+only piece of art direction is thrown away.
+
+**Both looks, from one document.** A sector-wide PIXEL GRID switches every
+explosion between smooth vector shapes and palette-snapped era art — the same
+frame handed to the same emitter twice, never a second design. Known gap: the
+`shard` layer is drawn inside a rotation and `@ccllc/arcade/burst`
+2.0.8-dev.240 snaps its x extent but not its y, so shards miss the grid.
+Reported upstream.
+
+Explosions live in `starline-explosions-v1` in `localStorage`, beside the
+editor preferences rather than inside the level, because the level format is
+the library's and a field it does not declare would be dropped by
+`normalizeLevel` on the next save. That is also why the next item exists.
