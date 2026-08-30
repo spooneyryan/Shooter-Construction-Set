@@ -35,6 +35,7 @@ import {
   type GunType,
   type Level,
   type LevelItem,
+  type LevelMode,
   type MovePattern,
   type PaletteKey,
   type Point,
@@ -46,7 +47,7 @@ import {
   type World,
   type WorldInput,
 } from "@ccllc/arcade/shmup";
-import { defaultLevel } from "./starter-level";
+import { defaultLevel, starterLevels } from "./starter-level";
 
 type EditorMode = "build" | "playing" | "paused" | "gameover" | "victory";
 
@@ -851,6 +852,13 @@ export function StarlineGame() {
 
   const loadLevel = useCallback(() => {
     if (!loadName) return;
+    if (loadName.startsWith("sample:")) {
+      const sample = starterLevels.find((entry) => `sample:${entry.key}` === loadName);
+      if (!sample) return;
+      installLevel(sample.build(), true); setCamera(0); editorCameraRef.current = 0;
+      flash(`LOADED ${sample.name.toUpperCase()}`);
+      return;
+    }
     const next = levelLibrary.readByName(loadName);
     if (!next) { flash("THAT SAVED LEVEL IS NO LONGER AVAILABLE"); return; }
     installLevel(next, true); setCamera(0); editorCameraRef.current = 0; flash(`LOADED ${loadName.toUpperCase()}`);
@@ -1052,12 +1060,42 @@ export function StarlineGame() {
       }
       if (input.pressed("padBack") && modeRef.current !== "build") exitPlay();
 
+      const playMode = worldRef.current?.level.mode ?? levelRef.current.mode;
+      const screenDx = input.axis("left", "right");
+      const screenDy = input.axis("up", "down");
+      const firing = input.isDown("fire") || mouseFireRef.current;
+      const satAxis = { x: input.axis("satLeft", "satRight"), y: input.axis("satUp", "satDown") };
+      const pointer = satellitePointerRef.current;
+
+      if (playMode === "vertical") {
+        // The world thinks in (along, across) whatever the mode; the screen
+        // does not. Up is forward here, so the stick and the pointer both turn
+        // a quarter turn on the way in -- the render pass turns them back.
+        return {
+          dx: -screenDy, dy: screenDx,
+          fire: firing,
+          aim: { x: 0, y: 0 },
+          satelliteAxis: { x: -satAxis.y, y: satAxis.x },
+          satellitePointer: { x: VIEW_H - pointer.y, y: pointer.x - (VIEW_W - VIEW_H) / 2, active: pointer.active },
+        };
+      }
+      if (playMode === "arena") {
+        // The right stick aims the guns, and the mouse aims them when the
+        // stick is idle. The satellite rides the same side -- the recorded
+        // trade for not burning a third control on it.
+        const world = worldRef.current;
+        let aim = { x: satAxis.x, y: satAxis.y };
+        if (Math.hypot(aim.x, aim.y) < 0.25 && pointer.active && world) {
+          aim = { x: pointer.x - world.state.player.x, y: pointer.y - world.state.player.y };
+        }
+        return { dx: screenDx, dy: screenDy, fire: firing, aim, satelliteAxis: satAxis, satellitePointer: pointer };
+      }
       return {
-        dx: input.axis("left", "right"),
-        dy: input.axis("up", "down"),
-        fire: input.isDown("fire") || mouseFireRef.current,
-        satelliteAxis: { x: input.axis("satLeft", "satRight"), y: input.axis("satUp", "satDown") },
-        satellitePointer: satellitePointerRef.current,
+        dx: screenDx, dy: screenDy,
+        fire: firing,
+        aim: { x: 0, y: 0 },
+        satelliteAxis: satAxis,
+        satellitePointer: pointer,
       };
     };
 
@@ -1184,28 +1222,42 @@ export function StarlineGame() {
       const world = worldRef.current;
       if (!world) return;
       const runtime = world.state;
-      drawBackground(runtime.camera, modeRef.current === "playing", dt);
+      const playMode = world.level.mode;
+      // The arena's camera is a clock and shifts nothing; drawing still
+      // subtracts a camera everywhere, so the arena subtracts zero.
+      const renderCam = playMode === "arena" ? 0 : runtime.camera;
+      const verticalPlay = playMode === "vertical";
+      drawBackground(renderCam, modeRef.current === "playing", dt);
+      // Vertical is drawn through a quarter turn: the whole scene renders in
+      // (along, across) exactly as the scroll modes do, and this transform is
+      // the only place the screen finds out. Later content enters from the
+      // top, the ship sits low, and every sprite's rightward art faces up.
+      if (verticalPlay) { context.save(); context.translate((VIEW_W - VIEW_H) / 2, VIEW_H); context.rotate(-Math.PI / 2); }
       const drawRuntimeItem = (enemy: RuntimeEnemy) => {
         if (!enemy.alive || !enemy.active) return;
-        const parallax = enemy.type === "decoration" ? enemy.decoration?.parallax ?? 1 : 1;
-        const x = enemy.x - runtime.camera * parallax;
+        const parallax = playMode !== "arena" && enemy.type === "decoration" ? enemy.decoration?.parallax ?? 1 : 1;
+        const x = enemy.x - renderCam * parallax;
         if (x < -260 || x > VIEW_W + 260) return;
         drawSprite(context, enemy.sprite, x, enemy.y, enemy.size, false, enemy.type === "decoration" ? enemy.decoration?.opacity ?? .5 : 1, enemy.rotation, enemy.scale, enemy.type === "enemy", levelRef.current.assets, enemy.tint);
         if (enemy.shield > 0 && enemy.armor?.type === "forcefield") { context.strokeStyle = "rgba(100,227,255,.7)"; context.lineWidth = 2; context.beginPath(); context.arc(x, enemy.y, enemy.size * enemy.scale + 8, 0, Math.PI * 2); context.stroke(); }
       };
       runtime.enemies.filter((item) => item.type === "decoration" && item.decoration?.layer === "background").forEach(drawRuntimeItem);
       for (const bullet of runtime.bullets) {
-        const x = bullet.x - runtime.camera; context.shadowColor = bullet.color; context.shadowBlur = 15; context.fillStyle = bullet.color; context.fillRect(x - 15, bullet.y - 2, 20, 4);
+        const x = bullet.x - renderCam; context.shadowColor = bullet.color; context.shadowBlur = 15; context.fillStyle = bullet.color;
+        // A streak drawn along +x only reads as motion when bullets fly +x;
+        // aimed arena fire goes everywhere, so it gets round shots instead.
+        if (playMode === "arena") { context.beginPath(); context.arc(x, bullet.y, bullet.radius + 1, 0, Math.PI * 2); context.fill(); }
+        else context.fillRect(x - 15, bullet.y - 2, 20, 4);
       }
       context.shadowBlur = 0;
       for (const bullet of runtime.enemyBullets) {
-        const x = bullet.x - runtime.camera; context.shadowColor = bullet.color; context.shadowBlur = 14; context.fillStyle = bullet.color;
+        const x = bullet.x - renderCam; context.shadowColor = bullet.color; context.shadowBlur = 14; context.fillStyle = bullet.color;
         context.beginPath(); context.arc(x, bullet.y, bullet.radius, 0, Math.PI * 2); context.fill();
       }
       context.shadowBlur = 0;
       runtime.enemies.filter((item) => item.type !== "decoration").forEach(drawRuntimeItem);
       for (const particle of particlesRef.current) {
-        context.globalAlpha = Math.min(1, particle.life * 2.5); context.fillStyle = particle.color; context.fillRect(particle.x - runtime.camera, particle.y, particle.size, particle.size);
+        context.globalAlpha = Math.min(1, particle.life * 2.5); context.fillStyle = particle.color; context.fillRect(particle.x - renderCam, particle.y, particle.size, particle.size);
       }
       context.globalAlpha = 1;
       runtime.enemies.filter((item) => item.type === "decoration" && item.decoration?.layer === "foreground").forEach(drawRuntimeItem);
@@ -1217,7 +1269,25 @@ export function StarlineGame() {
         if (satellite.shield > 0 && satelliteSettings.armor.type === "forcefield") { context.strokeStyle = "rgba(100,227,255,.65)"; context.beginPath(); context.arc(satellite.x, satellite.y, 21, 0, Math.PI * 2); context.stroke(); }
       }
       if (player.shield > 0 && levelRef.current.player.armor.type === "forcefield") { context.strokeStyle = "rgba(100,227,255,.55)"; context.lineWidth = 2; context.beginPath(); context.arc(player.x, player.y, 34, 0, Math.PI * 2); context.stroke(); }
-      drawShip(context, player.x, player.y, now, levelRef.current.player.sprite, player.invulnerable > 0 && Math.floor(player.invulnerable * 10) % 2 === 0, levelRef.current.assets, levelRef.current.player.tint);
+      const blinking = player.invulnerable > 0 && Math.floor(player.invulnerable * 10) % 2 === 0;
+      if (playMode === "arena") {
+        context.save(); context.translate(player.x, player.y); context.rotate(Math.atan2(runtime.aimDir.y, runtime.aimDir.x));
+        drawShip(context, 0, 0, now, levelRef.current.player.sprite, blinking, levelRef.current.assets, levelRef.current.player.tint);
+        context.restore();
+      } else {
+        drawShip(context, player.x, player.y, now, levelRef.current.player.sprite, blinking, levelRef.current.assets, levelRef.current.player.tint);
+      }
+      if (verticalPlay) {
+        context.restore();
+        // The flanks are rails, and opaque ones: they also mask the sliver of
+        // world that leaks past the square on the way in.
+        const rail = (VIEW_W - VIEW_H) / 2;
+        context.fillStyle = "rgba(6, 10, 14, .92)";
+        context.fillRect(0, 0, rail, VIEW_H); context.fillRect(VIEW_W - rail, 0, rail, VIEW_H);
+        context.strokeStyle = "rgba(100, 227, 255, .25)"; context.lineWidth = 1;
+        context.beginPath(); context.moveTo(rail + .5, 0); context.lineTo(rail + .5, VIEW_H); context.stroke();
+        context.beginPath(); context.moveTo(VIEW_W - rail - .5, 0); context.lineTo(VIEW_W - rail - .5, VIEW_H); context.stroke();
+      }
       const settings = world.effectivePlayer();
       context.font = "10px monospace"; context.textAlign = "right"; context.fillStyle = "rgba(234,247,251,.62)";
       const activeWeapons = settings.weaponSlots.map((slot) => levelRef.current.components.find((component) => component.id === (runtime.slotWeapons[slot.id] ?? slot.weaponId))?.name ?? "EMPTY").join(" + ");
@@ -1261,6 +1331,22 @@ export function StarlineGame() {
     // one state per frame however many steps the accumulator owes, and polling
     // it inside the step would read the same values two or three times over and
     // report a fresh press on each of them.
+    // A debug handle for development only: playtests in this session are
+    // driven from the browser console, and asserting on real world state beats
+    // guessing from pixels. Stripped from production builds by the env check.
+    if (process.env.NODE_ENV !== "production") {
+      (window as unknown as { __starlineWorld?: () => World | null }).__starlineWorld = () => worldRef.current;
+      // And a manual pump: the pane this session verifies in does not
+      // composite, so rAF never fires there. Pumping runs the real
+      // pollInput -> updatePlay -> drawPlay chain one step at a time, which
+      // is the whole integration short of the scheduler itself.
+      (window as unknown as { __starlinePump?: (dt: number) => WorldInput }).__starlinePump = (dt: number) => {
+        const pumped = pollInput();
+        updatePlay(dt, pumped);
+        drawPlay(performance.now(), dt);
+        return pumped;
+      };
+    }
     let frameInput = idleInput();
     const loop = createLoop({
       fixedStep: SIM_STEP,
@@ -1489,10 +1575,15 @@ export function StarlineGame() {
           const length = Math.max(1600, Number(event.target.value) || 1600);
           updateLevel((current) => ({ ...current, length }), true, "level-length"); setCameraSafe(Math.min(editorCameraRef.current, length - VIEW_W));
         }} /><em>u</em></label>
+        <label className="length-control"><span>MODE</span><select value={level.mode} aria-label="Level mode" onChange={(event) => updateLevel((current) => ({ ...current, mode: event.target.value as LevelMode }), true, "level-mode")}>
+          <option value="horizontal">HORIZONTAL</option>
+          <option value="vertical">VERTICAL</option>
+          <option value="arena">ARENA</option>
+        </select></label>
         <div className="file-actions">
           <button type="button" onClick={() => setPendingConfirm({ title: "NEW LEVEL", message: "Start a new empty level? Your current draft will be replaced.", action: () => { const next = { ...defaultLevel(), name: "Untitled Sector", items: [] }; installLevel(next, true); setCameraSafe(0); flash("NEW LEVEL CREATED"); } })}>NEW</button>
           <button type="button" onClick={saveLevel}>SAVE</button>
-          <select value={loadName} onChange={(event) => setLoadName(event.target.value)} aria-label="Saved levels"><option value="">LOAD LEVEL...</option>{savedNames.map((name) => <option value={name} key={name}>{name}</option>)}</select>
+          <select value={loadName} onChange={(event) => setLoadName(event.target.value)} aria-label="Saved levels"><option value="">LOAD LEVEL...</option><optgroup label="SAMPLES">{starterLevels.map((sample) => <option value={`sample:${sample.key}`} key={sample.key}>{sample.name}</option>)}</optgroup>{savedNames.map((name) => <option value={name} key={name}>{name}</option>)}</select>
           <button type="button" onClick={loadLevel} disabled={!loadName}>LOAD</button>
           <button type="button" onClick={() => importRef.current?.click()}>IMPORT</button>
           <button type="button" onClick={exportLevel}>EXPORT</button>
