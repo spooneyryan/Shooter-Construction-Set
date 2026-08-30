@@ -104,13 +104,12 @@ test("an enemy dying draws a designed explosion, and it is drawn both ways", () 
   assert.equal(pixel.calls.filter((call) => call[0] === "arc").length, 0, "the pixel path must never draw arcs");
 
   // Whether a rect lands on the grid is the PACKAGE's invariant and is tested
-  // there; what is asserted here is only that this app gets a pixel-mode draw
-  // at all. The one exception is worth naming rather than hiding: a `shard` is
-  // drawn inside a rotation, and @ccllc/arcade/burst 2.0.8-dev.240 snaps its
-  // x extent but not its y — so a shard is the one kind that misses the grid.
-  // Reported upstream; drop this filter once the module is fixed.
-  const snapped = rects.filter(([, , , width, height]) => width === height);
-  for (const [, x, y] of snapped) {
+  // there. It is checked once more from this side because this is where the
+  // exception was found: through 2.0.8-dev.240 a `shard` was drawn inside a
+  // rotation, which put its corners on fractional pixels, and the module's own
+  // test had asserted the invariant against a preset that has no shards.
+  // Fixed in 2.0.8, which is the floor this package now depends on.
+  for (const [, x, y] of rects) {
     assert.equal(Math.abs(x % 4), 0, `x ${x} is off the grid`);
     assert.equal(Math.abs(y % 4), 0, `y ${y} is off the grid`);
   }

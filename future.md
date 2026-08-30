@@ -382,10 +382,11 @@ only piece of art direction is thrown away.
 
 **Both looks, from one document.** A sector-wide PIXEL GRID switches every
 explosion between smooth vector shapes and palette-snapped era art — the same
-frame handed to the same emitter twice, never a second design. Known gap: the
-`shard` layer is drawn inside a rotation and `@ccllc/arcade/burst`
-2.0.8-dev.240 snaps its x extent but not its y, so shards miss the grid.
-Reported upstream.
+frame handed to the same emitter twice, never a second design. The test above
+found a real defect in the module while this was being built: a `shard` was
+drawn inside a rotation, so the one layer kind meant to look like flung debris
+was the one landing on fractional pixels. Fixed upstream in
+`@ccllc/arcade` 2.0.8, which is the floor this package now requires.
 
 Explosions live in `starline-explosions-v1` in `localStorage`, beside the
 editor preferences rather than inside the level, because the level format is

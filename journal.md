@@ -44,10 +44,13 @@ This is the first test here that is not a post-build assertion on `dist/`, so
 `npm test` now names both files.
 
 That test is also what caught the one thing the browser could not: **`shard`
-is the one layer kind whose pixel path does not snap.** It is drawn inside a
-rotation, and the module snaps its x extent but not its y, so shards miss the
-grid in era-art mode. Reported upstream; the test documents the exception
-rather than hiding it, and the filter comes out when the module is fixed.
+was the one layer kind whose pixel path did not snap.** It is drawn inside a
+rotation, and a rotated rectangle cannot sit on a pixel grid — so the kind
+meant to look like flung debris was the one landing on fractional pixels, in
+the mode whose whole job is whole ones. Fixed upstream the same session
+(`@ccllc/arcade` 2.0.8 walks the shard's length and lays a grid cell per step,
+the trick its ring path already used), and the assertion here now covers every
+rect rather than carrying an exception.
 
 **Verification note.** The preview pane froze `requestAnimationFrame`
 entirely — a counter of my own ticked zero over three seconds — so the design
@@ -57,14 +60,14 @@ draws (798 distinct colours vector against 132 pixelled, from one document),
 but the claim about *enemies* was settled headless instead. When a claim is
 about behaviour, drive the code; a screenshot can only ever agree with you.
 
-**Two things to know about the dependency.** The burst module is only in a
-prerelease: `@ccllc/arcade` and `@ccllc/studio` are pinned to
-`^2.0.8-dev.240`, because 2.0.8 has not been released. The caret picks up
-2.0.8 final when it lands, so this resolves itself, but until then `master`
-depends on a dev build. Separately, the upgrade tightened
-`defineLevelFormat`'s document type to include the envelope it stamps, so
-export and share now `parse` before handing a level over — no runtime change,
-since `serialize` parsed it anyway, but the call sites now say so.
+**About the dependency.** The work was built against `^2.0.8-dev.240` because
+the burst module existed only in a prerelease; GameBase then cut 2.0.8 —
+carrying the shard fix above — and both `@ccllc` packages moved onto `^2.0.8`
+before this shipped, so `master` depends on a release rather than a dev build.
+Separately, the upgrade tightened `defineLevelFormat`'s document type to
+include the envelope it stamps, so export and share now `parse` before handing
+a level over — no runtime change, since `serialize` parsed it anyway, but the
+call sites now say so.
 
 Gate: 9/9 tests, lint clean, `tsc` clean for `app/` (the `db/`, `worker/` and
 `drizzle.config.ts` errors are the inherited scaffolding's and predate this).
