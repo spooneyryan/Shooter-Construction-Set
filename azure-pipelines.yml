@@ -34,7 +34,7 @@ variables:
   # read again by tests/rendered-html.test.mjs, so the suite verifies the
   # layout this pipeline actually ships. The empty prefix means "the site
   # root"; the public URL feeds metadataBase for the social-card links.
-  STARLINE_PUBLIC_URL: https://wonderful-mushroom-0edd54a0f.7.azurestaticapps.net/
+  STARLINE_PUBLIC_URL: https://shmup.max12charact.com/
 
 stages:
   - stage: Build
@@ -50,15 +50,32 @@ stages:
             inputs:
               versionSpec: 22.x
 
-          # Writes feed credentials for the @ccllc scope into .npmrc for the
-          # duration of the run. A feed in this organization needs no service
-          # connection, only Reader for the build service on the GameBase feed.
+          # The GameBase feed lives in the ccllc organization and this
+          # pipeline runs in MorrisonHotel, so the build-service identity
+          # cannot reach it on its own — the "no service connection needed"
+          # this step used to claim is only true inside one organization, and
+          # every run failed on exactly that. "Starline GameBase NPM" is an
+          # npm service connection in this project holding ccllc credentials
+          # with Packaging read; npmAuthenticate injects them for the registry
+          # the repository .npmrc names.
           - task: npmAuthenticate@0
             displayName: Authenticate GameBase feed
             inputs:
               workingFile: .npmrc
+              customEndpoint: "Starline GameBase NPM"
 
-          - script: npm ci
+          # That PAT expires, and when it does npm ci fails with a bare E401
+          # several hundred lines into its own output, which reads like a
+          # broken lockfile rather than an expired credential. One cheap
+          # authenticated call first turns that into a sentence naming what to
+          # rotate. Same guard, same reason, as Pinball's pipeline.
+          - script: |
+              set -euo pipefail
+              if ! npm view @ccllc/arcade version > /dev/null 2>&1; then
+                echo "##vso[task.logissue type=error]The GameBase feed refused the credentials in the 'Starline GameBase NPM' service connection — its PAT has likely expired. Rotate it there, not in this file."
+                exit 1
+              fi
+              npm ci
             displayName: Install
 
           - script: npm run lint
