@@ -71,3 +71,28 @@ call sites now say so.
 
 Gate: 9/9 tests, lint clean, `tsc` clean for `app/` (the `db/`, `worker/` and
 `drizzle.config.ts` errors are the inherited scaffolding's and predate this).
+
+
+## Sprites gain a third kind: full-resolution images
+
+GameBase 2.0.9 adds an `image` sprite asset beside `raster` and `vector` — a
+full-resolution picture carried as a data URL, with png/jpg/gif/webp import
+and a paint editor of its own. Starline gets it for one button.
+
+That it *is* one button is the point. `SpriteStudio` dispatches on
+`asset.kind`, `drawSpriteAsset` draws all three, `normalizeAssets` validates
+all three, and this app's asset list, preview and picker were already written
+against `SpriteAsset` rather than against the two kinds that existed at the
+time. Nothing here switched on `kind`, so nothing here had to change.
+
+The one thing a host must supply is a blank to start from, and an image asset
+is defined by carrying real bytes: an empty `data` string is dropped by
+`normalizeAssets` on the way into a level. `blankImageAsset` is upstream's
+answer, and `+ IMAGE` calls it.
+
+Floor raised to `^2.0.9` for both `@ccllc/arcade` and `@ccllc/studio`,
+because the button does not exist below it.
+
+Gate: 9/9 tests, `npm run build` clean, and driven in a browser — `+ IMAGE`
+opened the editor, a 160x100 PNG imported through it, and the saved asset
+came back into the level list as `IMAGE / 160x100`.

@@ -7,7 +7,7 @@ import { createSelection, createEditorCommands, createKeymap } from "@ccllc/arca
 import { uniqueId } from "@ccllc/arcade/core";
 import { createTelemetry } from "@ccllc/arcade/telemetry";
 import { createSpriteCache } from "@ccllc/arcade/render";
-import { BulletPatternStudio, SpriteStudio } from "@ccllc/studio";
+import { BulletPatternStudio, SpriteStudio, blankImageAsset } from "@ccllc/studio";
 import { advanceBurst, burstFrame, createBurstRuntime, drawBurst, type BurstRuntime } from "@ccllc/arcade/burst";
 import { EbAccordion, EbAccordionItem, EbDialog, EbNumericInput, EbTabbedCard } from "@electricblazor/react";
 import { drawSpriteAsset } from "@ccllc/studio/render";
@@ -1674,7 +1674,9 @@ export function StarlineGame() {
                   <span className={`sprite-icon ${entry.sprite}`} /><span><strong>{entry.label}</strong><small>{entry.meta}</small></span><b>+</b>
                 </button>)}
               </div>, "palette")) : tab === "components" ? <>
-              <div className="asset-actions"><button type="button" onClick={() => setEditingAsset({ id: uid(), name: "New Raster", kind: "raster", width: 16, height: 16, pixels: Array(256).fill("") })}>+ RASTER SPRITE</button><button type="button" onClick={() => setEditingAsset({ id: uid(), name: "New Vector", kind: "vector", width: 256, height: 256, shapes: [] })}>+ VECTOR SPRITE</button></div>
+              <div className="asset-actions"><button type="button" onClick={() => setEditingAsset({ id: uid(), name: "New Raster", kind: "raster", width: 16, height: 16, pixels: Array(256).fill("") })}>+ RASTER SPRITE</button><button type="button" onClick={() => setEditingAsset({ id: uid(), name: "New Vector", kind: "vector", width: 256, height: 256, shapes: [] })}>+ VECTOR SPRITE</button>{/* An image asset is defined by carrying real bytes, so a blank one is a
+                  real transparent PNG rather than an empty string -- which is what
+                  blankImageAsset exists for, and what normalizeAssets would drop. */}<button type="button" onClick={() => setEditingAsset(blankImageAsset(uid(), "New Image", 256, 256))}>+ IMAGE</button></div>
               {level.assets.length > 0 && section("SPRITES", "SPRITES", <div className="palette-category-items">{level.assets.map((asset) => <div className="component-card-row" key={asset.id}><button className="palette-card" type="button" onClick={() => setEditingAsset(structuredClone(asset))}><SpriteAssetPreview asset={asset} /><span><strong>{asset.name}</strong><small>{asset.kind.toUpperCase()} / {asset.width}×{asset.height}</small></span><b>EDIT</b></button><button className="component-delete" type="button" onClick={() => deleteSpriteAsset(asset.id)} title="Delete sprite">×</button></div>)}</div>, "palette")}
               {componentSections(savedComponents, "COMP")}
               {!savedComponents.length && !level.assets.length && <p className="palette-empty">Nothing saved yet. Select an Object and choose SAVE AS COMPONENT, or keep a copy of one of the Enhancements.</p>}
