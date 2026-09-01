@@ -362,3 +362,11 @@ https://shmup.max12charact.com/. `dev*` builds and does not deploy.
 
 Gated the way the pipeline gates before landing anything: lint clean, 11/11
 tests, and a clean build.
+
+**Checked in production afterwards**, which is the only check that covers the
+pipeline itself. The Static Web App swapped `StarlineGame-CgR5Kr98.js` for
+`StarlineGame-eHZuQrXB.js`, and on the live site `+ IMAGE` opened the editor,
+a 140x90 PNG imported through it (centre pixel `#42f5ec`, exactly what was
+drawn), and the saved asset came back into the level list as `IMAGE /
+140x90`. `+ EXPLOSION` and `+ SOUND` are there too, so the per-enemy
+explosions work shipped in the same deploy.
