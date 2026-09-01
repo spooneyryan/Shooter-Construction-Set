@@ -212,6 +212,58 @@ function PanelResizer({ side, width, other, onResize, onCommit }: {
 }
 /* eslint-enable jsx-a11y/no-noninteractive-element-interactions, jsx-a11y/no-noninteractive-tabindex */
 
+/**
+ * Which saved Pattern Component a weapon is carrying.
+ *
+ * Applying one `structuredClone`s it and normalization preserves `id`, so an
+ * equipped pattern can still name where it came from — and one edited
+ * afterwards reports itself as custom rather than silently claiming to still
+ * be the original.
+ */
+function patternChoice(components: ComponentDefinition[], pattern?: BulletPatternDefinition) {
+  if (!pattern) return "";
+  return components.find((component) => component.pattern?.id === pattern.id)?.id ?? "custom";
+}
+
+/**
+ * The weapon's bullet pattern, as a named field showing its current value.
+ *
+ * Equipping one used to be a gesture: select an object, then click a Pattern
+ * card over in the palette. Nothing in the Inspector then said which pattern
+ * the object was carrying, so the only way to find out was to open the
+ * designer and recognise it. A pattern is a property of the weapon, so it
+ * belongs in the weapon's own section.
+ *
+ * A real component rather than a function returning JSX, because the callback
+ * it takes reaches the level through helpers that read refs; called during
+ * render the linter cannot tell that the callback is deferred, and as a
+ * component it does not have to.
+ */
+function BulletPatternField({ components, pattern, onApply }: {
+  components: ComponentDefinition[];
+  pattern?: BulletPatternDefinition;
+  onApply: (next: BulletPatternDefinition | undefined) => void;
+}) {
+  const choice = patternChoice(components, pattern);
+  return (
+    <label className="field wide"><span>BULLET PATTERN</span>
+      <select value={choice} onChange={(event) => {
+        const next = event.target.value;
+        // "custom" is a readout, not a destination: choosing it would mean
+        // replacing the edited pattern with itself.
+        if (next === "custom") return;
+        if (!next) { onApply(undefined); return; }
+        const component = components.find((entry) => entry.id === next);
+        if (component?.pattern) onApply(structuredClone(component.pattern));
+      }}>
+        <option value="">NONE — STANDARD FIRE</option>
+        {components.map((component) => <option value={component.id} key={component.id}>{component.name.toUpperCase()}</option>)}
+        {choice === "custom" && <option value="custom">CUSTOM — EDITED HERE</option>}
+      </select>
+    </label>
+  );
+}
+
 type TransformOrigin = { id: string; x: number; y: number; rotation: number; scale: number };
 type CanvasDrag =
   | { kind: "items"; ids: string[]; startWorld: Point; origins: TransformOrigin[]; startSnapshot: string }
@@ -1694,6 +1746,15 @@ export function StarlineGame() {
   // level format and no migration for levels saved before it.
   const savedComponents = level.components.filter((component) => component.id.startsWith("component-"));
   const enhancements = level.components.filter((component) => !component.id.startsWith("component-"));
+
+  // -- bullet patterns, as a field rather than a gesture ---------------------
+  //
+  // Equipping one used to be: select an object, then click a Pattern card over
+  // in the palette. Nothing in the Inspector then said which pattern the
+  // object was carrying, so the only way to find out was to open the designer
+  // and recognise it. A pattern is a property of the weapon, so it belongs in
+  // the weapon's own section, named, with the current value showing.
+  const patternComponents = level.components.filter((component) => component.kind === "pattern" && component.pattern);
   const componentCategory = (component: ComponentDefinition) => component.kind === "enemy" ? "ENEMIES" : component.kind === "terrain" ? "TERRAIN" : component.kind === "group" ? "GROUPS" : component.kind === "powerup" ? "POWERUPS" : component.kind === "upgrade" ? "UPGRADES" : component.kind === "decoration" ? "DECORATIONS" : component.kind === "weapon" ? "WEAPONS" : component.kind === "pattern" ? "PATTERNS" : component.kind === "armor" ? "ARMOR" : "SATELLITES";
   const setCameraSafe = (next: number) => {
     if (next + VIEW_W > levelRef.current.length) {
@@ -1880,7 +1941,15 @@ export function StarlineGame() {
             {section("slots", "WEAPON SLOTS & INVENTORY", <>
               <label className="range-field"><span><b>ACTIVE SLOTS</b><em>{level.player.weaponSlots.length}</em></span><input type="range" min="1" max="4" value={level.player.weaponSlots.length} onChange={(event) => updateLevel((current) => { const count = Number(event.target.value); const slots = current.player.weaponSlots.slice(0, count); while (slots.length < count) slots.push({ id: uid(), name: `SLOT ${slots.length + 1}`, accepts: "standard", weaponId: current.player.inventory[0] ?? "weapon-pulse" }); return { ...current, player: { ...current.player, weaponSlots: slots } }; }, true, "player-slot-count")} /></label>
               <label className="range-field"><span><b>INVENTORY LIMIT</b><em>{level.player.inventoryLimit}</em></span><input type="range" min="1" max="12" value={level.player.inventoryLimit} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, inventoryLimit: Number(event.target.value), inventory: current.player.inventory.slice(0, Number(event.target.value)) } }), true, "player-inventory-limit")} /></label>
-              {level.player.weaponSlots.map((slot, index) => <div className="equipment-slot" key={slot.id}><strong>{slot.name}</strong><label className="field"><span>ACCEPTS</span><select value={slot.accepts} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, weaponSlots: current.player.weaponSlots.map((entry) => entry.id === slot.id ? { ...entry, accepts: event.target.value } : entry) } }))}><option value="any">ANY</option><option value="standard">STANDARD</option><option value="light">LIGHT</option><option value="heavy">HEAVY</option><option value="satellite">SATELLITE</option></select></label><label className="field"><span>WEAPON</span><select value={slot.weaponId} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, weaponSlots: current.player.weaponSlots.map((entry) => entry.id === slot.id ? { ...entry, weaponId: event.target.value } : entry) } }))}>{level.components.filter((component) => component.kind === "weapon" && weaponFitsSlot(component, slot.accepts)).map((component) => <option value={component.id} key={component.id}>{component.name.toUpperCase()}</option>)}</select></label>{(() => { const weaponComponent = level.components.find((component) => component.id === slot.weaponId); if (!weaponComponent?.weapon) return null; return <button className="inspector-action" type="button" onClick={() => setEditingPattern({ pattern: structuredClone(weaponComponent.weapon!.pattern ?? createPatternPreset("Pendulum Sweep")), target: { kind: "weapon", id: weaponComponent.id } })}>{weaponComponent.weapon.pattern ? "EDIT BULLET PATTERN" : "ADD BULLET PATTERN"}</button>; })()}<small>Fires simultaneously from mount {index + 1}.</small></div>)}
+              {level.player.weaponSlots.map((slot, index) => <div className="equipment-slot" key={slot.id}><strong>{slot.name}</strong><label className="field"><span>ACCEPTS</span><select value={slot.accepts} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, weaponSlots: current.player.weaponSlots.map((entry) => entry.id === slot.id ? { ...entry, accepts: event.target.value } : entry) } }))}><option value="any">ANY</option><option value="standard">STANDARD</option><option value="light">LIGHT</option><option value="heavy">HEAVY</option><option value="satellite">SATELLITE</option></select></label><label className="field"><span>WEAPON</span><select value={slot.weaponId} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, weaponSlots: current.player.weaponSlots.map((entry) => entry.id === slot.id ? { ...entry, weaponId: event.target.value } : entry) } }))}>{level.components.filter((component) => component.kind === "weapon" && weaponFitsSlot(component, slot.accepts)).map((component) => <option value={component.id} key={component.id}>{component.name.toUpperCase()}</option>)}</select></label>{(() => { const weaponComponent = level.components.find((component) => component.id === slot.weaponId); if (!weaponComponent?.weapon) return null; return <>
+                {/* The pattern belongs to the WEAPON Component, not to the slot,
+                    so every slot carrying this weapon changes together. That is
+                    the data model rather than a shortcut: a weapon is one saved
+                    thing, and two mounts firing the same gun differently would
+                    be two guns. */}
+                <BulletPatternField components={patternComponents} pattern={weaponComponent.weapon.pattern} onApply={(next) => updateLevel((current) => ({ ...current, components: current.components.map((entry) => entry.id === weaponComponent.id ? { ...entry, weapon: entry.weapon ? { ...entry.weapon, pattern: next } : entry.weapon } : entry) }))} />
+                <button className="inspector-action" type="button" onClick={() => setEditingPattern({ pattern: structuredClone(weaponComponent.weapon!.pattern ?? createPatternPreset("Pendulum Sweep")), target: { kind: "weapon", id: weaponComponent.id } })}>{weaponComponent.weapon.pattern ? "EDIT THIS PATTERN" : "DESIGN A PATTERN"}</button>
+              </>; })()}<small>Fires simultaneously from mount {index + 1}.</small></div>)}
               <div className="inventory-grid">{level.components.filter((component) => component.kind === "weapon").map((component) => { const carried = level.player.inventory.includes(component.id); return <button type="button" className={carried ? "active" : ""} onClick={() => updateLevel((current) => { const inventory = carried ? current.player.inventory.filter((id) => id !== component.id) : [...current.player.inventory, component.id].slice(0, current.player.inventoryLimit); return { ...current, player: { ...current.player, inventory } }; })} key={component.id}>{carried ? "✓ " : "+ "}{component.name}</button>; })}</div>
             </>)}
             {section("armor", "ARMOR & FORCE FIELD", <>
@@ -1929,12 +1998,12 @@ export function StarlineGame() {
             </>)}
 
             {selected.type === "group" && section("formation", "FORMATION", <>
-              <div className="field-grid"><label className="field"><span>PATTERN</span><select value={selected.group?.pattern} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, group: { ...(item.group ?? { count: 5, spacing: 60, pattern: "line" }), pattern: event.target.value as GroupPattern } }))}><option value="line">LINE</option><option value="vee">VEE</option><option value="ring">RING</option></select></label><div className="field"><EbNumericInput label="COUNT" sliderEnabled={false} min={2} max={16} value={selected.group?.count ?? 5} onValueChange={(count) => updateItem(selected.id, (item) => ({ ...item, group: { ...(item.group ?? { pattern: "line", spacing: 60, count: 5 }), count } }))} /></div></div>
+              <div className="field-grid"><label className="field"><span>FORMATION</span><select value={selected.group?.pattern} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, group: { ...(item.group ?? { count: 5, spacing: 60, pattern: "line" }), pattern: event.target.value as GroupPattern } }))}><option value="line">LINE</option><option value="vee">VEE</option><option value="ring">RING</option></select></label><div className="field"><EbNumericInput label="COUNT" sliderEnabled={false} min={2} max={16} value={selected.group?.count ?? 5} onValueChange={(count) => updateItem(selected.id, (item) => ({ ...item, group: { ...(item.group ?? { pattern: "line", spacing: 60, count: 5 }), count } }))} /></div></div>
               <label className="range-field"><span><b>SPACING</b><em>{selected.group?.spacing ?? 60}u</em></span><input type="range" min="30" max="140" value={selected.group?.spacing ?? 60} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, group: { ...(item.group ?? { pattern: "line", spacing: 60, count: 5 }), spacing: Number(event.target.value) } }))} /></label>
             </>)}
 
             {section("movement", selected.type === "decoration" ? "DECORATION MOTION" : "MOVEMENT", <>
-              <label className="field wide"><span>PATTERN</span><select value={selected.movement.pattern} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, movement: { ...item.movement, pattern: event.target.value as MovePattern } }))}><option value="straight">STRAIGHT</option><option value="sine">SINE WAVE</option><option value="zigzag">ZIGZAG</option><option value="stationary">STATIONARY</option></select></label>
+              <label className="field wide"><span>MOVEMENT</span><select value={selected.movement.pattern} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, movement: { ...item.movement, pattern: event.target.value as MovePattern } }))}><option value="straight">STRAIGHT</option><option value="sine">SINE WAVE</option><option value="zigzag">ZIGZAG</option><option value="stationary">STATIONARY</option></select></label>
               <label className="range-field"><span><b>SPEED</b><em>{selected.movement.speed}u/s</em></span><input type="range" min="0" max="240" value={selected.movement.speed} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, movement: { ...item.movement, speed: Number(event.target.value) } }))} /></label>
               {(selected.movement.pattern === "sine" || selected.movement.pattern === "zigzag") && <><label className="range-field"><span><b>AMPLITUDE</b><em>{selected.movement.amplitude}u</em></span><input type="range" min="10" max="200" value={selected.movement.amplitude} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, movement: { ...item.movement, amplitude: Number(event.target.value) } }))} /></label><label className="range-field"><span><b>FREQUENCY</b><em>{selected.movement.frequency.toFixed(2)}Hz</em></span><input type="range" min="0.1" max="1.5" step="0.05" value={selected.movement.frequency} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, movement: { ...item.movement, frequency: Number(event.target.value) } }))} /></label></>}
             </>)}
@@ -1960,8 +2029,11 @@ export function StarlineGame() {
                 <label className="range-field"><span><b>PROJECTILE SPEED</b><em>{selected.weapon.projectileSpeed}u/s</em></span><input type="range" min="100" max="700" step="10" value={selected.weapon.projectileSpeed} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, weapon: { ...item.weapon, projectileSpeed: Number(event.target.value) } }))} /></label>
                 <label className="range-field"><span><b>POWER</b><em>{selected.weapon.power}</em></span><input type="range" min="1" max="3" value={selected.weapon.power} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, weapon: { ...item.weapon, power: Number(event.target.value) } }))} /></label>
                 <button className="inspector-action" type="button" onClick={() => saveWeaponComponent(selected.weapon, `${selected.name} Weapon`)}>SAVE WEAPON COMPONENT</button>
-                <button className="inspector-action pattern-designer-button" type="button" onClick={() => setEditingPattern({ pattern: structuredClone(selected.weapon.pattern ?? createPatternPreset("Pendulum Sweep")), target: { kind: "item", id: selected.id } })}>{selected.weapon.pattern ? "EDIT BULLET HELL PATTERN" : "OPEN BULLET HELL DESIGNER"}</button>
-                {selected.weapon.pattern && <button className="inspector-action" type="button" onClick={() => updateItem(selected.id, (item) => ({ ...item, weapon: { ...item.weapon, pattern: undefined } }))}>REMOVE PATTERN / USE STANDARD FIRE</button>}
+                {/* The dropdown covers removal too, as NONE, so the separate
+                    "remove pattern" button it replaced is gone rather than
+                    sitting beside a control that already does its job. */}
+                <BulletPatternField components={patternComponents} pattern={selected.weapon.pattern} onApply={(next) => updateItem(selected.id, (item) => ({ ...item, weapon: { ...item.weapon, enabled: true, pattern: next } }))} />
+                <button className="inspector-action pattern-designer-button" type="button" onClick={() => setEditingPattern({ pattern: structuredClone(selected.weapon.pattern ?? createPatternPreset("Pendulum Sweep")), target: { kind: "item", id: selected.id } })}>{selected.weapon.pattern ? "EDIT THIS PATTERN" : "DESIGN A PATTERN"}</button>
               </>}
             </>)}
             </EbAccordion>
