@@ -22,8 +22,10 @@ forced by an ownership boundary.** Per-enemy explosions would be the obvious
 feature, and they cannot be built here: the renderer is never told which enemy
 died, because a `Burst` is `{ x, y, color, count }` and nothing more. Adding
 that is a level-format change and therefore a change to `@ccllc/arcade`, which
-AGENTS.md says to *say* rather than to fork locally. So it is said, in F-10,
-with the shape it should take — an explosion as a saved Component beside
+AGENTS.md says to *say* rather than to fork locally. So it is said, in the
+per-enemy explosions entry (named rather than numbered, because the backlog
+reuses numbers as items ship), with the shape it should take — an explosion as
+a saved Component beside
 `pattern`, since the editor already knows how to save, list and reuse those.
 
 What could be done here is better than it sounds. The engine's `count` is a
@@ -96,3 +98,51 @@ because the button does not exist below it.
 Gate: 9/9 tests, `npm run build` clean, and driven in a browser — `+ IMAGE`
 opened the editor, a 160x100 PNG imported through it, and the saved asset
 came back into the level list as `IMAGE / 160x100`.
+
+## 2026-09-01 — Resizable tool panels
+
+Ryan asked for the palette and the Inspector to be resizable, which is F-01 in
+the backlog and therefore authorised by the asking. It ships as C-18, and the
+vacated number went back to the top of the queue as the process requires.
+
+**The grid keeps its shape; only two numbers become variable.** The workspace
+was `214px minmax(460px, 1fr) 264px`, and the two side columns are now custom
+properties set inline on `.workspace`. Inline matters: the narrow-window
+breakpoint still lowers the *defaults* at 1050px, and a width somebody chose
+still beats it, without either rule having to know about the other. Nothing
+else in the layout moved, which is why playtest still collapses both panels to
+zero and the sub-760px layout still turns the columns into rows.
+
+**Three limits, and only two of them are the panel's.** Each side has its own
+min and max, and above both sits the stage's floor of 460px. The handles
+measure the workspace at the moment of the drag rather than trusting a stored
+number, because the window can be resized between drags. That third limit is
+the one worth having: the grid enforces its floor anyway, by overflowing and
+clipping the canvas, so a handle that stops short of it is the difference
+between a limit you feel and a bug you file.
+
+**`EbSplitter` was evaluated and rejected, and the entry that expected it has
+been corrected rather than left to mislead.** F-08's table said the panel
+widths should be built on the suite's splitter rather than hand-rolled, and
+AGENTS.md says to prefer a suite component where one fits. It does not fit
+here: `EbSplitter` is a two-pane component that owns both panes and divides
+them by a **ratio**, while this is a three-column grid whose stage floor,
+playtest collapse and stacked layout are all expressed in the grid — and a
+0..1 ratio cannot hold a 460px floor as the window changes. Taking it would
+have meant nesting two splitters and rewriting the responsive behaviour inside
+them. The row is struck through with the reason attached, so nobody reopens it
+expecting a quick swap; a genuine two-pane split here should still use it.
+
+**Verified by driving it rather than by reading it.** Against the running dev
+server: dragging the palette handle took it 214 → 337 and wrote
+`paletteWidth: 337` to `starline-editor-settings-v1`; dragging the Inspector
+handle *left* widened it 264 → 396, which is the mirrored delta working; a
+deliberately huge drag stopped at the palette's 460 ceiling with the stage
+still holding 725. Keyboard: arrows moved by 12, Shift by 48, Home went to the
+minimum and End to the ceiling. Double-click restored the default and
+persisted it.
+
+One incidental note from that session, since it corroborates yesterday's
+diagnosis: the editor was sitting on **Skyfall Run**, in VERTICAL mode. Loading
+a sample really does carry its mode into the draft, which is exactly how a
+level ends up in a mode nobody remembers choosing.

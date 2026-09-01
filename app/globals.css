@@ -107,7 +107,25 @@ button { cursor: pointer; }
 .file-actions select { min-width: 120px; max-width: 170px; padding: 0 8px; }
 .hidden-input { display: none; }
 
-.workspace { min-height: 0; flex: 1 1 auto; display: grid; grid-template-columns: 214px minmax(460px, 1fr) 264px; overflow: hidden; background: #060c12; }
+/* The two side columns are custom properties so the resize handles can drive
+   them from an inline style, which wins over both the default here and the
+   narrow-window override further down. The stage keeps its own minmax floor,
+   so a panel can never squeeze it: the handles clamp against that floor rather
+   than the grid discovering it late and overflowing. */
+.workspace { --palette-w: 214px; --inspector-w: 264px; position: relative; min-height: 0; flex: 1 1 auto; display: grid; grid-template-columns: var(--palette-w) minmax(460px, 1fr) var(--inspector-w); overflow: hidden; background: #060c12; }
+
+/* Straddles the seam rather than sitting beside it, so the grab area is wider
+   than the 1px border it appears to be. Reported as a separator rather than a
+   slider: what it moves is a pane boundary, and that ARIA pattern brings the
+   arrow, Home and End keys with it. */
+.panel-resizer { position: absolute; top: 0; bottom: 0; z-index: 6; width: 9px; margin-left: -5px; padding: 0; border: 0; background: transparent; cursor: col-resize; touch-action: none; }
+.panel-resizer::after { content: ""; position: absolute; inset-block: 0; left: 4px; width: 1px; background: transparent; transition: background .12s ease; }
+.panel-resizer:hover::after, .panel-resizer:focus-visible::after, .panel-resizer.is-dragging::after { background: var(--cyan); box-shadow: 0 0 7px rgba(100,227,255,.55); }
+.panel-resizer:focus-visible { outline: none; }
+.inspector-resizer { margin-left: 0; margin-right: -5px; }
+/* Nothing to drag while the game is playing, and nothing to drag once the
+   columns have become rows, where a width means nothing. */
+.workspace.is-playing .panel-resizer { display: none; }
 .palette-panel, .inspector-panel { min-height: 0; background: var(--panel); }
 /* The pane scrolls as one column: the heading, player card, tool strip and
    tab strip travel with the list rather than staying pinned above it, which
@@ -334,7 +352,10 @@ kbd { min-width: 22px; padding: 3px 5px; display: inline-block; border: 1px soli
 :fullscreen .workspace { min-height: 0; }
 
 @media (max-width: 1050px) {
-  .workspace { grid-template-columns: 180px minmax(400px, 1fr) 230px; }
+  /* The DEFAULTS narrow, not the template. A width somebody chose is an inline
+     custom property and still wins, and the handles clamp it against the stage
+     floor at this size like any other. */
+  .workspace { --palette-w: 180px; --inspector-w: 230px; }
   .palette-card { grid-template-columns: 28px 1fr auto; }
   .topbar { grid-template-columns: 1fr auto; }
   .mode-chip { display: none; }
@@ -356,6 +377,9 @@ kbd { min-width: 22px; padding: 3px 5px; display: inline-block; border: 1px soli
   .file-actions { width: 100%; margin-left: 0; overflow-x: auto; }
   .file-actions select { min-width: 115px; }
   .workspace, .workspace.is-playing { display: flex; flex-direction: column; overflow-y: auto; }
+  /* The columns are rows here, so grid-template-columns is inert and the stored
+     widths simply stop applying. The handles go with them. */
+  .panel-resizer { display: none; }
   .palette-panel { order: 2; max-height: none; border: 0; border-top: 1px solid var(--line); overflow: visible; }
   .palette-list .eb-card-body { max-height: none; overflow: visible; }
   .inspector-panel { order: 3; max-height: none; border-left: 0; border-top: 1px solid var(--line); overflow: visible; }

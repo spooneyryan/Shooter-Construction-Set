@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { createHistory, createLoop, createPerformanceMonitor, defineLibrary, defineSettings, DocumentError, type PerfStats } from "@ccllc/arcade/core";
 import { createInput } from "@ccllc/arcade/platform";
 import { createSelection, createEditorCommands, createKeymap } from "@ccllc/arcade/editor";
@@ -95,6 +95,110 @@ type Star = Point & { size: number; speed: number; alpha: number };
  *  fading and dropping them costs nothing anyone can see. */
 const MAX_LIVE_BURSTS = 28;
 
+/**
+ * What each tool panel may be dragged to, in px, and what it opens at. The
+ * maxima are generous because the reason to widen one is a long component name
+ * or a full Inspector; the real limit is the constant below rather than these.
+ */
+const PANEL_LIMITS = {
+  palette: { min: 170, max: 460, fallback: 214 },
+  inspector: { min: 200, max: 520, fallback: 264 },
+} as const;
+
+/**
+ * The stage floor, matching the minmax(460px, 1fr) the grid gives it.
+ * Duplicating the number is deliberate: the grid enforces it by overflowing,
+ * which clips the canvas, and a handle that stops before it is reached is the
+ * difference between a limit somebody feels and a bug they report.
+ */
+const STAGE_MIN_WIDTH = 460;
+
+type PanelSide = keyof typeof PANEL_LIMITS;
+
+/**
+ * The drag handle between a tool panel and the stage.
+ *
+ * It reports itself as a separator rather than a slider, because what it moves
+ * is a pane boundary; that also brings the arrow/Home/End keys the WAI-ARIA
+ * pattern expects, so the handle works without a pointer. Double-click restores
+ * the default, which is the cheapest way back from a width dragged to something
+ * unusable.
+ */
+/* eslint-disable jsx-a11y/no-noninteractive-element-interactions, jsx-a11y/no-noninteractive-tabindex --
+   Both rules treat `separator` as non-interactive, and a plain one is. A
+   FOCUSABLE separator is the WAI-ARIA window-splitter pattern itself: the spec
+   gives it aria-valuenow/min/max and expects it to move under the arrow keys,
+   which is precisely what this is. The rules cannot tell the two apart, so this
+   is a false positive rather than a hole -- and the alternative, a <button>,
+   would announce "press" for something that does not press. Scoped to this
+   component, which exists only for this element. */
+function PanelResizer({ side, width, other, onResize, onCommit }: {
+  side: PanelSide;
+  width: number;
+  /** The opposite panel, because the stage floor is what the two of them share. */
+  other: number;
+  onResize: (width: number) => void;
+  onCommit: (width: number) => void;
+}) {
+  const limits = PANEL_LIMITS[side];
+  const [dragging, setDragging] = useState(false);
+  // Measured rather than stored: the window can be resized between drags, so
+  // the honest ceiling is whatever is spare right now.
+  const ceiling = () => {
+    const room = (document.getElementById("workspace")?.clientWidth ?? 0) - STAGE_MIN_WIDTH - other;
+    return Math.max(limits.min, Math.min(limits.max, room > 0 ? room : limits.max));
+  };
+  const settle = (next: number) => { onResize(next); onCommit(next); };
+  // Dragging the Inspector handle LEFT widens it, so its delta is mirrored:
+  // either panel grows toward the stage.
+  const growth = (fromX: number, toX: number) => (side === "palette" ? toX - fromX : fromX - toX);
+  return (
+    <div
+      className={"panel-resizer " + side + "-resizer" + (dragging ? " is-dragging" : "")}
+      style={side === "palette" ? { left: "var(--palette-w)" } : { right: "var(--inspector-w)" }}
+      role="separator"
+      aria-orientation="vertical"
+      aria-label={side === "palette" ? "Palette width" : "Inspector width"}
+      aria-valuenow={width}
+      aria-valuemin={limits.min}
+      aria-valuemax={limits.max}
+      tabIndex={0}
+      onDoubleClick={() => settle(limits.fallback)}
+      onKeyDown={(event) => {
+        const step = event.shiftKey ? 48 : 12;
+        if (event.key === "ArrowLeft") settle(clamp(width + (side === "palette" ? -step : step), limits.min, ceiling()));
+        else if (event.key === "ArrowRight") settle(clamp(width + (side === "palette" ? step : -step), limits.min, ceiling()));
+        else if (event.key === "Home") settle(limits.min);
+        else if (event.key === "End") settle(ceiling());
+        else return;
+        event.preventDefault();
+      }}
+      onPointerDown={(event) => {
+        if (event.button !== 0) return;
+        event.preventDefault();
+        const handle = event.currentTarget;
+        const startX = event.clientX;
+        const startWidth = width;
+        const top = ceiling();
+        handle.setPointerCapture(event.pointerId);
+        setDragging(true);
+        const move = (moving: PointerEvent) => onResize(clamp(startWidth + growth(startX, moving.clientX), limits.min, top));
+        const done = (ending: PointerEvent) => {
+          handle.removeEventListener("pointermove", move);
+          handle.removeEventListener("pointerup", done);
+          handle.removeEventListener("pointercancel", done);
+          setDragging(false);
+          onCommit(clamp(startWidth + growth(startX, ending.clientX), limits.min, top));
+        };
+        handle.addEventListener("pointermove", move);
+        handle.addEventListener("pointerup", done);
+        handle.addEventListener("pointercancel", done);
+      }}
+    />
+  );
+}
+/* eslint-enable jsx-a11y/no-noninteractive-element-interactions, jsx-a11y/no-noninteractive-tabindex */
+
 type TransformOrigin = { id: string; x: number; y: number; rotation: number; scale: number };
 type CanvasDrag =
   | { kind: "items"; ids: string[]; startWorld: Point; origins: TransformOrigin[]; startSnapshot: string }
@@ -116,11 +220,17 @@ const SETTINGS_KEY = "starline-editor-settings-v1";
 //
 // The store derives its own key from the namespace, so it does NOT read the key
 // above -- that one is read once, below, to carry a choice already made across.
-const editorSettings = defineSettings<{ sectionMode: SectionMode }>({
+const editorSettings = defineSettings<{ sectionMode: SectionMode; paletteWidth: number; inspectorWidth: number }>({
   namespace: "starline-editor",
   version: 1,
   fields: {
     sectionMode: { type: "enum", values: ["single", "multiple"], default: "multiple" },
+    // The panel widths belong to the person rather than the level, so they sit
+    // here beside Toolbar Behavior. Adding them cost two lines and no parsing,
+    // which is exactly what this schema was for; the store clamps on the way
+    // in, so a hand-edited value cannot reopen the editor with no stage left.
+    paletteWidth: { type: "integer", default: PANEL_LIMITS.palette.fallback, min: PANEL_LIMITS.palette.min, max: PANEL_LIMITS.palette.max },
+    inspectorWidth: { type: "integer", default: PANEL_LIMITS.inspector.fallback, min: PANEL_LIMITS.inspector.min, max: PANEL_LIMITS.inspector.max },
   },
 });
 
@@ -544,6 +654,10 @@ export function StarlineGame() {
   const [openSections, setOpenSections] = useState<Record<string, string>>({});
   const [sectionMode, setSectionMode] = useState<SectionMode>("multiple");
   const [showSettings, setShowSettings] = useState(false);
+  // Annotated, because PANEL_LIMITS is `as const` and the fallback would
+  // otherwise infer as the literal 214 rather than as a width.
+  const [paletteWidth, setPaletteWidth] = useState<number>(PANEL_LIMITS.palette.fallback);
+  const [inspectorWidth, setInspectorWidth] = useState<number>(PANEL_LIMITS.inspector.fallback);
   const [paletteTab, setPaletteTab] = useState<PaletteTab>("objects");
   const [editingAsset, setEditingAsset] = useState<SpriteAsset | null>(null);
   const [editingPattern, setEditingPattern] = useState<{ pattern: BulletPatternDefinition; target: PatternEditorTarget } | null>(null);
@@ -715,6 +829,12 @@ export function StarlineGame() {
     // and no try/catch: a blocked browser gives the store memory, not a throw.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setSectionMode(editorSettings.get("sectionMode"));
+    // The panel widths ride the same two-phase load, for the same reason: the
+    // exported HTML was built with the defaults, so the first client render has
+    // to match them and localStorage only gets a say after mount. They need no
+    // suppression of their own -- the directive above covers the effect.
+    setPaletteWidth(editorSettings.get("paletteWidth"));
+    setInspectorWidth(editorSettings.get("inspectorWidth"));
   }, []);
 
   // The designed explosions, on the same two-phase load and for the same
@@ -1645,7 +1765,9 @@ export function StarlineGame() {
         </div>
       </section>
 
-      <section className={`workspace ${mode !== "build" ? "is-playing" : ""}`} id="workspace">
+      <section className={`workspace ${mode !== "build" ? "is-playing" : ""}`} id="workspace" style={{ "--palette-w": `${paletteWidth}px`, "--inspector-w": `${inspectorWidth}px` } as CSSProperties}>
+        <PanelResizer side="palette" width={paletteWidth} other={inspectorWidth} onResize={setPaletteWidth} onCommit={(next) => { setPaletteWidth(next); editorSettings.set("paletteWidth", next); }} />
+        <PanelResizer side="inspector" width={inspectorWidth} other={paletteWidth} onResize={setInspectorWidth} onCommit={(next) => { setInspectorWidth(next); editorSettings.set("inspectorWidth", next); }} />
         <aside className="palette-panel">
           <div className="panel-heading"><span>FOUNDRY PALETTE</span><small>{level.items.length} PLACED</small></div>
           <button className="player-card" type="button" onClick={() => { setTool("select"); toolRef.current = "select"; setSelection([]); setInspectPlayer(true); }}><span className={`player-icon ${level.player.sprite.startsWith("asset:") ? "asset-custom" : level.player.sprite}`} /><span><strong>PLAYER SHIP</strong><small>{level.player.sprite.startsWith("asset:") ? "CUSTOM" : level.player.sprite.toUpperCase()} / {level.player.weaponSlots.length} WEAPON SLOT{level.player.weaponSlots.length === 1 ? "" : "S"}</small></span><b>EDIT</b></button>
