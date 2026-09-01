@@ -345,3 +345,20 @@ to the previous one.
 Gate: 11/11 tests, build clean, and the installed 2.0.10 checked for the
 surface this app actually calls — `blankImageAsset`, `SpriteStudio`, and
 `normalizeAssets` accepting an `image` asset.
+
+
+## dev-claude lands on the trunk, and the game deploys
+
+Six commits moved `dev` and `master` from `ecdf81e` to `2cad592`, all
+fast-forward with no divergence on either side: the tool panels remembering
+their size, flow-state appearance, bullet patterns as a field rather than a
+gesture, presentation mode, per-enemy explosions and sounds, and the two
+GameBase moves — image sprites, then onto the released arcade 2.0.10.
+
+**Pushing `master` is the deploy**, which is worth saying in the same
+sentence as the merge: the pipeline's Deploy stage runs on `master` only and
+uploads `dist/client` to the `shmup` Static Web App at
+https://shmup.max12charact.com/. `dev*` builds and does not deploy.
+
+Gated the way the pipeline gates before landing anything: lint clean, 11/11
+tests, and a clean build.
