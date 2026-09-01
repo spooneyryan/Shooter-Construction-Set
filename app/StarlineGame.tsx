@@ -155,7 +155,20 @@ function PanelResizer({ side, width, other, onResize, onCommit }: {
   return (
     <div
       className={"panel-resizer " + side + "-resizer" + (dragging ? " is-dragging" : "")}
-      style={side === "palette" ? { left: "var(--palette-w)" } : { right: "var(--inspector-w)" }}
+      // `position` is inline rather than left to the stylesheet, and it is the
+      // one declaration that has to be. This element is a CHILD of the grid, so
+      // if the rule taking it out of flow is ever missing or late it becomes a
+      // grid item: it claims a column, pushes the panels along and wraps them
+      // onto a second row, which is not a cosmetic glitch but an unusable
+      // editor. That is not hypothetical -- a dev server that had stopped
+      // re-reading globals.css produced exactly it. Appearance can wait for a
+      // stylesheet; being out of flow cannot.
+      style={{
+        position: "absolute",
+        top: 0,
+        bottom: 0,
+        ...(side === "palette" ? { left: "var(--palette-w)" } : { right: "var(--inspector-w)" }),
+      }}
       role="separator"
       aria-orientation="vertical"
       aria-label={side === "palette" ? "Palette width" : "Inspector width"}
@@ -1765,7 +1778,7 @@ export function StarlineGame() {
         </div>
       </section>
 
-      <section className={`workspace ${mode !== "build" ? "is-playing" : ""}`} id="workspace" style={{ "--palette-w": `${paletteWidth}px`, "--inspector-w": `${inspectorWidth}px` } as CSSProperties}>
+      <section className={`workspace ${mode !== "build" ? "is-playing" : ""}`} id="workspace" style={{ position: "relative", "--palette-w": `${paletteWidth}px`, "--inspector-w": `${inspectorWidth}px` } as CSSProperties}>
         <PanelResizer side="palette" width={paletteWidth} other={inspectorWidth} onResize={setPaletteWidth} onCommit={(next) => { setPaletteWidth(next); editorSettings.set("paletteWidth", next); }} />
         <PanelResizer side="inspector" width={inspectorWidth} other={paletteWidth} onResize={setInspectorWidth} onCommit={(next) => { setInspectorWidth(next); editorSettings.set("inspectorWidth", next); }} />
         <aside className="palette-panel">

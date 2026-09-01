@@ -146,3 +146,56 @@ One incidental note from that session, since it corroborates yesterday's
 diagnosis: the editor was sitting on **Skyfall Run**, in VERTICAL mode. Loading
 a sample really does carry its mode into the draft, which is exactly how a
 level ends up in a mode nobody remembers choosing.
+
+## 2026-09-01 — The resize handles broke the layout, and why the test missed it
+
+Ryan sent a screenshot of the editor in pieces: the palette on the right, the
+stage squeezed to 214px on the left, the Inspector filling the middle, and
+thirteen `ResizeObserver loop completed with undelivered notifications` errors
+stacked in the dev overlay.
+
+**The DOM order named the cause before anything was measured.** The two
+handles are children of `.workspace`, which is a grid. Taken out of flow they
+are invisible to it; left in flow they are grid *items*, and three columns with
+five children means the first three take row one — handle, handle, palette —
+and the last two wrap onto row two, where the stage lands in the 214px column
+and the Inspector in the stage's. That is exactly the arrangement in the
+screenshot, and `getComputedStyle` confirmed it: `position: static`, and
+`grid-template-rows: 235.25px 235.25px`. Two rows.
+
+The ResizeObserver errors were the symptom, not the cause: a canvas that
+observes its container, in a container that had just changed shape twice.
+
+**So why did the verification pass?** It genuinely did — handles measured at
+`x=209 w=9`, sitting on the seams, dragging and clamping correctly. The
+stylesheet was live then and stopped being live afterwards: the dev server had
+been running since before this work started, and at some point it stopped
+re-reading `globals.css` while continuing to hot-update the JSX. So the
+resizers kept arriving in the DOM and the rule that takes them out of flow
+did not. A hard reload did not fix it, which is what ruled out browser cache
+and pointed at the server. The production build had the rule correctly all
+along, which is what ruled out the CSS itself.
+
+That is worth stating plainly: the check was real and the code was right, and
+the thing that broke was neither. What the episode actually exposes is a
+**design that could not survive its stylesheet being late.**
+
+**The fix is not the dev server.** `position`, `top` and `bottom` are now set
+inline on the handle, and `position: relative` inline on the workspace that
+anchors it. Being out of flow is not a matter of appearance — it is what stops
+this element from participating in a layout it is not part of, and a grid item
+that should not be one does not degrade, it destroys. Everything that is
+genuinely appearance — the width, the cursor, the seam highlight — stays in
+the stylesheet, where it can safely arrive late.
+
+Verified after the change with the stylesheet current: one row,
+`grid-template-rows: 470.5px`, palette at 0, stage at 214, Inspector at 1185,
+handles on both seams, a drag taking the palette 214 → 307 and persisting. The
+built rule no longer contains `position` at all, which is the proof that the
+inline declaration is the one doing the work.
+
+**The lesson, since it generalises past this one element:** when a component
+is positioned out of a layout it is nested inside, the declaration that
+removes it from flow is structural, not cosmetic, and it should not be
+separable from the element. Ask of any style whether the page is *wrong* or
+merely *ugly* without it. Ugly can live in a stylesheet.
