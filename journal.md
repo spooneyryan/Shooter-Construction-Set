@@ -273,3 +273,53 @@ F-07, and it is a change to `@ccllc/arcade`.
 mirror the explosions: a sound set owned by this repository, mapped onto world
 events, edited in a panel. Per-*item* sounds hit exactly the same wall as
 per-item explosions.
+
+## 2026-09-01 — Per-enemy explosions and sounds, which needed the engine first
+
+Ryan asked for the engine work, the sound designer, and explosions per enemy
+type. The last two are one mechanism, and both were waiting on the first.
+
+**The blocker was a missing sentence, not a missing feature.** A `Burst` is
+`{x, y, color, count}`: where to draw and how big. It could never say *what*
+exploded, so this app had no way to ask for this raider's explosion. The local
+workaround — correlating a burst's position against `world.state.enemies` —
+would have guessed, and guessed wrong on the frame two things died together.
+So the engine grew `World.drainEvents()` carrying `sourceId`, `LevelItem.fx`
+holding ids into `Level.components`, and `explosion`/`sound` component kinds
+normalized by `burst` and `sfx`.
+
+**Ids rather than inline documents**, because "per enemy TYPE" is a statement
+about sharing: six raiders point at one explosion and editing it reaches all
+six. Inlining would make each copy drift the moment one was edited.
+
+**An authored explosion replaces the generic one.** The world queues both a
+burst and an event for the same death, so drawing both would double every
+explosion an author designed. Events are drained first and the generic blast
+dropped where an event at the same point brought its own. That ordering is a
+real constraint, not an implementation detail — the burst arrives with no way
+to know an event answered it.
+
+**Two things that surfaced on the way.**
+
+The palette filed the first explosion and sound Components under **SATELLITES**,
+because `componentCategory` ends in a catch-all rather than an exhaustive
+match, so any new kind lands there silently. Fixed, with the fallback now
+labelled as one.
+
+And a latent type error in `@ccllc/arcade`'s `sfx/synth.js` — `flatMap` over
+frozen arrays returns `readonly U[]` where `flatMap` takes `U | U[]` — had sat
+there indefinitely because nothing in a checked graph imported that file until
+shmup did. Fixed upstream in the same change. Worth remembering as a category:
+a module can carry a type error for as long as nobody imports it.
+
+**Verified by driving all of it**: created a sound and an explosion through
+their designers, assigned all three slots on an enemy, and read the level draft
+back to confirm the Components and the `fx` ids are what was stored. Then a
+headless test drives the full chain — level carries the documents, engine
+reports `sourceId` on the kill, lookup resolves, and the resolved burst really
+draws to a recording context. A second test pins that a deleted Component
+leaves the reference intact and resolves to nothing rather than throwing.
+
+The three-role explosion set from C-17 is unchanged and still the default:
+per-item explosions are an override, not a replacement, so a level that
+assigns nothing looks exactly as it did.

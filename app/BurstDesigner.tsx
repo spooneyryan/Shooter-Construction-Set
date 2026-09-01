@@ -22,6 +22,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { EbAccordion, EbAccordionItem } from "@electricblazor/react";
 import {
   BURST_LAYER_KINDS,
+  type BurstDefinition,
   advanceBurst,
   burstDuration,
   burstFrame,
@@ -83,10 +84,23 @@ export interface BurstDesignerProps {
   explosions: ExplosionSet;
   onApply: (set: ExplosionSet) => void;
   onCancel: () => void;
+  /**
+   * One saved explosion instead of the sector's three roles.
+   *
+   * The whole panel — layers, previews, both emitters — is the same editor
+   * either way; only what the left column offers differs. Rather than fork the
+   * designer, a single document is edited as a one-entry set under the
+   * `blast` slot, so every control below goes on addressing `set[role]` and
+   * knows nothing about which mode it is in.
+   */
+  single?: { name: string; burst: BurstDefinition };
+  onSaveSingle?: (burst: BurstDefinition) => void;
 }
 
-export default function BurstDesigner({ explosions, onApply, onCancel }: BurstDesignerProps) {
-  const [set, setSet] = useState<ExplosionSet>(explosions);
+export default function BurstDesigner({ explosions, onApply, onCancel, single, onSaveSingle }: BurstDesignerProps) {
+  const [set, setSet] = useState<ExplosionSet>(single
+    ? { ...explosions, blast: { burst: single.burst, tint: 0 } }
+    : explosions);
   const [role, setRole] = useState<ExplosionRole>("blast");
   const [layerIndex, setLayerIndex] = useState(0);
   const smoothRef = useRef<HTMLCanvasElement | null>(null);
@@ -195,7 +209,7 @@ export default function BurstDesigner({ explosions, onApply, onCancel }: BurstDe
 
         <div className="burst-body">
           <div className="burst-roles">
-            {EXPLOSION_ROLES.map((entry) => (
+            {single ? <div className="burst-role active"><b>{single.name.toUpperCase()}</b><em>A saved explosion. Any enemy can be pointed at it, and editing it reaches all of them.</em></div> : EXPLOSION_ROLES.map((entry) => (
               <button
                 key={entry} type="button"
                 className={"burst-role" + (entry === role ? " active" : "")}
@@ -221,11 +235,11 @@ export default function BurstDesigner({ explosions, onApply, onCancel }: BurstDe
             <p className="burst-readout">
               {ROLE_LABELS[role]} — {burstDuration(explosion.burst).toFixed(2)}s, {layers.length} layer{layers.length === 1 ? "" : "s"}
             </p>
-            <label className="range-field">
+            {!single && <label className="range-field">
               <span><b>WORLD TINT</b><em>{Math.round(explosion.tint * 100)}%</em></span>
               <input type="range" min="0" max="1" step="0.05" value={explosion.tint}
                 onChange={(event) => setSet((current) => ({ ...current, [role]: { ...current[role], tint: Number(event.target.value) } }))} />
-            </label>
+            </label>}
             <p className="inspector-note">How far the engine&apos;s colour for the event pulls these colours toward it. At zero the design keeps its own fire; at full a shot sparks in the shot&apos;s colour.</p>
           </div>
 
@@ -265,10 +279,10 @@ export default function BurstDesigner({ explosions, onApply, onCancel }: BurstDe
         </div>
 
         <footer className="studio-foot">
-          <button type="button" onClick={() => setSet(defaultExplosions())}>RESET ALL</button>
+          {!single && <button type="button" onClick={() => setSet(defaultExplosions())}>RESET ALL</button>}
           <span className="studio-spacer" />
           <button type="button" onClick={onCancel}>CANCEL</button>
-          <button type="button" className="studio-commit" onClick={() => onApply(set)}>SAVE EXPLOSIONS</button>
+          <button type="button" className="studio-commit" onClick={() => (single && onSaveSingle ? onSaveSingle(set.blast.burst) : onApply(set))}>{single ? "SAVE EXPLOSION" : "SAVE EXPLOSIONS"}</button>
         </footer>
       </div>
     </div>

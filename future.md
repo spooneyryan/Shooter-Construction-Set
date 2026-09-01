@@ -73,27 +73,6 @@ Adopt per component rather than in one pass, with the test being whether the res
 
 The ten features should be delivered as a series of compatible foundations rather than ten isolated additions. The key is to establish stable data models and generic editor operations first, then let the editor, asset, and combat workstreams progress in parallel.
 
-## F-07 — Per-enemy explosions
-
-C-17 gives the sector three explosions chosen by how big the engine says a
-burst is. What it cannot give is *this raider explodes differently from that
-carrier*, because the renderer is never told which enemy died — a `Burst`
-carries a point, a colour and a count, and nothing else.
-
-Closing that is a change to `@ccllc/arcade`, not one that can be made here,
-and it is worth stating precisely because the local workaround is tempting
-and wrong: correlating the burst's position against `world.state.enemies` at
-drain time would guess, and guess wrong on the frame two things die together.
-
-The library-side shape is small. `LevelItem` grows an optional explosion
-reference; `Burst` grows the id of the item it came from; the renderer looks
-it up and falls back to the count-based role when there is none. Decide where
-the explosion documents themselves live — inline on the item, or in
-`Level.components` as a new `ComponentKind` beside `pattern`, which is the
-shape the editor already knows how to save, list and reuse. The second is
-almost certainly right, and it would make an explosion a saved Component that
-several enemies share.
-
 ## Phase 0 — Architecture, schemas, and migration safety
 
 1. Design the next version of the level format with explicit reusable structures for transforms, sprite appearance, asset references, Components, weapons, armor, player slots, inventory, and satellites.
@@ -487,3 +466,65 @@ On the player and satellite the pattern belongs to the **Weapon Component**,
 not the mount, so every slot carrying that weapon changes together. That is
 the data model rather than a shortcut: a weapon is one saved thing, and two
 mounts firing the same gun differently would be two guns.
+
+## C-21 — Per-enemy explosions and sounds
+
+Was F-07, and it needed the engine change the entry predicted rather than the
+local workaround it warned against.
+
+**What was missing was one sentence in `@ccllc/arcade`.** A `Burst` is
+`{x, y, color, count}` — where to draw and how big, which is all a generic
+spray needs and nothing an authored one does. The renderer was never told
+*what* exploded, so correlating a burst against `world.state.enemies` was the
+only local option, and it would have guessed wrong the frame two things died
+together.
+
+The engine now has:
+
+- `Level.components` holding `kind: "explosion"` and `kind: "sound"`,
+  carrying a `BurstDefinition` and an `SfxDefinition`. shmup does not know
+  what either document is; it hands each to the module that owns the format,
+  exactly as it already hands sprite assets to `sprite`.
+- `LevelItem.fx` — `explosionId`, `deathSoundId`, `fireSoundId`, as **ids**
+  rather than inline copies, because sharing is the point of "per type": six
+  raiders share one explosion and editing it reaches all six. An id whose
+  Component was deleted is kept, so re-adding restores the link.
+- `World.drainEvents()`, matching the channel the other genre packs have,
+  carrying `sourceId` — the *authored* item, so a group's members all report
+  the item they came from.
+
+Events are a **separate queue from bursts**, which is the load-bearing part: a
+shield soaking a shot wants a spark and no sound, a weapon firing wants a
+sound and no spark, and draining one must not consume the other.
+
+**On this side**, the Inspector grew an EXPLOSION & SOUND section for anything
+destructible, the palette grew **+ EXPLOSION** and **+ SOUND**, and the
+renderer resolves an event's `sourceId` to whatever the level attached. An
+authored explosion **replaces** the generic one the same death also queued —
+the world queues both, and drawing both would double every explosion an author
+went to the trouble of designing.
+
+The explosion designer gained a single-document mode rather than a fork: one
+saved explosion is edited as a one-entry set under the `blast` slot, so every
+control below still addresses `set[role]` and knows nothing about the mode.
+
+## C-22 — The sound designer
+
+`SfxStudio` from `@ccllc/studio` over `@ccllc/arcade/sfx`, reached from
+**+ SOUND** in the palette, saving a `kind: "sound"` Component. Sounds are
+assigned in the same EXPLOSION & SOUND section as explosions — a death sound
+on anything destructible, a fire sound on anything with a weapon.
+
+One `createSfxPlayer` for the session, which renders each definition once and
+caches the samples: pointing forty enemies at one death sound costs one render
+rather than forty.
+
+**Firing signals a volley, not a bullet.** A spread cannon is one trigger pull
+and should be one sound, and a pattern emitting forty projectiles a second
+would otherwise ask for forty. The engine's test asserts the count stays in
+volley territory rather than merely being non-zero, because "more than none"
+would pass for the bug too.
+
+Per-*item* sounds fall out of the same `fx` field as explosions, so the two
+features are one mechanism wearing two labels — which is why they shipped
+together rather than one waiting on the other.

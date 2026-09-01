@@ -126,3 +126,70 @@ test("the world's colour still reaches the designed explosion", () => {
   const untouched = tintedBurst({ ...set.blast, tint: 0 }, "#00ff00");
   assert.equal(untouched, set.blast.burst);
 });
+
+// --- per-enemy explosions and sounds ---------------------------------------
+//
+// The chain has three links and each belongs to someone else: the level
+// carries the documents and the reference, the engine reports which authored
+// item was destroyed, and the app resolves one to the other. This drives all
+// three, because the interesting failure is a seam rather than a function.
+
+test("a level carries an explosion and a sound, and an enemy points at them", () => {
+  const boom = { id: "component-boom", name: "Boom", kind: "explosion",
+    explosion: { name: "Boom", layers: [{ kind: "spark", count: 12, speed: 300 }] } };
+  const pew = { id: "component-pew", name: "Pew", kind: "sound", sound: { name: "Pew", wave: "square" } };
+  const gunLine = createWorld(normalizeLevel(emptyLevel("probe"))).state.player.y;
+
+  const level = normalizeLevel({
+    ...emptyLevel("Per enemy"), mode: "horizontal", length: 6000,
+    components: [boom, pew],
+    items: [{
+      ...makeItem("raider", 520, gunLine, () => "foe"),
+      hitPoints: 2,
+      movement: { pattern: "stationary", speed: 0, amplitude: 0, frequency: 0 },
+      fx: { explosionId: "component-boom", deathSoundId: "component-pew", fireSoundId: "component-pew" },
+    }],
+  });
+
+  const world = createWorld(level);
+  const events = [];
+  for (let tick = 0; tick < 900 && !events.some((e) => e.type === "destroyed"); tick += 1) {
+    world.step(1 / 120, { ...idleInput(), fire: true });
+    events.push(...world.drainEvents());
+  }
+
+  const kill = events.find((event) => event.type === "destroyed");
+  assert.ok(kill, "the enemy never died");
+
+  // The resolution the renderer performs, done here against the same data.
+  const item = level.items.find((entry) => entry.id === kill.sourceId);
+  assert.ok(item, "the event named something that is not an authored item");
+  const explosion = level.components.find((entry) => entry.id === item.fx.explosionId)?.explosion;
+  const death = level.components.find((entry) => entry.id === item.fx.deathSoundId)?.sound;
+  assert.ok(explosion, "the explosion id resolved to nothing");
+  assert.ok(death, "the death sound id resolved to nothing");
+
+  // And it is a real burst that really draws, not just an object that survived
+  // a lookup.
+  const runtime = createBurstRuntime(explosion, kill.x, kill.y);
+  advanceBurst(runtime, 0.1);
+  const frame = burstFrame(runtime);
+  assert.ok(frame.shapes.length > 0, "the designed explosion drew nothing");
+
+  const ctx = recordingContext();
+  drawBurst(ctx, frame);
+  assert.ok(ctx.calls.some((call) => call[0] === "arc"), "and nothing reached a canvas");
+});
+
+test("a deleted effect Component leaves the reference and falls back", () => {
+  // The engine keeps an id whose Component is gone, so re-adding restores the
+  // link. What must not happen is the renderer throwing on the lookup.
+  const level = normalizeLevel({
+    ...emptyLevel("Dangling"),
+    items: [{ ...makeItem("raider", 100, 100, () => "foe"), fx: { explosionId: "component-gone" } }],
+  });
+  const item = level.items[0];
+  assert.equal(item.fx.explosionId, "component-gone", "the reference survived");
+  const resolved = level.components.find((entry) => entry.id === item.fx.explosionId)?.explosion;
+  assert.equal(resolved, undefined, "and resolves to nothing rather than throwing");
+});

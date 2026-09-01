@@ -7,8 +7,9 @@ import { createSelection, createEditorCommands, createKeymap } from "@ccllc/arca
 import { uniqueId } from "@ccllc/arcade/core";
 import { createTelemetry } from "@ccllc/arcade/telemetry";
 import { createSpriteCache } from "@ccllc/arcade/render";
-import { BulletPatternStudio, SpriteStudio, blankImageAsset } from "@ccllc/studio";
-import { advanceBurst, burstFrame, createBurstRuntime, drawBurst, type BurstRuntime } from "@ccllc/arcade/burst";
+import { BulletPatternStudio, SfxStudio, SpriteStudio, blankImageAsset } from "@ccllc/studio";
+import { advanceBurst, burstFrame, createBurstPreset, createBurstRuntime, drawBurst, normalizeBurst, type BurstDefinition, type BurstRuntime } from "@ccllc/arcade/burst";
+import { createSfxPlayer, createSfxPreset, normalizeSfx, type SfxDefinition } from "@ccllc/arcade/sfx";
 import { EbAccordion, EbAccordionItem, EbDialog, EbNumericInput, EbTabbedCard } from "@electricblazor/react";
 import { drawSpriteAsset } from "@ccllc/studio/render";
 import {
@@ -31,6 +32,8 @@ import {
   type BulletPatternDefinition,
   type Burst,
   type ComponentDefinition,
+  type ItemEffects,
+  type ShmupEvent,
   type DecorationLayer,
   type GroupPattern,
   type GunType,
@@ -77,6 +80,18 @@ type ProjectileSprite = "bolt" | "plasma";
  */
 function documentMessage(error: unknown, fallback: string) {
   return error instanceof DocumentError ? error.message.toUpperCase() : fallback;
+}
+
+/**
+ * Set one effect slot, dropping `fx` entirely once nothing is left in it.
+ *
+ * The engine normalizes an all-empty `fx` away, so leaving `{}` behind would
+ * mean the level as saved differs from the level in hand — the kind of
+ * difference that shows up later as a spurious unsaved-changes flag.
+ */
+function withEffect(fx: ItemEffects | undefined, key: keyof ItemEffects, value: string | undefined): ItemEffects | undefined {
+  const next = { ...(fx ?? {}), [key]: value };
+  return next.explosionId || next.deathSoundId || next.fireSoundId ? next : undefined;
 }
 
 /** Short ids, the shape this game's saved levels already carry. */
@@ -259,6 +274,35 @@ function BulletPatternField({ components, pattern, onApply }: {
         <option value="">NONE — STANDARD FIRE</option>
         {components.map((component) => <option value={component.id} key={component.id}>{component.name.toUpperCase()}</option>)}
         {choice === "custom" && <option value="custom">CUSTOM — EDITED HERE</option>}
+      </select>
+    </label>
+  );
+}
+
+/**
+ * One of an item's effect slots, as a picker over the Components of a kind.
+ *
+ * The value stored is a Component ID, never a copy of the document, because
+ * "per enemy type" means sharing: point six raiders at one explosion and
+ * editing it reaches all six. An id whose Component was deleted still shows —
+ * as MISSING rather than silently reverting to NONE — since the level kept it
+ * and re-adding the Component restores the link.
+ */
+function EffectField({ label, kind, components, value, onChange }: {
+  label: string;
+  kind: "explosion" | "sound";
+  components: ComponentDefinition[];
+  value: string | undefined;
+  onChange: (next: string | undefined) => void;
+}) {
+  const choices = components.filter((component) => component.kind === kind);
+  const missing = value !== undefined && !choices.some((component) => component.id === value);
+  return (
+    <label className="field wide"><span>{label}</span>
+      <select value={value ?? ""} onChange={(event) => onChange(event.target.value || undefined)}>
+        <option value="">NONE — DEFAULT</option>
+        {choices.map((component) => <option value={component.id} key={component.id}>{component.name.toUpperCase()}</option>)}
+        {missing && <option value={value}>MISSING — {value}</option>}
       </select>
     </label>
   );
@@ -627,6 +671,10 @@ export function StarlineGame() {
   // seeded rather than random, which is what makes the designer's preview show
   // the thing the game will actually draw.
   const burstsRef = useRef<BurstRuntime[]>([]);
+  // One player for the whole session. It renders each definition once and
+  // caches the samples, so pointing forty enemies at one death sound costs one
+  // render rather than forty.
+  const sfxRef = useRef(createSfxPlayer({ masterGain: 0.5 }));
   const explosionsRef = useRef<ExplosionSet>(defaultExplosions());
   // Frame statistics, and somewhere for them to go. Both are created once and
   // held in refs: the loop reads them every frame and must not be torn down and
@@ -727,6 +775,12 @@ export function StarlineGame() {
   const [paletteTab, setPaletteTab] = useState<PaletteTab>("objects");
   const [editingAsset, setEditingAsset] = useState<SpriteAsset | null>(null);
   const [editingPattern, setEditingPattern] = useState<{ pattern: BulletPatternDefinition; target: PatternEditorTarget } | null>(null);
+  // Editing a saved Component rather than a loose document in both cases: the
+  // id is what an item's fx points at, so it has to survive the round trip.
+  const [editingSound, setEditingSound] = useState<{ id: string; sound: SfxDefinition } | null>(null);
+  const [editingExplosion, setEditingExplosion] = useState<{ id: string; name: string; burst: BurstDefinition } | null>(null);
+  const editingOverlayRef = useRef(false);
+  useEffect(() => { editingOverlayRef.current = editingSound !== null || editingExplosion !== null; }, [editingSound, editingExplosion]);
   const editingPatternRef = useRef(false);
   useEffect(() => { editingPatternRef.current = editingPattern !== null; }, [editingPattern]);
   // The destructive confirms, replacing window.confirm: what to ask, and what
@@ -1000,6 +1054,41 @@ export function StarlineGame() {
     updateLevel((current) => ({ ...current, components: [...current.components, { ...structuredClone(source), id: `component-${uid()}`, name }] })); flash("COMPONENT SAVED");
   }, [flash, updateLevel]);
 
+  /**
+   * Explosions and sounds are saved Components, like weapons and patterns
+   * before them, because an item's `fx` points at a Component ID. Editing one
+   * therefore reaches every enemy that references it, which is the entire
+   * meaning of "per enemy TYPE" — a dozen raiders share one explosion.
+   *
+   * Upsert rather than append: the editors open on an existing Component when
+   * there is one, and saving under the same id has to replace it rather than
+   * grow a second copy nothing points at.
+   */
+  const upsertComponent = useCallback((component: ComponentDefinition) => {
+    updateLevel((current) => ({
+      ...current,
+      components: current.components.some((entry) => entry.id === component.id)
+        ? current.components.map((entry) => (entry.id === component.id ? component : entry))
+        : [...current.components, component],
+    }));
+  }, [updateLevel]);
+
+  const saveSoundComponent = useCallback((sound: SfxDefinition) => {
+    const target = editingSound;
+    if (!target) return;
+    upsertComponent({ id: target.id, name: sound.name || "Sound", kind: "sound", sound: normalizeSfx(sound) });
+    setEditingSound(null);
+    flash("SOUND SAVED");
+  }, [editingSound, flash, upsertComponent]);
+
+  const saveExplosionComponent = useCallback((burst: BurstDefinition) => {
+    const target = editingExplosion;
+    if (!target) return;
+    upsertComponent({ id: target.id, name: burst.name || "Explosion", kind: "explosion", explosion: normalizeBurst(burst) });
+    setEditingExplosion(null);
+    flash("EXPLOSION SAVED");
+  }, [editingExplosion, flash, upsertComponent]);
+
   const savePatternComponent = useCallback((pattern: BulletPatternDefinition) => {
     const name = window.prompt("Pattern Component name:", pattern.name || "Custom Pattern")?.trim(); if (!name) return;
     const saved = normalizeBulletPattern(structuredClone({ ...pattern, name }));
@@ -1116,10 +1205,65 @@ export function StarlineGame() {
   // three groups; `roleForCount` is that mapping, and it lives beside the
   // designs rather than here so the designer can label each role with the
   // engine's own numbers.
-  const spawnBursts = useCallback((bursts: Burst[]) => {
+  /**
+   * What the level attached to the thing that just happened.
+   *
+   * The engine tells us WHICH authored item was destroyed or fired; everything
+   * about what that should look and sound like lives in the level's own
+   * Components, so this is the only place the two meet. An id naming a deleted
+   * Component resolves to nothing and the default plays, which is why the
+   * engine keeps such ids rather than clearing them.
+   */
+  const effectsFor = useCallback((sourceId: string | undefined) => {
+    if (!sourceId) return undefined;
+    const level = levelRef.current;
+    const item = level.items.find((entry) => entry.id === sourceId);
+    if (!item?.fx) return undefined;
+    const find = (id: string | undefined) => (id ? level.components.find((entry) => entry.id === id) : undefined);
+    return {
+      explosion: find(item.fx.explosionId)?.explosion,
+      death: find(item.fx.deathSoundId)?.sound,
+      fire: find(item.fx.fireSoundId)?.sound,
+    };
+  }, []);
+
+  /**
+   * Play the designed effects for a step's events.
+   *
+   * Explosions from here REPLACE the generic one the same death also queued as
+   * a burst — the world queues both, and drawing both would double every
+   * authored explosion. The burst queue is drained first and the generic blast
+   * dropped whenever an event at the same point brought its own.
+   */
+  const playEvents = useCallback((events: ShmupEvent[]) => {
+    const player = sfxRef.current;
+    const authored: { x: number; y: number }[] = [];
+    for (const event of events) {
+      // `sourceId` lives on the members that have one, so each branch narrows
+      // before asking — which is the union earning its keep rather than a
+      // catch-all shape with half its fields undefined.
+      if (event.type === "destroyed") {
+        const fx = effectsFor(event.sourceId);
+        if (fx?.explosion) {
+          burstsRef.current.push(createBurstRuntime(fx.explosion, event.x, event.y));
+          authored.push({ x: event.x, y: event.y });
+        }
+        if (fx?.death) player.play(fx.death);
+      } else if (event.type === "fired") {
+        const fx = effectsFor(event.sourceId);
+        if (fx?.fire) player.play(fx.fire);
+      }
+    }
+    return authored;
+  }, [effectsFor]);
+
+  const spawnBursts = useCallback((bursts: Burst[], authored: { x: number; y: number }[] = []) => {
     const live = burstsRef.current;
     const set = explosionsRef.current;
     for (const request of bursts) {
+      // A death queues both a burst and an event. If the event brought a
+      // designed explosion, this generic one is the same explosion drawn twice.
+      if (authored.some((point) => point.x === request.x && point.y === request.y)) continue;
       const explosion = set[roleForCount(request.count)];
       live.push(createBurstRuntime(tintedBurst(explosion, request.color), request.x, request.y));
     }
@@ -1243,7 +1387,7 @@ export function StarlineGame() {
       // The pattern designer, the confirm and the settings dialog each own the
       // keyboard outright while open, which is a gate over the whole table
       // rather than a condition on any one binding.
-      if (editingPatternRef.current || pendingConfirmRef.current || showSettingsRef.current || designingBurstsRef.current) return;
+      if (editingPatternRef.current || pendingConfirmRef.current || showSettingsRef.current || designingBurstsRef.current || editingOverlayRef.current) return;
       // The nudge bindings need the event to decide, which `when` cannot see.
       if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.code) && !nudgeable(event)) return;
       keymap.handle(event);
@@ -1447,7 +1591,10 @@ export function StarlineGame() {
       const world = worldRef.current;
       if (!world || modeRef.current !== "playing") return;
       world.step(dt, input);
-      spawnBursts(world.drainBursts());
+      // Events before bursts: an authored explosion replaces the generic one
+      // the same death queued, and the only way to know is to have seen it.
+      const authored = playEvents(world.drainEvents());
+      spawnBursts(world.drainBursts(), authored);
 
       // `advanceBurst` reports false once a burst has finished showing, so the
       // module owns when one is over rather than this loop re-deriving it.
@@ -1626,7 +1773,7 @@ export function StarlineGame() {
     });
     loop.start();
     return () => { loop.stop(); observer.disconnect(); };
-  }, [editorFor, enterPlay, equipInventoryWeapon, exitPlay, spawnBursts]);
+  }, [editorFor, enterPlay, equipInventoryWeapon, exitPlay, playEvents, spawnBursts]);
 
   const canvasPoint = (event: React.PointerEvent<HTMLCanvasElement>) => {
     const rect = event.currentTarget.getBoundingClientRect();
@@ -1756,7 +1903,7 @@ export function StarlineGame() {
   };
 
   const selected = level.items.find((item) => item.id === selectedId) ?? null;
-  const componentCategories = ["ENEMIES", "TERRAIN", "GROUPS", "POWERUPS", "UPGRADES", "DECORATIONS", "WEAPONS", "PATTERNS", "ARMOR", "SATELLITES"];
+  const componentCategories = ["ENEMIES", "TERRAIN", "GROUPS", "POWERUPS", "UPGRADES", "DECORATIONS", "WEAPONS", "PATTERNS", "EXPLOSIONS", "SOUNDS", "ARMOR", "SATELLITES"];
   // Components are what the user saved; Enhancements are the fixed library that
   // arrives with every level. The id prefix already told the two apart — it is
   // what gates the delete button — so the split needed nothing added to the
@@ -1772,7 +1919,10 @@ export function StarlineGame() {
   // and recognise it. A pattern is a property of the weapon, so it belongs in
   // the weapon's own section, named, with the current value showing.
   const patternComponents = level.components.filter((component) => component.kind === "pattern" && component.pattern);
-  const componentCategory = (component: ComponentDefinition) => component.kind === "enemy" ? "ENEMIES" : component.kind === "terrain" ? "TERRAIN" : component.kind === "group" ? "GROUPS" : component.kind === "powerup" ? "POWERUPS" : component.kind === "upgrade" ? "UPGRADES" : component.kind === "decoration" ? "DECORATIONS" : component.kind === "weapon" ? "WEAPONS" : component.kind === "pattern" ? "PATTERNS" : component.kind === "armor" ? "ARMOR" : "SATELLITES";
+  // The final branch is a FALLBACK, not a synonym for satellite: a kind with
+  // no case here lands in it silently, which is how the first explosion and
+  // sound Components turned up filed under SATELLITES.
+  const componentCategory = (component: ComponentDefinition) => component.kind === "enemy" ? "ENEMIES" : component.kind === "terrain" ? "TERRAIN" : component.kind === "group" ? "GROUPS" : component.kind === "powerup" ? "POWERUPS" : component.kind === "upgrade" ? "UPGRADES" : component.kind === "decoration" ? "DECORATIONS" : component.kind === "weapon" ? "WEAPONS" : component.kind === "pattern" ? "PATTERNS" : component.kind === "armor" ? "ARMOR" : component.kind === "explosion" ? "EXPLOSIONS" : component.kind === "sound" ? "SOUNDS" : "SATELLITES";
   const setCameraSafe = (next: number) => {
     if (next + VIEW_W > levelRef.current.length) {
       const length = Math.ceil((next + VIEW_W) / 500) * 500;
@@ -1895,7 +2045,7 @@ export function StarlineGame() {
               </div>, "palette")) : tab === "components" ? <>
               <div className="asset-actions"><button type="button" onClick={() => setEditingAsset({ id: uid(), name: "New Raster", kind: "raster", width: 16, height: 16, pixels: Array(256).fill("") })}>+ RASTER SPRITE</button><button type="button" onClick={() => setEditingAsset({ id: uid(), name: "New Vector", kind: "vector", width: 256, height: 256, shapes: [] })}>+ VECTOR SPRITE</button>{/* An image asset is defined by carrying real bytes, so a blank one is a
                   real transparent PNG rather than an empty string -- which is what
-                  blankImageAsset exists for, and what normalizeAssets would drop. */}<button type="button" onClick={() => setEditingAsset(blankImageAsset(uid(), "New Image", 256, 256))}>+ IMAGE</button></div>
+                  blankImageAsset exists for, and what normalizeAssets would drop. */}<button type="button" onClick={() => setEditingAsset(blankImageAsset(uid(), "New Image", 256, 256))}>+ IMAGE</button><button type="button" onClick={() => setEditingExplosion({ id: `component-${uid()}`, name: "New Explosion", burst: { ...createBurstPreset("Blast"), name: "New Explosion" } })}>+ EXPLOSION</button><button type="button" onClick={() => setEditingSound({ id: `component-${uid()}`, sound: { ...createSfxPreset("Explosion"), name: "New Sound" } })}>+ SOUND</button></div>
               {level.assets.length > 0 && section("SPRITES", "SPRITES", <div className="palette-category-items">{level.assets.map((asset) => <div className="component-card-row" key={asset.id}><button className="palette-card" type="button" onClick={() => setEditingAsset(structuredClone(asset))}><SpriteAssetPreview asset={asset} /><span><strong>{asset.name}</strong><small>{asset.kind.toUpperCase()} / {asset.width}×{asset.height}</small></span><b>EDIT</b></button><button className="component-delete" type="button" onClick={() => deleteSpriteAsset(asset.id)} title="Delete sprite">×</button></div>)}</div>, "palette")}
               {componentSections(savedComponents, "COMP")}
               {!savedComponents.length && !level.assets.length && <p className="palette-empty">Nothing saved yet. Select an Object and choose SAVE AS COMPONENT, or keep a copy of one of the Enhancements.</p>}
@@ -2048,6 +2198,16 @@ export function StarlineGame() {
               <label className="field wide"><span>GRANT GUN</span><select value={selected.pickup?.gun ?? "none"} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, pickup: { ...(item.pickup ?? { duration: 8, xSpeedBoost: 0, ySpeedBoost: 0, shotSpeedBoost: 0, shotPowerBoost: 100, gun: "none" }), gun: event.target.value as GunType | "none" } }))}><option value="none">NO NEW GUN</option><option value="pulse">PULSE</option><option value="spread">SPREAD</option><option value="rapid">RAPID</option></select></label>
             </>)}
 
+            {selected.type !== "decoration" && section("effects", "EXPLOSION & SOUND", <>
+              <EffectField label="EXPLOSION" kind="explosion" components={level.components} value={selected.fx?.explosionId}
+                onChange={(next) => updateSelectedItems((item) => ({ ...item, fx: withEffect(item.fx, "explosionId", next) }), "item-explosion")} />
+              <EffectField label="DEATH SOUND" kind="sound" components={level.components} value={selected.fx?.deathSoundId}
+                onChange={(next) => updateSelectedItems((item) => ({ ...item, fx: withEffect(item.fx, "deathSoundId", next) }), "item-death-sound")} />
+              {(selected.type === "enemy" || selected.type === "group") && <EffectField label="FIRE SOUND" kind="sound" components={level.components} value={selected.fx?.fireSoundId}
+                onChange={(next) => updateSelectedItems((item) => ({ ...item, fx: withEffect(item.fx, "fireSoundId", next) }), "item-fire-sound")} />}
+              <p className="inspector-note">Designed in the palette under COMPONENTS. Several objects can point at one explosion or sound; editing it reaches all of them.</p>
+            </>)}
+
             {(selected.type === "enemy" || selected.type === "group") && section("weapon", "WEAPON", <>
               <label className="toggle-row"><span>WEAPON ENABLED</span><input type="checkbox" checked={selected.weapon.enabled} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, weapon: { ...item.weapon, enabled: event.target.checked } }))} /><i /></label>
               {selected.weapon.enabled && <><div className="field-grid"><label className="field"><span>PROJECTILE</span><select value={selected.weapon.projectile} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, weapon: { ...item.weapon, projectile: event.target.value as ProjectileSprite } }))}><option value="bolt">BOLT</option><option value="plasma">PLASMA</option></select></label><label className="field"><span>MOTION</span><select value={selected.weapon.projectileMovement} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, weapon: { ...item.weapon, projectileMovement: event.target.value as "straight" | "sine" } }))}><option value="straight">STRAIGHT</option><option value="sine">SINE</option></select></label></div>
@@ -2080,6 +2240,8 @@ export function StarlineGame() {
         <p className="inspector-note">Governs the collapsible sections in the palette and the Inspector alike. Kept in this browser rather than in the level.</p>
       </EbDialog>}
       {editingPattern && <BulletPatternStudio pattern={editingPattern.pattern} onApply={applyPatternEditor} onSaveComponent={savePatternComponent} onCancel={() => setEditingPattern(null)} />}
+      {editingSound && <SfxStudio sound={editingSound.sound} onApply={saveSoundComponent} onCancel={() => setEditingSound(null)} />}
+      {editingExplosion && <BurstDesigner explosions={explosions} single={{ name: editingExplosion.name, burst: editingExplosion.burst }} onSaveSingle={saveExplosionComponent} onApply={() => setEditingExplosion(null)} onCancel={() => setEditingExplosion(null)} />}
       {designingBursts && <BurstDesigner explosions={explosions} onCancel={() => setDesigningBursts(false)} onApply={(next) => { setExplosions(next); saveExplosions(next); setDesigningBursts(false); flash("EXPLOSIONS SAVED"); }} />}
     </main>
   );
