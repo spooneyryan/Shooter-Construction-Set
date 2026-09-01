@@ -323,3 +323,25 @@ leaves the reference intact and resolves to nothing rather than throwing.
 The three-role explosion set from C-17 is unchanged and still the default:
 per-item explosions are an override, not a replacement, so a level that
 assigns nothing looks exactly as it did.
+
+
+## Onto the released 2.0.10, off the build number
+
+The dependency read `^2.0.10-dev.257` — a caret range whose floor is a
+*prerelease*, pinned to a build number from the day the explosions work was
+written against unreleased GameBase. 2.0.10 has since shipped, so this moves
+onto it, which is the same cleanup `Move onto the released arcade 2.0.8` did
+one release earlier.
+
+Worth writing down why it is 2.0.10 and not 2.0.9, since 2.0.9 is what the
+image-sprite commit named: **going back would break this app.** GameBase's
+2.0.10 exists *because of* the explosions work here — its commit says so
+outright ("Per-enemy explosions and sounds could not be built in a game over
+this package, and the reason was one missing sentence here") — and this app
+now uses `explosionId`, `deathSoundId` and the `explosion`/`sound` component
+kinds that release added. So the floor moves forward to the release, not back
+to the previous one.
+
+Gate: 11/11 tests, build clean, and the installed 2.0.10 checked for the
+surface this app actually calls — `blankImageAsset`, `SpriteStudio`, and
+`normalizeAssets` accepting an `image` asset.
