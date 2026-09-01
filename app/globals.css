@@ -491,3 +491,40 @@ kbd { min-width: 22px; padding: 3px 5px; display: inline-block; border: 1px soli
 @media (max-width: 1100px) {
   .burst-body { grid-template-columns: 1fr; grid-template-rows: auto auto auto; }
 }
+
+/* ---------------------------------------------------------------------------
+   Presentation mode
+
+   Playtest with the editor taken away: the game as a player would meet it.
+   Everything hidden here is chrome that belongs to the person BUILDING the
+   level -- the topbar, the level bar, both tool panels, the stage toolbar, the
+   minimap and the shortcut bar. What is left is the playfield and the HUD the
+   game itself draws.
+
+   `display: none` rather than `visibility: hidden`, unlike the panels during
+   an ordinary playtest: those keep their space so the stage does not jump when
+   you tab in and out, whereas here the whole point is that the space is
+   reclaimed. Escape leaves, which is the same key that leaves a playtest.
+   --------------------------------------------------------------------------- */
+.editor-app.is-presenting .topbar,
+.editor-app.is-presenting .levelbar,
+.editor-app.is-presenting .shortcut-bar,
+.editor-app.is-presenting .palette-panel,
+.editor-app.is-presenting .inspector-panel,
+.editor-app.is-presenting .panel-resizer,
+.editor-app.is-presenting .stage-toolbar,
+.editor-app.is-presenting .minimap-block { display: none; }
+
+/* One column, and the stage takes the room the panels gave back. The grid is
+   restated rather than inherited because `.workspace.is-playing` sets its own
+   three-column template, and presentation is the stronger claim. */
+.editor-app.is-presenting .workspace,
+.editor-app.is-presenting .workspace.is-playing { grid-template-columns: minmax(0, 1fr); }
+.editor-app.is-presenting .stage-panel { min-height: 0; }
+.editor-app.is-presenting { background: #04070b; }
+
+/* The one piece of chrome that stays, because a mode with no visible way out
+   is a trap. It fades unless pointed at. */
+.present-exit-hint { position: fixed; right: 14px; bottom: 12px; z-index: 40; padding: 5px 11px; border: 1px solid var(--line); border-radius: 3px; background: rgba(6,12,18,.72); color: #58737e; font-family: var(--font-mono); font-size: 9px; letter-spacing: .09em; opacity: .35; transition: opacity .18s ease; pointer-events: none; }
+.editor-app.is-presenting:hover .present-exit-hint { opacity: .9; }
+.present-button b { font-size: 12px; font-weight: 400; line-height: 1; color: var(--cyan); }

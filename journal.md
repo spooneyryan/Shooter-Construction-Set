@@ -199,3 +199,77 @@ is positioned out of a layout it is nested inside, the declaration that
 removes it from flow is structural, not cosmetic, and it should not be
 separable from the element. Ask of any style whether the page is *wrong* or
 merely *ugly* without it. Ugly can live in a stylesheet.
+
+## 2026-09-01 — Six requests, two already answered
+
+Ryan asked for six things. Two of them already existed, which is worth
+recording because building them again would have been the expensive mistake:
+
+- **The full sprite editor suite** is there. `+ RASTER SPRITE`, `+ VECTOR
+  SPRITE` and `+ IMAGE` all sit in the palette's COMPONENTS tab; the third
+  arrived with GameBase 2.0.9 the day before.
+- **Replacing an item's sprite** is there too. A selected object has a SPRITE
+  dropdown listing the built-ins and every custom asset, and the player has
+  SHIP SPRITE. Verified by clicking an enemy and reading the pane rather than
+  by reading the source, because the question was whether it is *reachable*.
+
+That leaves the reason he could not find them worth thinking about, and the
+third request answers it.
+
+### Bullet patterns (C-20)
+
+Equipping one was a gesture — select an object, then click a Pattern card in
+the palette — and the Inspector never said which pattern an object carried, so
+the only way to find out was to open the designer and recognise it. It is a
+property of the weapon, so it is now a named dropdown in the weapon's own
+section, on enemies, on each player weapon slot and on the satellite. That
+last two also close F-00.
+
+It can name the Component a pattern came from because applying one clones it
+and normalization keeps the `id`. Edited afterwards, it says CUSTOM rather
+than claiming to still be the original — and a pattern seeded from a preset by
+the designer reads as custom too, correctly, since a fresh copy is not the
+shared Component.
+
+Two selects in that same pane were both labelled **PATTERN**, and neither was
+a bullet pattern: one is the group formation, the other the movement rule.
+They are FORMATION and MOVEMENT now. That relabelling is probably most of the
+"unintuitive".
+
+### Presentation mode (C-19)
+
+Shift+T starts a playtest with the editor taken away; Escape leaves. It is an
+argument to `enterPlay` rather than a mode beside it, because "as a player
+would see it" means the game *running* — chrome stripped from a paused editor
+is still an editor — and because two independent flags could disagree about
+what is showing.
+
+`P` stayed pause, which F-02 flagged as the open decision. Shift+T pairs with
+T, so the two are learnable from each other and nothing had to move.
+
+One piece of chrome deliberately survives: a dim ESC hint, `pointer-events:
+none` so it never eats a click, because a mode that hides its own exit is a
+trap.
+
+**The same change produced two bugs of one kind.** `enterPlay` gained a
+`presented` parameter while two call sites still passed it as `onClick={enterPlay}`
+— and a MouseEvent is truthy, so TEST RUN and RETRY would both have silently
+presented. I caught the first by reading; TypeScript caught the second. The
+lesson is the cheap one: when a function grows a leading boolean, every
+`onClick={fn}` referencing it becomes a call with an event in that slot, and
+the compiler will only save you if the parameter is typed narrowly enough to
+conflict. `presented = false` was.
+
+### Still open from that list
+
+**Explosions are already in the game** — every death, hit and shield break
+draws a designed one, chosen by the size the engine asks for. What does not
+exist is assigning a *specific* explosion to a *specific* enemy, and that
+cannot be built here: the renderer is never told which enemy died. It is
+F-07, and it is a change to `@ccllc/arcade`.
+
+**The sound designer is not started.** `SfxStudio` is exported from
+`@ccllc/studio` and `@ccllc/arcade/sfx` renders the audio, so the shape will
+mirror the explosions: a sound set owned by this repository, mapped onto world
+events, edited in a panel. Per-*item* sounds hit exactly the same wall as
+per-item explosions.

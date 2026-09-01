@@ -4,49 +4,37 @@ This file is the planning backlog for ideas that are not yet approved for implem
 
 When a future item is completed, move it to the **Completed Features** archive at the end of this file and renumber the archive sequentially as `C-00`, `C-01`, and so on. Reuse the vacated `F-` number for the remaining active backlog so that both sections stay compact.
 
-## F-00 — Equip a saved Pattern Component on the player
-
-A saved **Pattern Component** can be applied to an enemy or a group — select one, click the card — but there is no path to the player's guns. Clicking a Pattern card with nothing selected opens the designer on the definition itself, and a player weapon slot offers only ADD/EDIT BULLET PATTERN, which authors the pattern belonging to that slot's weapon rather than choosing one already saved. The satellite has the same gap: it picks a Weapon Component, and that weapon's pattern is reachable only through the designer.
-
-Add a way to assign an existing Pattern Component to a player weapon slot and to the satellite — a pattern picker beside the weapon select is the obvious form, and the Enhancements/Components card could equip the current slot the way a Weapon Component does. Decide whether assigning stores a copy on the weapon, which is the shape the data already has since `Weapon` carries its `pattern` inline, or a reference that later edits to the Component would track; what happens to a slot's pattern when its weapon changes; and how the Inspector shows which Component a slot's pattern came from and clears it back to standard fire.
-
-## F-01 — Bullet colour for ordinary weapon fire
+## F-00 — Bullet colour for ordinary weapon fire
 
 The bullet-pattern designer already picks colours, per array, but ordinary fire cannot be recoloured. A player Weapon Component carries a `color` — the built-ins are lime, cyan and amber — and nothing in the Inspector edits it; an enemy's `Weapon` has no colour field at all, so its shots take their colour from the projectile type the renderer is given. Expose a colour control for both.
 
 The two halves are not the same size of change: surfacing the existing `ComponentWeapon.color` is work in this repository, while giving an enemy `Weapon` a colour adds a field to the level contract in `@ccllc/arcade`. Decide the default for levels saved before it, whether the projectile sprite choice keeps any say once a colour is set, and whether the muzzle flash, impact burst and shield-absorb effects follow the bullet colour or stay as they are.
 
-## F-02 — Presentation mode
-
-A hotkey that strips everything that is not the game — topbar, level bar, both tool panels, the stage toolbar, minimap and shortcut bar — leaving the playfield alone on screen for showing a level off. This is not fullscreen, which `F` already does while keeping all the chrome; the two should compose, so presentation mode inside fullscreen gives a bare game on a bare screen.
-
-**`P` is not free.** It is pause/resume during play, and the pause overlay tells the user so. Pick one: bind presentation mode to `P` only in build mode, give it another key, or move pause. Also decide whether it is a mode the editor enters and leaves, what returns from it (Escape is already crowded), whether it forces playtest or can present a paused editor view, and how it interacts with the responsive layouts.
-
-## F-03 — Import raster image files as sprite assets
+## F-01 — Import raster image files as sprite assets
 
 Let the user bring a PNG, GIF or JPEG in as a sprite asset instead of drawing every sprite by hand in the raster editor. The importer has to resolve the image onto the editor's pixel grid: choose or infer a canvas resolution, resample to it, decide how transparency and near-transparent edges are treated, and optionally quantise the palette so the result stays editable as pixel art rather than becoming an unpaintable photo.
 
 The raster editor lives in `@ccllc/studio`, so the import UI belongs there, while the size limits belong to whatever this repository is willing to carry: assets travel inside the level through `localStorage`, export files and share links, and a photograph pasted at full resolution would blow all three. Define the ceiling, what happens when an import exceeds it, and how imported assets are attributed in the asset list.
 
-## F-04 — Import SVG files as vector sprite assets
+## F-02 — Import SVG files as vector sprite assets
 
 Bring SVG artwork in as a **vector** sprite asset: parse the file into the vector editor's own shape model so it arrives editable — nodes, fills, strokes, ordering and transforms — rather than being flattened to a preview or rasterised onto a pixel grid. Half of that is already solved, since the vector editor stores editable source data rather than a flattened image; the import is the mapping from arbitrary SVG onto that model.
 
 Imported SVG is untrusted input and must be validated before it is trusted, in the same spirit as `normalizeLevel`: no scripts, no external references, no remote fetches. Define what becomes of the constructs the vector document has no shape for — gradients, filters, clip paths, masks, text, and transforms it cannot express — whether they are approximated, dropped with a warning, or refuse the import outright, and how a file that is mostly unsupported reports what was lost. The vector editor lives in `@ccllc/studio`, so the parser and its UI belong there.
 
-## F-05 — Editable backdrops
+## F-03 — Editable backdrops
 
 The backdrop is hardcoded in the renderer: one purple nebula gradient and 155 procedurally scattered stars, generated at mount. A level carries no background of its own — `Level` holds version, name, length, player, items, assets and components — so every sector looks the same behind the action. Let the level author its backdrop: a base colour or gradient, star density and colour or none at all, and one or more parallax layers that can use a sprite asset.
 
 This adds a field to the level contract in `@ccllc/arcade` and rendering here. Define the layer model and how it relates to the existing background decorations, which already scroll at their own parallax and largely cover this ground for discrete objects; the useful distinction is probably that a backdrop tiles or stretches while a decoration is placed. Keep the starfield's presentation-side freedom — it is not simulation state and is allowed its `Math.random` — and give old levels the current look by default.
 
-## F-06 — Foreground terrain
+## F-04 — Foreground terrain
 
 Terrain today is a single colliding layer drawn with everything else: only `enemy` and `terrain` items take player bullets, while decorations, which do have a `foreground` draw layer with opacity and parallax, are scenery that nothing can hit. Neither gives a ceiling or a rock face that passes in front of the ship and still stops a shot.
 
 Add terrain that draws in front of the player while keeping its collision, and decide the pieces that follow: whether "foreground" is a flag on the existing terrain type or a new type, whether foreground terrain is opaque or takes the decoration layer's opacity, how it reads in the editor when it covers the objects being placed, and how the player is meant to survive a screen where the danger is drawn over the ship. Collision belongs to the simulation in `@ccllc/arcade`; the draw order belongs here.
 
-## F-07 — GameBase co-op compatibility
+## F-05 — GameBase co-op compatibility
 
 Make a run playable as lockstep co-op on the GameBase system. Most of the foundation is already there and needs nothing: the simulation in `@ccllc/arcade/shmup` runs a fixed 120 Hz step, never reads a clock, never calls `Math.random`, and already does its trigonometry through the deterministic `sin`/`cos`/`atan2` helpers in `@ccllc/arcade/core` — the only `Math` trig left in that package sits inside comments explaining the rule. Starline's own `Math.random` is confined to particles and the starfield, which are render-side and are allowed to differ between players. `@ccllc/arcade/net` ships the rest of the machinery: WebSocket and loopback transports, a seeded xorshift128 generator, and an input log recording `[step, bitstring]` against a named action list.
 
@@ -59,7 +47,7 @@ The remainder is session work: a lobby or invite path, agreeing the level and it
 
 One nit found while reading for this: the editor's motion-path preview predicts a selected object's sine and zigzag path with `Math.sin`/`Math.asin` while the simulation flies it with the shared helpers, so the drawn path can differ slightly from the real one. It is presentation and cannot desync anything, but it is the one place in this repository where the two trigonometries disagree about the same curve.
 
-## F-08 — Adopt more of the ElectricBlazor suite
+## F-06 — Adopt more of the ElectricBlazor suite
 
 Starline uses four of the roughly sixty components `@electricblazor/react` ships: the accordion behind both tool panels, the tabbed card behind the palette switch, the numeric input in the Inspector, and the dialog behind the confirms and the settings. Everything else is hand-written — 41 buttons, 34 range sliders, 17 selects and two checkbox toggles in `StarlineGame.tsx` alone, each with its own rules in `globals.css`. Replace what the suite already does better, and take the capability where the suite has one and Starline has none.
 
@@ -73,11 +61,11 @@ The clearest candidates, roughly in order of what they would pay back:
 | `.palette-card` grids | `EbTile` / `EbTileGrid` (`/tile`) |
 | Weapon slots and inventory order | `EbSortableList` with `moveItem` |
 | ~~Fixed side-panel widths~~ | `EbSplitter` — **evaluated and not adopted**, see C-18 |
-| Bullet colour fields (`F-01`) | `EbColorPicker` / `EbColorSwatch` / `EbCssColorField` (`/color`) |
+| Bullet colour fields (`F-00`) | `EbColorPicker` / `EbColorSwatch` / `EbCssColorField` (`/color`) |
 
-`F-01` should be built on those rather than hand-rolled, so it is worth reading together with this one. The side-panel row is struck through because the splitter *was* tried and rejected for a stated reason — C-18 records it, and that rejection is specific to this layout rather than to the component.
+`F-00` should be built on those rather than hand-rolled, so it is worth reading together with this one. The side-panel row is struck through because the splitter *was* tried and rejected for a stated reason — C-18 records it, and that rejection is specific to this layout rather than to the component.
 
-Two things bound the sweep. **The suite has no select and no toggle** — there is no `EbSelect` or `EbSwitch` anywhere in the package — so the 17 selects and the two checkbox toggles stay native whatever else moves. And **the colour pickers stay rejected for hue tint**: they pick colours, while tint is a hue *rotation*, and a swatch showing a colour the game never renders is worse than the slider. That rejection is recorded in AGENTS.md and is specific to tint; it does not extend to `F-01`, where a bullet colour really is a colour.
+Two things bound the sweep. **The suite has no select and no toggle** — there is no `EbSelect` or `EbSwitch` anywhere in the package — so the 17 selects and the two checkbox toggles stay native whatever else moves. And **the colour pickers stay rejected for hue tint**: they pick colours, while tint is a hue *rotation*, and a swatch showing a colour the game never renders is worse than the slider. That rejection is recorded in AGENTS.md and is specific to tint; it does not extend to `F-00`, where a bullet colour really is a colour.
 
 Adopt per component rather than in one pass, with the test being whether the result survives the cockpit's density: Starline runs 8–10px mono type and roughly 31px controls, tighter than the suite's defaults, and the palette's tab strip already needed overrides to fit two tabs and more to fit three. Keep the swaps that hold up and revert the ones that fight it. The mechanics are settled and should not change: `styles.css` is imported once in `layout.tsx` and already carries every component's stylesheet, including the subpath ones, so a new component needs no new stylesheet; `theme.css` is never loaded, because the `--eb-*` bridge in `globals.css` maps the suite's tokens onto Starline's palette; and appearance overrides go through the suite's stable public class names scoped under `.workspace`. The package is a committed tarball, so a component that needs a newer release means re-packing `vendor/` first.
 
@@ -85,7 +73,7 @@ Adopt per component rather than in one pass, with the test being whether the res
 
 The ten features should be delivered as a series of compatible foundations rather than ten isolated additions. The key is to establish stable data models and generic editor operations first, then let the editor, asset, and combat workstreams progress in parallel.
 
-## F-09 — Per-enemy explosions
+## F-07 — Per-enemy explosions
 
 C-17 gives the sector three explosions chosen by how big the engine says a
 burst is. What it cannot give is *this raider explodes differently from that
@@ -422,7 +410,7 @@ Below 760px the columns become rows, `grid-template-columns` goes inert, and
 the handles hide — a width means nothing in a stacked layout. They hide during
 playtest too, where `.is-playing` collapses both panels to zero.
 
-**`EbSplitter` was evaluated and rejected**, against F-08's expectation that
+**`EbSplitter` was evaluated and rejected**, against F-06's expectation that
 this be built on it. It is a *two-pane* component that owns both panes and
 splits them by a **ratio**; this is a three-column grid whose stage floor,
 playtest collapse and sub-760px restack are all expressed in that grid, and a
@@ -430,3 +418,72 @@ playtest collapse and sub-760px restack are all expressed in that grid, and a
 nesting two splitters and rewriting all of that responsive behaviour to live
 inside them. The rejection is about this layout, not the component — a genuine
 two-pane split here should still reach for it.
+
+## C-19 — Presentation mode
+
+Was F-02. **Shift+T** starts a playtest with the editor taken away; Escape
+leaves, exactly as it leaves an ordinary playtest. There is also a PRESENT
+button beside TEST RUN, and the shortcut bar teaches the key.
+
+**It is a way of entering play, not a mode beside it.** "The game as a player
+would see it" means the game running; chrome stripped from a paused editor
+would still be an editor. Making it an argument to `enterPlay` rather than an
+independent flag means the two can never disagree about what is showing.
+
+**`P` stayed pause**, which F-02 flagged as the decision to make. Shift+T is
+the answer because T already starts a playtest and this starts the same
+playtest presented, so the pair is learnable from one another. Nothing had to
+move, and the pause overlay keeps the key it documents.
+
+Hidden: the topbar, the level bar, both tool panels and their resize handles,
+the stage toolbar, the minimap and the shortcut bar. `display: none` rather
+than the `visibility: hidden` an ordinary playtest uses on the panels — that
+keeps their space so the stage does not jump when you tab in and out, whereas
+here reclaiming the space is the entire point. What remains is the playfield
+and the HUD the game itself draws.
+
+One piece of chrome deliberately stays: a low-contrast ESC hint in the corner,
+because a mode that hides every control including its own exit is a trap. It
+brightens on hover and is `pointer-events: none`, so it never intercepts a
+click meant for the game.
+
+Two bugs came out of the same change and both were caught before shipping.
+`enterPlay` gained a `presented` parameter while two call sites still passed
+it straight to `onClick` — and a MouseEvent is truthy, so TEST RUN and RETRY
+would both have silently presented. TypeScript found the second one after the
+first was fixed by hand, which is the argument for the parameter being typed
+rather than an options bag nobody checks.
+
+## C-20 — Bullet patterns as a field on the weapon
+
+Was F-00, and the answer to a complaint that names the real problem better
+than the entry did: equipping a pattern was a *gesture*, and the Inspector
+never said which pattern an object was carrying.
+
+**A pattern is a property of the weapon, so it lives in the weapon's section.**
+A BULLET PATTERN dropdown now appears wherever a weapon does — on enemies and
+groups, on each of the player's weapon slots, and on the satellite — listing
+every saved Pattern Component with NONE for standard fire. It shows the
+current value, which the palette-card gesture never could.
+
+**It can name where a pattern came from** because applying one
+`structuredClone`s it and normalization preserves `id`, so the field matches
+an equipped pattern back to its Component. Edit it afterwards and it reports
+**CUSTOM — EDITED HERE** rather than continuing to claim it is the original.
+Opening the designer from an object seeds a fresh copy of a preset, so
+applying that reads as custom too — correctly, since a copy with its own id is
+not the shared Component.
+
+NONE covers removal, so the separate "remove pattern" button went with it.
+The palette gesture still works for people who know it; it is no longer the
+only way to find out what is equipped.
+
+Two selects in the same pane were both labelled **PATTERN** and neither was a
+bullet pattern — one is the group's formation, the other the movement rule.
+They are FORMATION and MOVEMENT now, which is most of why the old arrangement
+read as unintuitive.
+
+On the player and satellite the pattern belongs to the **Weapon Component**,
+not the mount, so every slot carrying that weapon changes together. That is
+the data model rather than a shortcut: a weapon is one saved thing, and two
+mounts firing the same gun differently would be two guns.

@@ -719,6 +719,7 @@ export function StarlineGame() {
   const [openSections, setOpenSections] = useState<Record<string, string>>({});
   const [sectionMode, setSectionMode] = useState<SectionMode>("multiple");
   const [showSettings, setShowSettings] = useState(false);
+  const [presenting, setPresenting] = useState(false);
   // Annotated, because PANEL_LIMITS is `as const` and the fallback would
   // otherwise infer as the literal 214 rather than as a width.
   const [paletteWidth, setPaletteWidth] = useState<number>(PANEL_LIMITS.palette.fallback);
@@ -1127,7 +1128,19 @@ export function StarlineGame() {
     if (live.length > MAX_LIVE_BURSTS) live.splice(0, live.length - MAX_LIVE_BURSTS);
   }, []);
 
-  const enterPlay = useCallback(() => {
+  /**
+   * Presentation mode is playtest with the editor taken away, because that is
+   * what "as a player would see it" means here — chrome hidden around a paused
+   * editor would still be an editor. So it is a way of ENTERING play rather
+   * than a mode of its own, which is also why nothing has to decide what
+   * happens if the two disagree.
+   *
+   * `P` is not free — it is pause during play, and the pause overlay says so —
+   * so this is Shift+T: T already starts a playtest, and Shift+T starts the
+   * same playtest presented. Escape leaves, exactly as it leaves a playtest,
+   * so there is no second way out to learn.
+   */
+  const enterPlay = useCallback((presented = false) => {
     const world = createWorld(levelRef.current);
     worldRef.current = world;
     burstsRef.current = [];
@@ -1136,12 +1149,15 @@ export function StarlineGame() {
     mouseFireRef.current = false;
     setScore(0); setLives(world.state.hullMax); setHullMax(world.state.hullMax);
     setShield(Math.round(world.state.player.shield)); setProgress(0);
-    setMode("playing"); modeRef.current = "playing"; flash("PLAYTEST ACTIVE");
+    setPresenting(presented);
+    setMode("playing"); modeRef.current = "playing";
+    flash(presented ? "PRESENTING — ESC TO RETURN" : "PLAYTEST ACTIVE");
   }, [flash]);
 
   const exitPlay = useCallback(() => {
     inputRef.current?.releaseAll();
     worldRef.current = null;
+    setPresenting(false);
     setMode("build"); modeRef.current = "build"; setProgress(0); flash("BUILD MODE RESTORED");
   }, [flash]);
 
@@ -1188,6 +1204,7 @@ export function StarlineGame() {
       // The one shortcut that survives a focused text field: losing an edit
       // because focus was still in the name box is worse than the alternative.
       { code: "KeyS", ctrl: true, allowInTextEntry: true, label: "Save", run: () => saveLevel() },
+      { code: "KeyT", shift: true, when: build, label: "Present", run: () => enterPlay(true) },
       { code: "KeyT", when: build, label: "Playtest", run: () => enterPlay() },
       { code: "Escape", when: () => !build(), label: "Leave playtest", run: () => exitPlay() },
       { code: ["Delete", "Backspace"], when: build, label: "Delete", run: () => deleteSelected() },
@@ -1790,7 +1807,7 @@ export function StarlineGame() {
   });
 
   return (
-    <main className="editor-app">
+    <main className={"editor-app" + (presenting ? " is-presenting" : "")}>
       <header className="topbar">
         <a className="brand" href="#workspace" aria-label="Starline Foundry"><span className="brand-mark">S</span><span>STARLINE <i>FOUNDRY</i></span></a>
         <div className="mode-chip"><span className={mode === "build" ? "cyan-dot" : "lime-dot"} />{mode === "build" ? "BUILD MODE" : "PLAYTEST"}</div>
@@ -1812,7 +1829,13 @@ export function StarlineGame() {
           )}
           <button className="fullscreen-button burst-button" type="button" onClick={() => setDesigningBursts(true)}><b>✳</b> EXPLOSIONS</button>
           <button className="fullscreen-button settings-button" type="button" onClick={() => setShowSettings(true)}><b>⚙</b> SETTINGS</button>
-          {mode === "build" ? <button className="test-button" type="button" onClick={enterPlay}><kbd>T</kbd> TEST RUN <b>▶</b></button> : <button className="exit-button" type="button" onClick={exitPlay}><kbd>ESC</kbd> RETURN TO BUILD</button>}
+          {mode === "build" ? <>
+            <button className="fullscreen-button present-button" type="button" onClick={() => enterPlay(true)}><b>▣</b> PRESENT</button>
+            {/* `() => enterPlay()` rather than `onClick={enterPlay}`: the handler
+                would otherwise hand the click event in as `presented`, and an
+                event object is truthy, so TEST RUN would silently present. */}
+            <button className="test-button" type="button" onClick={() => enterPlay()}><kbd>T</kbd> TEST RUN <b>▶</b></button>
+          </> : <button className="exit-button" type="button" onClick={exitPlay}><kbd>ESC</kbd> RETURN TO BUILD</button>}
         </div>
       </header>
 
@@ -1909,7 +1932,7 @@ export function StarlineGame() {
               <span>{mode === "paused" ? "FLIGHT SUSPENDED" : mode === "victory" ? "SECTOR SECURED" : "MISSION TERMINATED"}</span>
               <h1>{mode === "paused" ? "PAUSED" : mode === "victory" ? "LEVEL CLEAR" : "SIGNAL LOST"}</h1>
               <p>{mode === "paused" ? "Press P or Start to resume. Escape, B, or Back returns to edit." : "Press Enter to run again. Escape, B, or Back returns to the Foundry."}</p>
-              <div><button type="button" onClick={mode === "paused" ? () => { setMode("playing"); modeRef.current = "playing"; } : enterPlay}>{mode === "paused" ? "RESUME" : "RETRY"}</button><button type="button" onClick={exitPlay}>RETURN TO BUILD</button></div>
+              <div><button type="button" onClick={mode === "paused" ? () => { setMode("playing"); modeRef.current = "playing"; } : () => enterPlay(presenting)}>{mode === "paused" ? "RESUME" : "RETRY"}</button><button type="button" onClick={exitPlay}>RETURN TO BUILD</button></div>
             </div>}
             {mode === "build" && <div className="build-badge"><span /> LIVE EDITOR <b>SCROLL TO TRAVEL</b></div>}
           </div>
@@ -1965,6 +1988,10 @@ export function StarlineGame() {
               <label className="range-field"><span><b>RANGE</b><em>{level.player.satellite.range}u</em></span><input type="range" min="50" max="280" value={level.player.satellite.range} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, satellite: { ...current.player.satellite, range: Number(event.target.value) } } }))} /></label>
               <label className="range-field"><span><b>SPEED</b><em>{level.player.satellite.speed}u/s</em></span><input type="range" min="100" max="800" step="10" value={level.player.satellite.speed} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, satellite: { ...current.player.satellite, speed: Number(event.target.value) } } }))} /></label>
               <label className="field wide"><span>SATELLITE WEAPON</span><select value={level.player.satellite.weaponId} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, satellite: { ...current.player.satellite, weaponId: event.target.value } } }))}>{level.components.filter((component) => component.kind === "weapon").map((component) => <option value={component.id} key={component.id}>{component.name.toUpperCase()}</option>)}</select></label>
+              {/* The satellite carries a Weapon Component like any mount, so its
+                  pattern is reachable the same way rather than only through the
+                  designer. Editing it edits that weapon everywhere it is used. */}
+              {(() => { const satWeapon = level.components.find((component) => component.id === level.player.satellite.weaponId); if (!satWeapon?.weapon) return null; return <BulletPatternField components={patternComponents} pattern={satWeapon.weapon.pattern} onApply={(next) => updateLevel((current) => ({ ...current, components: current.components.map((entry) => entry.id === satWeapon.id ? { ...entry, weapon: entry.weapon ? { ...entry.weapon, pattern: next } : entry.weapon } : entry) }))} />; })()}
               <label className="field wide"><span>SATELLITE ARMOR</span><select value={level.player.satellite.armor.type} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, satellite: { ...current.player.satellite, armor: defaultArmor(event.target.value as ArmorType) } } }))}>{["none", "standard", "heavy", "ablative", "forcefield"].map((type) => <option value={type} key={type}>{type.toUpperCase()}</option>)}</select></label>
               <label className="range-field"><span><b>{level.player.satellite.armor.type === "forcefield" ? "SATELLITE SHIELD" : "SATELLITE HULL"}</b><em>{level.player.satellite.armor.capacity}</em></span><input type="range" min="1" max={level.player.satellite.armor.type === "forcefield" ? 600 : 10} step={level.player.satellite.armor.type === "forcefield" ? 25 : 1} value={level.player.satellite.armor.capacity} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, satellite: { ...current.player.satellite, armor: { ...current.player.satellite.armor, capacity: Number(event.target.value) } } } }))} /></label>
               <button className="inspector-action" type="button" onClick={() => saveSatelliteComponent(level.player.satellite)}>SAVE AS SATELLITE COMPONENT</button>
@@ -2041,7 +2068,8 @@ export function StarlineGame() {
         </aside>
       </section>
 
-      <footer className="shortcut-bar"><span><kbd>T</kbd> PLAYTEST</span><span><kbd>ESC</kbd> SELECT / BUILD</span><span><kbd>S</kbd> SCROLL</span><span><kbd>D</kbd> DUPLICATE</span><span><kbd>Q / E</kbd> ROTATE</span><span><kbd>CTRL / SHIFT</kbd> MULTI-SELECT</span><span><kbd>1–9</kbd> EQUIP</span><span><kbd>CTRL Z</kbd> UNDO</span><span className="gamepad-shortcut">GAMEPAD: <kbd>LS</kbd> MOVE <kbd>RS</kbd> SATELLITE <kbd>Y</kbd> CYCLE WEAPON <kbd>A / RT</kbd> FIRE</span><strong>THE FATE OF THE GALAXY IS IN YOUR HANDS.</strong></footer>
+      {presenting && <div className="present-exit-hint">ESC TO RETURN TO THE EDITOR</div>}
+      <footer className="shortcut-bar"><span><kbd>T</kbd> PLAYTEST</span><span><kbd>SHIFT T</kbd> PRESENT</span><span><kbd>ESC</kbd> SELECT / BUILD</span><span><kbd>S</kbd> SCROLL</span><span><kbd>D</kbd> DUPLICATE</span><span><kbd>Q / E</kbd> ROTATE</span><span><kbd>CTRL / SHIFT</kbd> MULTI-SELECT</span><span><kbd>1–9</kbd> EQUIP</span><span><kbd>CTRL Z</kbd> UNDO</span><span className="gamepad-shortcut">GAMEPAD: <kbd>LS</kbd> MOVE <kbd>RS</kbd> SATELLITE <kbd>Y</kbd> CYCLE WEAPON <kbd>A / RT</kbd> FIRE</span><strong>THE FATE OF THE GALAXY IS IN YOUR HANDS.</strong></footer>
       {editingAsset && <SpriteStudio asset={editingAsset} onSave={saveSpriteAsset} onCancel={() => setEditingAsset(null)} />}
       {pendingConfirm && <EbDialog visible title={pendingConfirm.title} onVisibleChange={(open) => { if (!open) setPendingConfirm(null); }} showCloseButton={false} className="confirm-dialog" footerContent={<>
         <button type="button" onClick={() => setPendingConfirm(null)}>CANCEL</button>
