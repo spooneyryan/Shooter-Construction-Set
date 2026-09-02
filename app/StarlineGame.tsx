@@ -23,6 +23,7 @@ import {
   idleInput,
   makeItem,
   normalizeBulletPattern,
+  PLAYER_R,
   normalizeLevel,
   palette,
   VIEW_H,
@@ -655,23 +656,24 @@ function drawSprite(context: CanvasRenderingContext2D, sprite: string, x: number
   context.restore();
 }
 
-function drawShip(context: CanvasRenderingContext2D, x: number, y: number, now: number, sprite: string = "dart", blink = false, assets: SpriteAsset[] = [], tint = 0, ship: { scaleX?: number; scaleY?: number; size?: number; glow?: SpriteGlow } = {}) {
+function drawShip(context: CanvasRenderingContext2D, x: number, y: number, now: number, sprite: string = "dart", blink = false, assets: SpriteAsset[] = [], tint = 0, ship: { scale?: number; glow?: SpriteGlow } = {}) {
   if (blink) return;
-  const sx = ship.scaleX ?? 1;
-  const sy = ship.scaleY ?? 1;
-  // The SIZE is what the sprite is rasterised at, and the scale is applied on
-  // top of it. Baking at a fixed 27 and scaling up is what made a custom ship
-  // blurry while the same artwork stayed crisp on an enemy, which bakes at its
-  // own size. 27 is the default so a level that never set one is unchanged.
-  const drawSize = ship.size ?? 27;
-  if (sprite.startsWith("asset:")) { drawSprite(context, sprite as Sprite, x, y, drawSize, false, 1, 0, sx, false, assets, tint, { scaleY: sy, glow: ship.glow }); return; }
+  // One number. The sprite's own dimensions are the ship's size, and this
+  // scales them -- which is also why it needs no separate "resolution": a
+  // sprite drawn at its own size is drawn 1:1, and scaling DOWN stays crisp.
+  const scale = ship.scale ?? 1;
+  const asset = sprite.startsWith("asset:") ? assets.find((entry) => `asset:${entry.id}` === sprite) : undefined;
+  // `drawSpriteAsset` fits the picture inside a box of `extent`, so the extent
+  // that draws it 1:1 is its longer edge. This is the same number
+  // `playerExtent` collides against, which is what keeps the drawn ship and
+  // the hit ship the same ship.
+  const extent = (asset ? Math.max(asset.width, asset.height) : PLAYER_R * 2) * scale;
+  if (asset) { drawSprite(context, sprite as Sprite, x, y, extent / 2, false, 1, 0, 1, false, assets, tint, { glow: ship.glow }); return; }
   // The built-in hulls are paths rather than a baked sprite, so the two axes
   // are a transform around the whole recipe rather than an argument to it.
-  // The built-in hulls are paths at a fixed geometry rather than a rasterised
-  // sprite, so for them SIZE is another multiplier. Without this the control
-  // would look broken until somebody picked a custom sprite.
-  const builtInScale = drawSize / 27;
-  context.save(); context.translate(x, y); context.scale(sx * builtInScale, sy * builtInScale);
+  // A built-in hull is a path at a fixed geometry rather than a rasterised
+  // sprite, so the scale is simply a transform around the recipe.
+  context.save(); context.translate(x, y); context.scale(scale, scale);
   const flame = 13 + Math.sin(now / 45) * 5;
   const flameGradient = context.createLinearGradient(-43, 0, -12, 0);
   flameGradient.addColorStop(0, "rgba(98,226,255,0)"); flameGradient.addColorStop(.4, "#64e3ff"); flameGradient.addColorStop(1, "#eaffaa");
@@ -1624,7 +1626,7 @@ export function StarlineGame() {
         context.fillStyle = "rgba(201,222,230,.38)"; context.font = "14px monospace"; context.textAlign = "center";
         context.fillText("SELECT AN OBJECT FROM THE PALETTE, THEN PLACE IT HERE", VIEW_W / 2, VIEW_H / 2); context.textAlign = "start";
       }
-      drawShip(context, 95, VIEW_H / 2, now, current.player.sprite, false, current.assets, current.player.tint, { scaleX: current.player.scaleX, scaleY: current.player.scaleY, size: current.player.size, glow: current.player.glow });
+      drawShip(context, 95, VIEW_H / 2, now, current.player.sprite, false, current.assets, current.player.tint, { scale: current.player.scale, glow: current.player.glow });
     };
 
     // Everything the simulation used to do inline is now one call. What is left
@@ -1731,10 +1733,10 @@ export function StarlineGame() {
       const blinking = player.invulnerable > 0 && Math.floor(player.invulnerable * 10) % 2 === 0;
       if (playMode === "arena") {
         context.save(); context.translate(player.x, player.y); context.rotate(Math.atan2(runtime.aimDir.y, runtime.aimDir.x));
-        drawShip(context, 0, 0, now, levelRef.current.player.sprite, blinking, levelRef.current.assets, levelRef.current.player.tint, { scaleX: levelRef.current.player.scaleX, scaleY: levelRef.current.player.scaleY, size: levelRef.current.player.size, glow: levelRef.current.player.glow });
+        drawShip(context, 0, 0, now, levelRef.current.player.sprite, blinking, levelRef.current.assets, levelRef.current.player.tint, { scale: levelRef.current.player.scale, glow: levelRef.current.player.glow });
         context.restore();
       } else {
-        drawShip(context, player.x, player.y, now, levelRef.current.player.sprite, blinking, levelRef.current.assets, levelRef.current.player.tint, { scaleX: levelRef.current.player.scaleX, scaleY: levelRef.current.player.scaleY, size: levelRef.current.player.size, glow: levelRef.current.player.glow });
+        drawShip(context, player.x, player.y, now, levelRef.current.player.sprite, blinking, levelRef.current.assets, levelRef.current.player.tint, { scale: levelRef.current.player.scale, glow: levelRef.current.player.glow });
       }
       if (verticalPlay) {
         context.restore();
@@ -2188,12 +2190,8 @@ export function StarlineGame() {
             <div className="type-tag"><span>EDITING</span><strong>PLAYER SHIP</strong><span className={`player-icon ${level.player.sprite.startsWith("asset:") ? "asset-custom" : level.player.sprite}`} /></div>
             <label className="field wide"><span>SHIP SPRITE</span><select value={level.player.sprite} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, sprite: event.target.value as PlayerSpriteChoice } }), true, "player-sprite")}><optgroup label="PLAYER SHIPS">{["dart", "raven", "nova", "striker"].map((sprite) => <option value={sprite} key={sprite}>{sprite.toUpperCase()}</option>)}</optgroup>{level.assets.length > 0 && <optgroup label="CUSTOM SPRITES">{level.assets.map((asset) => <option value={`asset:${asset.id}`} key={asset.id}>{asset.name.toUpperCase()}</option>)}</optgroup>}</select></label>
             <label className="range-field"><span><b>SHIP HUE TINT</b><em>{level.player.tint}°</em></span><input type="range" min="0" max="359" value={level.player.tint} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, tint: Number(event.target.value) } }), true, "player-tint")} /></label>
-            <div className="field-grid">
-              <div className="field"><EbNumericInput label="SCALE X" sliderEnabled={false} min={0.25} max={4} step={0.05} value={level.player.scaleX} onValueChange={(scaleX) => updateLevel((current) => ({ ...current, player: { ...current.player, scaleX } }), true, "player-scale-x")} /></div>
-              <div className="field"><EbNumericInput label="SCALE Y" sliderEnabled={false} min={0.25} max={4} step={0.05} value={level.player.scaleY} onValueChange={(scaleY) => updateLevel((current) => ({ ...current, player: { ...current.player, scaleY } }), true, "player-scale-y")} /></div>
-            </div>
-            <label className="range-field"><span><b>SHIP SIZE</b><em>{level.player.size}px</em></span><input type="range" min="8" max="160" step="1" value={level.player.size} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, size: Number(event.target.value) } }), true, "player-size")} /></label>
-            <p className="inspector-note">The size the ship is drawn AND the resolution a custom sprite is rendered at — raise it for a crisp high-detail ship. Collision stays the engine&apos;s fixed radius, so a bigger ship is not an easier target.</p>
+            <label className="range-field"><span><b>SHIP SCALE</b><em>{level.player.scale.toFixed(2)}×</em></span><input type="range" min="0.05" max="8" step="0.05" value={level.player.scale} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, scale: Number(event.target.value) } }), true, "player-scale")} /></label>
+            <p className="inspector-note">The ship is its sprite&apos;s own size; this scales it. A custom sprite drawn at 1× is drawn pixel for pixel, so scaling down stays sharp. The hitbox is the sprite, so a bigger ship really is a bigger target.</p>
             <GlowField glow={level.player.glow} onChange={(glow) => updateLevel((current) => ({ ...current, player: { ...current.player, glow } }), true, "player-glow")} />
             <EbAccordion allowMultiple={sectionMode === "multiple"} className="inspector-sections">
             {section("flight", "FLIGHT", <>
