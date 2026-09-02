@@ -528,3 +528,13 @@ kbd { min-width: 22px; padding: 3px 5px; display: inline-block; border: 1px soli
 .present-exit-hint { position: fixed; right: 14px; bottom: 12px; z-index: 40; padding: 5px 11px; border: 1px solid var(--line); border-radius: 3px; background: rgba(6,12,18,.72); color: #58737e; font-family: var(--font-mono); font-size: 9px; letter-spacing: .09em; opacity: .35; transition: opacity .18s ease; pointer-events: none; }
 .editor-app.is-presenting:hover .present-exit-hint { opacity: .9; }
 .present-button b { font-size: 12px; font-weight: 400; line-height: 1; color: var(--cyan); }
+
+/* Expand All / Collapse All, in both panel headings.
+   They wrap onto their own line rather than squeezing the heading, because the
+   palette heading already carries a count and the Inspector a delete button,
+   and a panel dragged narrow has no room to argue. */
+.panel-heading { flex-wrap: wrap; }
+.section-controls { width: 100%; margin-top: 5px; display: flex; gap: 5px; }
+.section-controls button { flex: 1 1 0; min-height: 22px; border: 1px solid #29404c; background: #0b1821; color: #7d939d; font-family: var(--font-mono); font-size: 8px; letter-spacing: .07em; }
+.section-controls button:hover:not(:disabled) { border-color: var(--cyan); color: var(--cyan); }
+.section-controls button:disabled { opacity: .32; cursor: default; }

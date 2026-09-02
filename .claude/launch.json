@@ -4,8 +4,22 @@
     {
       "name": "starline-dev",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev", "--", "--port", "3010"],
+      "runtimeArgs": [
+        "run",
+        "dev",
+        "--",
+        "--port",
+        "3010"
+      ],
       "port": 3010
+    },
+    {
+      "name": "gbsite",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "C:/Users/sledz/source/GameBase/GameBase/scripts/serve-site.mjs"
+      ],
+      "port": 8177
     }
   ]
 }

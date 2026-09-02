@@ -1940,6 +1940,37 @@ export function StarlineGame() {
   // Toolbar Behavior, where each panel keeps its own one open section: the
   // accordion collapses the siblings it can see, and the group is what stops
   // the palette and the Inspector from closing each other.
+  /**
+   * Open or close every section in one panel.
+   *
+   * Driven through the accordion's own toggles rather than by writing the
+   * collapse state directly, because `collapsedSections` is keyed by section
+   * and knows nothing about which panel a section belongs to — and the palette
+   * generates its keys per category, so there is no static list to write.
+   * Clicking the toggles is exactly what a person does, and it routes through
+   * `onExpandedChange` so the stored state stays the source of truth.
+   *
+   * The suite's class names are treated as public here; AGENTS.md already
+   * commits to that for the appearance overrides in globals.css.
+   */
+  const setAllSections = useCallback((panel: "palette" | "inspector", expand: boolean) => {
+    const host = document.querySelector(panel === "palette" ? ".palette-panel" : ".inspector-panel");
+    if (!host) return;
+    for (const toggle of host.querySelectorAll<HTMLElement>(".eb-card-collapse-toggle")) {
+      if ((toggle.getAttribute("aria-expanded") === "true") !== expand) toggle.click();
+    }
+  }, []);
+
+  /** Both buttons, since both panels want the same pair. */
+  const sectionControls = (panel: "palette" | "inspector") => (
+    <span className="section-controls">
+      <button type="button" onClick={() => setAllSections(panel, true)}
+        disabled={sectionMode === "single"}
+        title={sectionMode === "single" ? "Toolbar Behavior is set to one section at a time" : "Expand every section"}>EXPAND ALL</button>
+      <button type="button" onClick={() => setAllSections(panel, false)} title="Collapse every section">COLLAPSE ALL</button>
+    </span>
+  );
+
   const section = (key: string, title: string, children: ReactNode, group = "inspector") => (
     <EbAccordionItem key={key} title={title} expanded={sectionMode === "single" ? openSections[group] === key : !collapsedSections[key]} onExpandedChange={(expanded) => {
       setOpenSections((current) => expanded ? { ...current, [group]: key } : current[group] === key ? { ...current, [group]: "" } : current);
@@ -2016,7 +2047,7 @@ export function StarlineGame() {
         <PanelResizer side="palette" width={paletteWidth} other={inspectorWidth} onResize={setPaletteWidth} onCommit={(next) => { setPaletteWidth(next); editorSettings.set("paletteWidth", next); }} />
         <PanelResizer side="inspector" width={inspectorWidth} other={paletteWidth} onResize={setInspectorWidth} onCommit={(next) => { setInspectorWidth(next); editorSettings.set("inspectorWidth", next); }} />
         <aside className="palette-panel">
-          <div className="panel-heading"><span>FOUNDRY PALETTE</span><small>{level.items.length} PLACED</small></div>
+          <div className="panel-heading"><span>FOUNDRY PALETTE</span><small>{level.items.length} PLACED</small>{sectionControls("palette")}</div>
           <button className="player-card" type="button" onClick={() => { setTool("select"); toolRef.current = "select"; setSelection([]); setInspectPlayer(true); }}><span className={`player-icon ${level.player.sprite.startsWith("asset:") ? "asset-custom" : level.player.sprite}`} /><span><strong>PLAYER SHIP</strong><small>{level.player.sprite.startsWith("asset:") ? "CUSTOM" : level.player.sprite.toUpperCase()} / {level.player.weaponSlots.length} WEAPON SLOT{level.player.weaponSlots.length === 1 ? "" : "S"}</small></span><b>EDIT</b></button>
           <div className="tool-strip">
             {(["select", "scroll", "erase"] as Tool[]).map((value) => <button type="button" className={tool === value ? "active" : ""} onClick={() => { setTool(value); toolRef.current = value; }} key={value}><b>{value === "select" ? "↖" : value === "scroll" ? "↔" : "⌫"}</b>{value.toUpperCase()}</button>)}
@@ -2094,7 +2125,7 @@ export function StarlineGame() {
         </section>
 
         <aside className="inspector-panel">
-          <div className="panel-heading"><span>INSPECTOR</span>{selected && <button type="button" onClick={deleteSelected}>DELETE {selectedIds.length > 1 ? selectedIds.length : ""}</button>}</div>
+          <div className="panel-heading"><span>INSPECTOR</span>{sectionControls("inspector")}{selected && <button type="button" onClick={deleteSelected}>DELETE {selectedIds.length > 1 ? selectedIds.length : ""}</button>}</div>
           {inspectPlayer ? <div className="inspector-form player-settings">
             <div className="type-tag"><span>EDITING</span><strong>PLAYER SHIP</strong><span className={`player-icon ${level.player.sprite.startsWith("asset:") ? "asset-custom" : level.player.sprite}`} /></div>
             <label className="field wide"><span>SHIP SPRITE</span><select value={level.player.sprite} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, sprite: event.target.value as PlayerSpriteChoice } }), true, "player-sprite")}><optgroup label="PLAYER SHIPS">{["dart", "raven", "nova", "striker"].map((sprite) => <option value={sprite} key={sprite}>{sprite.toUpperCase()}</option>)}</optgroup>{level.assets.length > 0 && <optgroup label="CUSTOM SPRITES">{level.assets.map((asset) => <option value={`asset:${asset.id}`} key={asset.id}>{asset.name.toUpperCase()}</option>)}</optgroup>}</select></label>
