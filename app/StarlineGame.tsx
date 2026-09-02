@@ -655,14 +655,23 @@ function drawSprite(context: CanvasRenderingContext2D, sprite: string, x: number
   context.restore();
 }
 
-function drawShip(context: CanvasRenderingContext2D, x: number, y: number, now: number, sprite: string = "dart", blink = false, assets: SpriteAsset[] = [], tint = 0, ship: { scaleX?: number; scaleY?: number; glow?: SpriteGlow } = {}) {
+function drawShip(context: CanvasRenderingContext2D, x: number, y: number, now: number, sprite: string = "dart", blink = false, assets: SpriteAsset[] = [], tint = 0, ship: { scaleX?: number; scaleY?: number; size?: number; glow?: SpriteGlow } = {}) {
   if (blink) return;
   const sx = ship.scaleX ?? 1;
   const sy = ship.scaleY ?? 1;
-  if (sprite.startsWith("asset:")) { drawSprite(context, sprite as Sprite, x, y, 27, false, 1, 0, sx, false, assets, tint, { scaleY: sy, glow: ship.glow }); return; }
+  // The SIZE is what the sprite is rasterised at, and the scale is applied on
+  // top of it. Baking at a fixed 27 and scaling up is what made a custom ship
+  // blurry while the same artwork stayed crisp on an enemy, which bakes at its
+  // own size. 27 is the default so a level that never set one is unchanged.
+  const drawSize = ship.size ?? 27;
+  if (sprite.startsWith("asset:")) { drawSprite(context, sprite as Sprite, x, y, drawSize, false, 1, 0, sx, false, assets, tint, { scaleY: sy, glow: ship.glow }); return; }
   // The built-in hulls are paths rather than a baked sprite, so the two axes
   // are a transform around the whole recipe rather than an argument to it.
-  context.save(); context.translate(x, y); context.scale(sx, sy);
+  // The built-in hulls are paths at a fixed geometry rather than a rasterised
+  // sprite, so for them SIZE is another multiplier. Without this the control
+  // would look broken until somebody picked a custom sprite.
+  const builtInScale = drawSize / 27;
+  context.save(); context.translate(x, y); context.scale(sx * builtInScale, sy * builtInScale);
   const flame = 13 + Math.sin(now / 45) * 5;
   const flameGradient = context.createLinearGradient(-43, 0, -12, 0);
   flameGradient.addColorStop(0, "rgba(98,226,255,0)"); flameGradient.addColorStop(.4, "#64e3ff"); flameGradient.addColorStop(1, "#eaffaa");
@@ -1615,7 +1624,7 @@ export function StarlineGame() {
         context.fillStyle = "rgba(201,222,230,.38)"; context.font = "14px monospace"; context.textAlign = "center";
         context.fillText("SELECT AN OBJECT FROM THE PALETTE, THEN PLACE IT HERE", VIEW_W / 2, VIEW_H / 2); context.textAlign = "start";
       }
-      drawShip(context, 95, VIEW_H / 2, now, current.player.sprite, false, current.assets, current.player.tint, { scaleX: current.player.scaleX, scaleY: current.player.scaleY, glow: current.player.glow });
+      drawShip(context, 95, VIEW_H / 2, now, current.player.sprite, false, current.assets, current.player.tint, { scaleX: current.player.scaleX, scaleY: current.player.scaleY, size: current.player.size, glow: current.player.glow });
     };
 
     // Everything the simulation used to do inline is now one call. What is left
@@ -1722,10 +1731,10 @@ export function StarlineGame() {
       const blinking = player.invulnerable > 0 && Math.floor(player.invulnerable * 10) % 2 === 0;
       if (playMode === "arena") {
         context.save(); context.translate(player.x, player.y); context.rotate(Math.atan2(runtime.aimDir.y, runtime.aimDir.x));
-        drawShip(context, 0, 0, now, levelRef.current.player.sprite, blinking, levelRef.current.assets, levelRef.current.player.tint, { scaleX: levelRef.current.player.scaleX, scaleY: levelRef.current.player.scaleY, glow: levelRef.current.player.glow });
+        drawShip(context, 0, 0, now, levelRef.current.player.sprite, blinking, levelRef.current.assets, levelRef.current.player.tint, { scaleX: levelRef.current.player.scaleX, scaleY: levelRef.current.player.scaleY, size: levelRef.current.player.size, glow: levelRef.current.player.glow });
         context.restore();
       } else {
-        drawShip(context, player.x, player.y, now, levelRef.current.player.sprite, blinking, levelRef.current.assets, levelRef.current.player.tint, { scaleX: levelRef.current.player.scaleX, scaleY: levelRef.current.player.scaleY, glow: levelRef.current.player.glow });
+        drawShip(context, player.x, player.y, now, levelRef.current.player.sprite, blinking, levelRef.current.assets, levelRef.current.player.tint, { scaleX: levelRef.current.player.scaleX, scaleY: levelRef.current.player.scaleY, size: levelRef.current.player.size, glow: levelRef.current.player.glow });
       }
       if (verticalPlay) {
         context.restore();
@@ -2183,6 +2192,8 @@ export function StarlineGame() {
               <div className="field"><EbNumericInput label="SCALE X" sliderEnabled={false} min={0.25} max={4} step={0.05} value={level.player.scaleX} onValueChange={(scaleX) => updateLevel((current) => ({ ...current, player: { ...current.player, scaleX } }), true, "player-scale-x")} /></div>
               <div className="field"><EbNumericInput label="SCALE Y" sliderEnabled={false} min={0.25} max={4} step={0.05} value={level.player.scaleY} onValueChange={(scaleY) => updateLevel((current) => ({ ...current, player: { ...current.player, scaleY } }), true, "player-scale-y")} /></div>
             </div>
+            <label className="range-field"><span><b>SHIP SIZE</b><em>{level.player.size}px</em></span><input type="range" min="8" max="160" step="1" value={level.player.size} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, size: Number(event.target.value) } }), true, "player-size")} /></label>
+            <p className="inspector-note">The size the ship is drawn AND the resolution a custom sprite is rendered at — raise it for a crisp high-detail ship. Collision stays the engine&apos;s fixed radius, so a bigger ship is not an easier target.</p>
             <GlowField glow={level.player.glow} onChange={(glow) => updateLevel((current) => ({ ...current, player: { ...current.player, glow } }), true, "player-glow")} />
             <EbAccordion allowMultiple={sectionMode === "multiple"} className="inspector-sections">
             {section("flight", "FLIGHT", <>
