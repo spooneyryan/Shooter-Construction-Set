@@ -34,6 +34,7 @@ import {
   type ComponentDefinition,
   type ItemEffects,
   type ShmupEvent,
+  type SpriteGlow,
   type DecorationLayer,
   type GroupPattern,
   type GunType,
@@ -308,6 +309,35 @@ function EffectField({ label, kind, components, value, onChange }: {
   );
 }
 
+/** The renderer's own defaults, so switching a halo ON starts somewhere honest. */
+const DEFAULT_GLOW: SpriteGlow = { color: "#ff6a4d", blur: 11 };
+
+/**
+ * The halo a sprite is drawn with.
+ *
+ * Undefined and `{ blur: 0 }` are different states and this says so:
+ * undefined is "whatever this renderer does for this sprite", zero is "no
+ * halo, deliberately". Collapsing the two would make the default
+ * unrecoverable once somebody had turned it off.
+ */
+function GlowField({ glow, onChange }: { glow?: SpriteGlow; onChange: (next: SpriteGlow | undefined) => void }) {
+  const live = glow ?? DEFAULT_GLOW;
+  return (
+    <>
+      <label className="toggle-row"><span>CUSTOM GLOW</span>
+        <input type="checkbox" checked={glow !== undefined} onChange={(event) => onChange(event.target.checked ? { ...DEFAULT_GLOW } : undefined)} /><i />
+      </label>
+      {glow !== undefined && <>
+        <label className="field wide"><span>GLOW COLOUR</span>
+          <input type="color" value={live.color} onChange={(event) => onChange({ ...live, color: event.target.value })} /></label>
+        <label className="range-field"><span><b>GLOW STRENGTH</b><em>{live.blur === 0 ? "OFF" : live.blur + "px"}</em></span>
+          <input type="range" min="0" max="60" step="1" value={live.blur} onChange={(event) => onChange({ ...live, blur: Number(event.target.value) })} /></label>
+      </>}
+      <p className="inspector-note">{glow === undefined ? "Using this renderer's default halo for the sprite." : "Zero strength draws no halo at all."}</p>
+    </>
+  );
+}
+
 type TransformOrigin = { id: string; x: number; y: number; rotation: number; scale: number };
 type CanvasDrag =
   | { kind: "items"; ids: string[]; startWorld: Point; origins: TransformOrigin[]; startSnapshot: string }
@@ -487,11 +517,15 @@ const BAKE_MAX_SIZE = 72;
 const bakeHalf = (size: number) => Math.ceil(size * 1.75 + 22);
 
 /** The recipe: one sprite, at the origin, with no transform of its own. */
-function paintSprite(context: CanvasRenderingContext2D, sprite: string, size: number, selected: boolean, assets: SpriteAsset[], tint: number) {
+function paintSprite(context: CanvasRenderingContext2D, sprite: string, size: number, selected: boolean, assets: SpriteAsset[], tint: number, glow?: SpriteGlow) {
   if (tint) context.filter = `hue-rotate(${tint}deg)`;
   const isPickup = sprite === "energy" || sprite === "upgrade";
-  context.shadowColor = sprite === "asteroid" ? "#87939c" : isPickup ? "#eaff62" : "#ff6a4d";
-  context.shadowBlur = selected ? 24 : 11;
+  // An authored halo wins; without one these are the defaults this renderer
+  // has always used, which is what keeps every level saved before the field
+  // existed looking untouched. Selection still overrides the blur, because a
+  // selected object has to read as selected whatever it was authored with.
+  context.shadowColor = glow ? glow.color : sprite === "asteroid" ? "#87939c" : isPickup ? "#eaff62" : "#ff6a4d";
+  context.shadowBlur = selected ? 24 : glow ? glow.blur : 11;
   context.lineWidth = selected ? 3 : 2;
   context.strokeStyle = selected ? "#eaff62" : sprite === "asteroid" ? "#8ca0a8" : isPickup ? "#eaff62" : "#ff947f";
   context.fillStyle = sprite === "asteroid" ? "#29343a" : "rgba(71, 24, 51, .92)";
@@ -587,9 +621,10 @@ function paintSprite(context: CanvasRenderingContext2D, sprite: string, size: nu
  * numerous, and the selected one, of which there is exactly one on screen and
  * whose dashed ring would otherwise double the key space for nothing.
  */
-function spriteRegion(sprite: string, size: number, selected: boolean, assets: SpriteAsset[], tint: number) {
+function spriteRegion(sprite: string, size: number, selected: boolean, assets: SpriteAsset[], tint: number, glow?: SpriteGlow) {
   if (selected || !(size > 0) || size > BAKE_MAX_SIZE) return null;
-  let key = `${sprite}|${size}|${tint}`;
+  // The halo is part of what was baked, so it is part of the key.
+  let key = `${sprite}|${size}|${tint}|${glow ? glow.color + ":" + glow.blur : "-"}`;
   if (sprite.startsWith("asset:")) {
     const asset = assets.find((entry) => `asset:${entry.id}` === sprite);
     // An unresolved asset draws nothing and must not be cached under a key
@@ -600,26 +635,34 @@ function spriteRegion(sprite: string, size: number, selected: boolean, assets: S
   const half = bakeHalf(size);
   return spriteCache.sprite(key, half * 2, half * 2, (own) => {
     own.translate(half, half);
-    paintSprite(own, sprite, size, false, assets, tint);
+    paintSprite(own, sprite, size, false, assets, tint, glow);
   });
 }
 
-function drawSprite(context: CanvasRenderingContext2D, sprite: string, x: number, y: number, size: number, selected = false, alpha = 1, rotation = 0, scale = 1, faceLeft = false, assets: SpriteAsset[] = [], tint = 0) {
-  const region = spriteRegion(sprite, size, selected, assets, tint);
+/** `extra` rather than two more positional parameters: this already takes
+ *  eleven, and a call site with two bare numbers on the end says nothing. */
+function drawSprite(context: CanvasRenderingContext2D, sprite: string, x: number, y: number, size: number, selected = false, alpha = 1, rotation = 0, scale = 1, faceLeft = false, assets: SpriteAsset[] = [], tint = 0, extra: { scaleY?: number; glow?: SpriteGlow } = {}) {
+  const region = spriteRegion(sprite, size, selected, assets, tint, extra.glow);
   context.save();
   context.translate(x, y);
   context.rotate(rotation * Math.PI / 180);
-  context.scale(scale * (faceLeft && (sprite === "raider" || sprite === "wraith" || sprite === "carrier") ? -1 : 1), scale);
+  // The vertical axis defaults to the horizontal one, so every existing call
+  // site keeps the uniform scale it was written with.
+  context.scale(scale * (faceLeft && (sprite === "raider" || sprite === "wraith" || sprite === "carrier") ? -1 : 1), extra.scaleY ?? scale);
   context.globalAlpha = alpha;
   if (region) context.drawImage(region.canvas, region.x, region.y, region.width, region.height, -region.width / 2, -region.height / 2, region.width, region.height);
-  else paintSprite(context, sprite, size, selected, assets, tint);
+  else paintSprite(context, sprite, size, selected, assets, tint, extra.glow);
   context.restore();
 }
 
-function drawShip(context: CanvasRenderingContext2D, x: number, y: number, now: number, sprite: string = "dart", blink = false, assets: SpriteAsset[] = [], tint = 0) {
+function drawShip(context: CanvasRenderingContext2D, x: number, y: number, now: number, sprite: string = "dart", blink = false, assets: SpriteAsset[] = [], tint = 0, ship: { scaleX?: number; scaleY?: number; glow?: SpriteGlow } = {}) {
   if (blink) return;
-  if (sprite.startsWith("asset:")) { drawSprite(context, sprite as Sprite, x, y, 27, false, 1, 0, 1, false, assets, tint); return; }
-  context.save(); context.translate(x, y);
+  const sx = ship.scaleX ?? 1;
+  const sy = ship.scaleY ?? 1;
+  if (sprite.startsWith("asset:")) { drawSprite(context, sprite as Sprite, x, y, 27, false, 1, 0, sx, false, assets, tint, { scaleY: sy, glow: ship.glow }); return; }
+  // The built-in hulls are paths rather than a baked sprite, so the two axes
+  // are a transform around the whole recipe rather than an argument to it.
+  context.save(); context.translate(x, y); context.scale(sx, sy);
   const flame = 13 + Math.sin(now / 45) * 5;
   const flameGradient = context.createLinearGradient(-43, 0, -12, 0);
   flameGradient.addColorStop(0, "rgba(98,226,255,0)"); flameGradient.addColorStop(.4, "#64e3ff"); flameGradient.addColorStop(1, "#eaffaa");
@@ -696,7 +739,13 @@ export function StarlineGame() {
   // at it, which is the whole point of the split.
   const worldRef = useRef<World | null>(null);
 
-  const [level, setLevel] = useState<Level>(defaultLevel);
+  // Normalized, unlike every other path into this state, which went through
+  // `installLevel`. The starter level is hand-authored and typed as a `Level`,
+  // so TypeScript believes it is complete — but any field the contract gains
+  // is simply absent from it until somebody loads or imports something else.
+  // That is how the opening level ended up with no `scaleX` the moment the
+  // player gained one, and it would have happened again for the next field.
+  const [level, setLevel] = useState<Level>(() => normalizeLevel(defaultLevel()));
   // Seeded with the state's own first value — useRef reads its argument on the
   // first render only — so ref and state start as one object without calling
   // defaultLevel() twice. The mirror effect below keeps it current.
@@ -1512,7 +1561,7 @@ export function StarlineGame() {
           const screenX = item.x + offset.x - cameraX;
           if (screenX < -240 || screenX > VIEW_W + 240) return;
           const alpha = item.type === "decoration" ? item.decoration?.opacity ?? .5 : item.type === "group" ? .82 : 1;
-          drawSprite(context, item.sprite, screenX, item.y + offset.y, item.size, selectedItem && index === 0, alpha, item.rotation, item.scale, item.type === "enemy" || item.type === "group", current.assets, item.tint);
+          drawSprite(context, item.sprite, screenX, item.y + offset.y, item.size, selectedItem && index === 0, alpha, item.rotation, item.scale, item.type === "enemy" || item.type === "group", current.assets, item.tint, { glow: item.glow });
         });
         if (item.type === "group" && item.x - cameraX > -100 && item.x - cameraX < VIEW_W + 100) {
           context.fillStyle = "#eaff62"; context.font = "10px monospace"; context.fillText(`GROUP x${item.group?.count ?? 1}`, item.x - cameraX - 28, item.y - item.size * item.scale - 22);
@@ -1566,7 +1615,7 @@ export function StarlineGame() {
         context.fillStyle = "rgba(201,222,230,.38)"; context.font = "14px monospace"; context.textAlign = "center";
         context.fillText("SELECT AN OBJECT FROM THE PALETTE, THEN PLACE IT HERE", VIEW_W / 2, VIEW_H / 2); context.textAlign = "start";
       }
-      drawShip(context, 95, VIEW_H / 2, now, current.player.sprite, false, current.assets, current.player.tint);
+      drawShip(context, 95, VIEW_H / 2, now, current.player.sprite, false, current.assets, current.player.tint, { scaleX: current.player.scaleX, scaleY: current.player.scaleY, glow: current.player.glow });
     };
 
     // Everything the simulation used to do inline is now one call. What is left
@@ -1632,7 +1681,7 @@ export function StarlineGame() {
         const parallax = playMode !== "arena" && enemy.type === "decoration" ? enemy.decoration?.parallax ?? 1 : 1;
         const x = enemy.x - renderCam * parallax;
         if (x < -260 || x > VIEW_W + 260) return;
-        drawSprite(context, enemy.sprite, x, enemy.y, enemy.size, false, enemy.type === "decoration" ? enemy.decoration?.opacity ?? .5 : 1, enemy.rotation, enemy.scale, enemy.type === "enemy", levelRef.current.assets, enemy.tint);
+        drawSprite(context, enemy.sprite, x, enemy.y, enemy.size, false, enemy.type === "decoration" ? enemy.decoration?.opacity ?? .5 : 1, enemy.rotation, enemy.scale, enemy.type === "enemy", levelRef.current.assets, enemy.tint, { glow: enemy.glow });
         if (enemy.shield > 0 && enemy.armor?.type === "forcefield") { context.strokeStyle = "rgba(100,227,255,.7)"; context.lineWidth = 2; context.beginPath(); context.arc(x, enemy.y, enemy.size * enemy.scale + 8, 0, Math.PI * 2); context.stroke(); }
       };
       runtime.enemies.filter((item) => item.type === "decoration" && item.decoration?.layer === "background").forEach(drawRuntimeItem);
@@ -1673,10 +1722,10 @@ export function StarlineGame() {
       const blinking = player.invulnerable > 0 && Math.floor(player.invulnerable * 10) % 2 === 0;
       if (playMode === "arena") {
         context.save(); context.translate(player.x, player.y); context.rotate(Math.atan2(runtime.aimDir.y, runtime.aimDir.x));
-        drawShip(context, 0, 0, now, levelRef.current.player.sprite, blinking, levelRef.current.assets, levelRef.current.player.tint);
+        drawShip(context, 0, 0, now, levelRef.current.player.sprite, blinking, levelRef.current.assets, levelRef.current.player.tint, { scaleX: levelRef.current.player.scaleX, scaleY: levelRef.current.player.scaleY, glow: levelRef.current.player.glow });
         context.restore();
       } else {
-        drawShip(context, player.x, player.y, now, levelRef.current.player.sprite, blinking, levelRef.current.assets, levelRef.current.player.tint);
+        drawShip(context, player.x, player.y, now, levelRef.current.player.sprite, blinking, levelRef.current.assets, levelRef.current.player.tint, { scaleX: levelRef.current.player.scaleX, scaleY: levelRef.current.player.scaleY, glow: levelRef.current.player.glow });
       }
       if (verticalPlay) {
         context.restore();
@@ -2130,6 +2179,11 @@ export function StarlineGame() {
             <div className="type-tag"><span>EDITING</span><strong>PLAYER SHIP</strong><span className={`player-icon ${level.player.sprite.startsWith("asset:") ? "asset-custom" : level.player.sprite}`} /></div>
             <label className="field wide"><span>SHIP SPRITE</span><select value={level.player.sprite} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, sprite: event.target.value as PlayerSpriteChoice } }), true, "player-sprite")}><optgroup label="PLAYER SHIPS">{["dart", "raven", "nova", "striker"].map((sprite) => <option value={sprite} key={sprite}>{sprite.toUpperCase()}</option>)}</optgroup>{level.assets.length > 0 && <optgroup label="CUSTOM SPRITES">{level.assets.map((asset) => <option value={`asset:${asset.id}`} key={asset.id}>{asset.name.toUpperCase()}</option>)}</optgroup>}</select></label>
             <label className="range-field"><span><b>SHIP HUE TINT</b><em>{level.player.tint}°</em></span><input type="range" min="0" max="359" value={level.player.tint} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, tint: Number(event.target.value) } }), true, "player-tint")} /></label>
+            <div className="field-grid">
+              <div className="field"><EbNumericInput label="SCALE X" sliderEnabled={false} min={0.25} max={4} step={0.05} value={level.player.scaleX} onValueChange={(scaleX) => updateLevel((current) => ({ ...current, player: { ...current.player, scaleX } }), true, "player-scale-x")} /></div>
+              <div className="field"><EbNumericInput label="SCALE Y" sliderEnabled={false} min={0.25} max={4} step={0.05} value={level.player.scaleY} onValueChange={(scaleY) => updateLevel((current) => ({ ...current, player: { ...current.player, scaleY } }), true, "player-scale-y")} /></div>
+            </div>
+            <GlowField glow={level.player.glow} onChange={(glow) => updateLevel((current) => ({ ...current, player: { ...current.player, glow } }), true, "player-glow")} />
             <EbAccordion allowMultiple={sectionMode === "multiple"} className="inspector-sections">
             {section("flight", "FLIGHT", <>
               <label className="range-field"><span><b>X SPEED</b><em>{level.player.xSpeed}u/s</em></span><input type="range" min="100" max="800" step="10" value={level.player.xSpeed} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, xSpeed: Number(event.target.value) } }), true, "player-x-speed")} /></label>
@@ -2195,6 +2249,7 @@ export function StarlineGame() {
             {section("transform", "TRANSFORM", <>
               <label className="range-field"><span><b>SCALE{selectedIds.length > 1 ? " / ALL" : ""}</b><em>{selected.scale.toFixed(2)}×</em></span><input type="range" min="0.25" max="4" step="0.05" value={selected.scale} onChange={(event) => updateSelectedItems((item) => ({ ...item, scale: Number(event.target.value) }), "selection-scale")} /></label>
               <label className="range-field"><span><b>ROTATION{selectedIds.length > 1 ? " / ALL" : ""}</b><em>{Math.round(selected.rotation)}°</em></span><input type="range" min="-180" max="180" step="1" value={selected.rotation} onChange={(event) => updateSelectedItems((item) => ({ ...item, rotation: Number(event.target.value) }), "selection-rotation")} /></label>
+              <GlowField glow={selected.glow} onChange={(glow) => updateSelectedItems((item) => ({ ...item, glow }), "item-glow")} />
             </>)}
 
             {(selected.type === "enemy" || selected.type === "terrain" || selected.type === "group") && section("durability", "DURABILITY", <>
