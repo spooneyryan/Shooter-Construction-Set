@@ -834,7 +834,9 @@ export function StarlineGame() {
   const [progress, setProgress] = useState(0);
   const [savedEntries, setSavedEntries] = useState<{ id: string; name: string }[]>([]);
   const [loadName, setLoadName] = useState("");
-  const levelDoc = useSyncExternalStore(levelSession.subscribe, () => levelSession.state);
+  // The third argument is the server snapshot: this page is prerendered, and
+  // without it React refuses to render the store on the server at all.
+  const levelDoc = useSyncExternalStore(levelSession.subscribe, () => levelSession.state, () => levelSession.state);
   /** The level a load just installed -- the one change that is not an edit. */
   const loadedRef = useRef<Level | null>(null);
   const [notice, setNotice] = useState("READY");
