@@ -1,7 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
-import { createHistory, createLoop, createPerformanceMonitor, defineLibrary, defineSettings, DocumentError, type PerfStats } from "@ccllc/arcade/core";
+import { createDocumentSession, createHistory, createLoop, createPerformanceMonitor, defineLibrary, defineSettings, DocumentError, type DocumentFormat, type PerfStats } from "@ccllc/arcade/core";
+import { useSyncExternalStore } from "react";
 import { createInput } from "@ccllc/arcade/platform";
 import { createSelection, createEditorCommands, createKeymap } from "@ccllc/arcade/editor";
 import { uniqueId } from "@ccllc/arcade/core";
@@ -428,6 +429,27 @@ const levelLibrary = defineLibrary<Level>({
     : []),
 });
 
+/**
+ * The rule every GameBase editor follows for saving (docs/EDITOR-UX.md in
+ * the GameBase repository): the name field renames the open level and never
+ * forks one; SAVE writes by id and is disabled while nothing is unsaved;
+ * DUPLICATE is the only way a second level comes into being; NEW, LOAD and
+ * IMPORT ask before discarding unsaved work; DELETE can be undone. Before
+ * this, SAVE matched by name, so renaming a sector and saving quietly grew a
+ * second one and left the old name on the shelf.
+ *
+ * The editor holds a plain Level and the format's document type is that plus
+ * its envelope; the session only ever parses on the way in, so the cast says
+ * the conversion that already happens one layer down.
+ */
+const levelSession = createDocumentSession<Level>({
+  format: levelDocument as unknown as DocumentFormat<Level>,
+  library: levelLibrary,
+  blank: () => normalizeLevel({ ...defaultLevel(), name: "Untitled Sector", items: [] }),
+  nameOf: (candidate) => candidate.name,
+  withName: (candidate, name) => ({ ...candidate, name }),
+});
+
 // A fixed step, at last. The loop used to run on a variable delta with a 34 ms
 // clamp and a comment saying this was what replays and any input-synchronised
 // multiplayer would need. Both are now in reach, so it is the default: 120 Hz
@@ -810,8 +832,11 @@ export function StarlineGame() {
   const [hullMax, setHullMax] = useState(3);
   const [shield, setShield] = useState(0);
   const [progress, setProgress] = useState(0);
-  const [savedNames, setSavedNames] = useState<string[]>([]);
+  const [savedEntries, setSavedEntries] = useState<{ id: string; name: string }[]>([]);
   const [loadName, setLoadName] = useState("");
+  const levelDoc = useSyncExternalStore(levelSession.subscribe, () => levelSession.state);
+  /** The level a load just installed -- the one change that is not an edit. */
+  const loadedRef = useRef<Level | null>(null);
   const [notice, setNotice] = useState("READY");
   const [canUndo, setCanUndo] = useState(false);
   const [canRedo, setCanRedo] = useState(false);
@@ -847,7 +872,7 @@ export function StarlineGame() {
   // to do on yes. window.confirm blocked the whole tab and dodged the game's
   // keyboard handling by accident; the dialog has to declare itself, hence the
   // ref the keydown handler checks.
-  const [pendingConfirm, setPendingConfirm] = useState<{ title: string; message: string; action: () => void } | null>(null);
+  const [pendingConfirm, setPendingConfirm] = useState<{ title: string; message: string; action: () => void; confirmLabel?: string; alternate?: { label: string; action: () => void } } | null>(null);
   const pendingConfirmRef = useRef(false);
   useEffect(() => { pendingConfirmRef.current = pendingConfirm !== null; }, [pendingConfirm]);
   const showSettingsRef = useRef(false);
@@ -904,6 +929,7 @@ export function StarlineGame() {
 
   const installLevel = useCallback((next: Level, reset = false) => {
     const normalized = normalizeLevel(next);
+    loadedRef.current = normalized;
     levelRef.current = normalized; setLevel(normalized);
     if (reset) historyRef.current.reset(normalized);
     setSelection([]); setInspectPlayer(false);
@@ -977,25 +1003,21 @@ export function StarlineGame() {
       // somebody else's sector, not to resume their own. Reading it also clears
       // the fragment, so a reload does not reopen it over the later edits.
       const shared = levelDocument.readShareFromLocation();
-      let restored: Level | null = shared.document;
-      if (!restored) {
-        // Already parsed, and already null rather than a throw if the stored
-        // draft will not read -- so the try/catch this replaces is the
-        // library's problem now.
-        restored = levelLibrary.readDraft();
-      }
+      // A shared link opens as unsaved work; failing that, the draft from last
+      // time; the session owns both, so what it holds is what is on screen.
+      let opened = false;
+      if (shared.document) opened = levelSession.openDocument(shared.document, { force: true });
+      if (!opened && levelSession.hasDraft()) opened = levelSession.restoreDraft();
       // A deliberate second render: the exported HTML is built with the
       // starter level, so the first client render has to match it, and
       // localStorage only gets a say after mount. The rule is right that
       // this cascades; here the cascade is the feature.
       // eslint-disable-next-line react-hooks/set-state-in-effect
-      if (restored) installLevel(restored, true);
+      if (opened) installLevel(levelSession.state.doc, true);
       // Same two-phase load and the same reason: a link that will not decode
       // has to say so, and there is nowhere earlier to say it from.
       if (shared.error) flash("SHARED LINK UNREADABLE");
-      const names = levelLibrary.list().map((saved) => saved.name).sort();
-      setSavedNames(names);
-      setLoadName(names[0] || "");
+      setSavedEntries(levelLibrary.list().map(({ id, name }) => ({ id, name })));
     } catch { /* use the starter level */ }
   }, [flash, installLevel]);
 
@@ -1033,13 +1055,14 @@ export function StarlineGame() {
     editorSettings.set("sectionMode", next);
   }, []);
 
+  // Every edit reaches the session, which autosaves the draft behind a
+  // debounce and owns dirty; a load is the one change that is not an edit.
   useEffect(() => {
-    if (mode !== "build") return;
-    const timer = window.setTimeout(() => {
-      levelLibrary.saveDraft(level);
-    }, 300);
-    return () => window.clearTimeout(timer);
-  }, [level, mode]);
+    if (level === loadedRef.current) return;
+    if (level.name !== levelSession.state.name) levelSession.rename(level.name);
+    levelSession.update(level);
+  }, [level]);
+  useEffect(() => levelSession.guardUnload(window), []);
 
   const updateLevel = useCallback((updater: (current: Level) => Level, record = true, coalesceKey = "") => {
     const next = normalizeLevel(updater(levelRef.current));
@@ -1204,30 +1227,87 @@ export function StarlineGame() {
     });
   }, [flash, updateLevel]);
 
-  const saveLevel = useCallback(() => {
-    const current = levelRef.current;
-    const name = current.name.trim() || "Untitled Sector";
-    // Upsert by name, so Save over a sector of the same name replaces it
-    // rather than growing a second copy of it every time.
-    const entry = levelLibrary.save(current, { name });
+  const refreshSaved = useCallback(() => {
+    setSavedEntries(levelLibrary.list().map(({ id, name }) => ({ id, name })));
+  }, []);
+
+  const commitSave = useCallback(() => {
+    const entry = levelSession.save();
+    if (!entry) { flash("SAVE FAILED — THIS BROWSER BLOCKED LOCAL SAVES"); return false; }
+    refreshSaved();
+    setLoadName(entry.id); flash("LEVEL SAVED TO THIS DEVICE");
+    return true;
+  }, [flash, refreshSaved]);
+
+  const duplicateLevel = useCallback(() => {
+    const entry = levelSession.duplicate();
     if (!entry) { flash("SAVE FAILED — THIS BROWSER BLOCKED LOCAL SAVES"); return; }
-    setSavedNames(levelLibrary.list().map((saved) => saved.name).sort());
-    setLoadName(entry.name); flash("LEVEL SAVED TO THIS DEVICE");
-  }, [flash]);
+    installLevel(levelSession.state.doc, true);
+    refreshSaved();
+    setLoadName(entry.id); flash(`DUPLICATED AS ${entry.name.toUpperCase()} — EDITING THE COPY`);
+  }, [flash, installLevel, refreshSaved]);
+
+  const saveLevel = useCallback(() => {
+    const { id, renamed, savedName, name } = levelSession.state;
+    if (id !== null && renamed && savedName !== null) {
+      // A saved level under a changed name: rename it, or keep the old one
+      // and save this as a new level? The one question the contract asks.
+      setPendingConfirm({
+        title: "RENAME OR SAVE AS NEW?",
+        message: `You changed the name from "${savedName}" to "${name}". Rename the saved level, or keep "${savedName}" as it was and save this as a new level?`,
+        confirmLabel: "RENAME IT",
+        action: () => { commitSave(); },
+        alternate: { label: "SAVE AS NEW LEVEL", action: duplicateLevel },
+      });
+      return;
+    }
+    commitSave();
+  }, [commitSave, duplicateLevel]);
+
+  /** Unsaved work is never thrown away in silence: save it, discard it, or stay. */
+  const withSettledDirty = useCallback((before: string, proceed: () => void) => {
+    if (!levelSession.state.dirty) { proceed(); return; }
+    setPendingConfirm({
+      title: "UNSAVED CHANGES",
+      message: `"${levelSession.state.name}" has unsaved changes. Save them before ${before}?`,
+      confirmLabel: "SAVE AND CONTINUE",
+      action: () => { if (commitSave()) proceed(); },
+      alternate: { label: "DISCARD", action: proceed },
+    });
+  }, [commitSave]);
 
   const loadLevel = useCallback(() => {
     if (!loadName) return;
     if (loadName.startsWith("sample:")) {
       const sample = starterLevels.find((entry) => `sample:${entry.key}` === loadName);
       if (!sample) return;
-      installLevel(sample.build(), true); setCamera(0); editorCameraRef.current = 0;
-      flash(`LOADED ${sample.name.toUpperCase()}`);
+      withSettledDirty(`loading ${sample.name}`, () => {
+        // A sample opens as a clean starting point; saving it makes it yours.
+        levelSession.openDocument(sample.build(), { force: true, dirty: false });
+        installLevel(levelSession.state.doc, true); setCamera(0); editorCameraRef.current = 0;
+        flash(`LOADED ${sample.name.toUpperCase()}`);
+      });
       return;
     }
-    const next = levelLibrary.readByName(loadName);
-    if (!next) { flash("THAT SAVED LEVEL IS NO LONGER AVAILABLE"); return; }
-    installLevel(next, true); setCamera(0); editorCameraRef.current = 0; flash(`LOADED ${loadName.toUpperCase()}`);
-  }, [flash, installLevel, loadName]);
+    const entry = savedEntries.find((saved) => saved.id === loadName);
+    if (!entry) { flash("THAT SAVED LEVEL IS NO LONGER AVAILABLE"); return; }
+    withSettledDirty(`loading ${entry.name}`, () => {
+      if (!levelSession.open(entry.id, { force: true })) { flash("THAT SAVED LEVEL IS NO LONGER AVAILABLE"); refreshSaved(); return; }
+      installLevel(levelSession.state.doc, true); setCamera(0); editorCameraRef.current = 0; flash(`LOADED ${entry.name.toUpperCase()}`);
+    });
+  }, [flash, installLevel, loadName, refreshSaved, savedEntries, withSettledDirty]);
+
+  const deleteSavedLevel = useCallback(() => {
+    const entry = savedEntries.find((saved) => saved.id === loadName);
+    if (!entry) return;
+    if (!levelSession.remove(entry.id)) return;
+    refreshSaved(); setLoadName("");
+    flash(`DELETED ${entry.name.toUpperCase()} — UNDO IS BESIDE LOAD FOR A FEW SECONDS`);
+  }, [flash, loadName, refreshSaved, savedEntries]);
+
+  const undoDelete = useCallback(() => {
+    if (levelSession.undoRemove()) { refreshSaved(); flash("RESTORED"); }
+  }, [flash, refreshSaved]);
 
   // `parse` before handing a level to the format, in both places below. The
   // editor holds a plain `Level`; the format's document type is that plus the
@@ -1241,11 +1321,15 @@ export function StarlineGame() {
   }, [flash]);
 
   const importLevel = useCallback(async (file: File) => {
-    try {
-      const parsed = await levelDocument.readFile(file);
-      installLevel(parsed, true); setCamera(0); editorCameraRef.current = 0; flash("LEVEL IMPORTED");
-    } catch (error) { flash(documentMessage(error, "INVALID LEVEL FILE")); }
-  }, [flash, installLevel]);
+    let parsed: Level;
+    try { parsed = await levelDocument.readFile(file); }
+    catch (error) { flash(documentMessage(error, "INVALID LEVEL FILE")); return; }
+    withSettledDirty("importing a file", () => {
+      // A file opens as unsaved work: it is not on the shelf until saved.
+      levelSession.openDocument(parsed, { force: true });
+      installLevel(levelSession.state.doc, true); setCamera(0); editorCameraRef.current = 0; flash("LEVEL IMPORTED — SAVE IT TO KEEP IT");
+    });
+  }, [flash, installLevel, withSettledDirty]);
 
   // A whole sector in the URL fragment: no server and no account, the same
   // trade Pinball already makes. The cap is the library's 256 KB default, and a
@@ -1407,6 +1491,7 @@ export function StarlineGame() {
       { code: "KeyY", ctrl: true, when: build, label: "Redo", run: () => applyHistory(1) },
       // The one shortcut that survives a focused text field: losing an edit
       // because focus was still in the name box is worse than the alternative.
+      { code: "KeyS", ctrl: true, shift: true, allowInTextEntry: true, label: "Duplicate", run: () => duplicateLevel() },
       { code: "KeyS", ctrl: true, allowInTextEntry: true, label: "Save", run: () => saveLevel() },
       { code: "KeyT", shift: true, when: build, label: "Present", run: () => enterPlay(true) },
       { code: "KeyT", when: build, label: "Playtest", run: () => enterPlay() },
@@ -1991,6 +2076,15 @@ export function StarlineGame() {
     const value = clamp(next, 0, Math.max(0, levelRef.current.length - VIEW_W)); setCamera(value); editorCameraRef.current = value;
   };
 
+  // Declared here, after setCameraSafe, which is a plain function of the
+  // render; the level bar below is the only caller.
+  const newLevel = () => {
+    withSettledDirty("starting a new level", () => {
+      levelSession.new({ force: true });
+      installLevel(levelSession.state.doc, true); setCameraSafe(0); flash("NEW LEVEL CREATED");
+    });
+  };
+
   // Every collapsible section in both tool panels goes through here: state
   // recorded for palette categories and Inspector sections alike, keyed by a
   // stable slug so a section keeps its state across selection changes, and
@@ -2081,7 +2175,7 @@ export function StarlineGame() {
       </header>
 
       <section className="levelbar" aria-label="Level controls">
-        <label className="level-name"><span>LEVEL</span><input value={level.name} onChange={(event) => updateLevel((current) => ({ ...current, name: event.target.value }), true, "level-name")} /></label>
+        <label className="level-name"><span>LEVEL{levelDoc.dirty ? <i className="dirty-dot" title="Unsaved changes" aria-label="Unsaved changes" /> : null}</span><input value={level.name} onChange={(event) => updateLevel((current) => ({ ...current, name: event.target.value }), true, "level-name")} /></label>
         <label className="length-control"><span>END LEVEL</span><input type="number" min="1600" step="250" value={level.length} onChange={(event) => {
           const length = Math.max(1600, Number(event.target.value) || 1600);
           updateLevel((current) => ({ ...current, length }), true, "level-length"); setCameraSafe(Math.min(editorCameraRef.current, length - VIEW_W));
@@ -2092,13 +2186,16 @@ export function StarlineGame() {
           <option value="arena">ARENA</option>
         </select></label>
         <div className="file-actions">
-          <button type="button" onClick={() => setPendingConfirm({ title: "NEW LEVEL", message: "Start a new empty level? Your current draft will be replaced.", action: () => { const next = { ...defaultLevel(), name: "Untitled Sector", items: [] }; installLevel(next, true); setCameraSafe(0); flash("NEW LEVEL CREATED"); } })}>NEW</button>
-          <button type="button" onClick={saveLevel}>SAVE</button>
-          <select value={loadName} onChange={(event) => setLoadName(event.target.value)} aria-label="Saved levels"><option value="">LOAD LEVEL...</option><optgroup label="SAMPLES">{starterLevels.map((sample) => <option value={`sample:${sample.key}`} key={sample.key}>{sample.name}</option>)}</optgroup>{savedNames.map((name) => <option value={name} key={name}>{name}</option>)}</select>
+          <button type="button" onClick={newLevel}>NEW</button>
+          <select value={loadName} onChange={(event) => setLoadName(event.target.value)} aria-label="Saved levels"><option value="">LOAD LEVEL...</option><optgroup label="SAMPLES">{starterLevels.map((sample) => <option value={`sample:${sample.key}`} key={sample.key}>{sample.name}</option>)}</optgroup>{savedEntries.map((entry) => <option value={entry.id} key={entry.id}>{entry.name}</option>)}</select>
           <button type="button" onClick={loadLevel} disabled={!loadName}>LOAD</button>
-          <button type="button" onClick={() => importRef.current?.click()}>IMPORT</button>
+          <button type="button" onClick={deleteSavedLevel} disabled={!loadName || loadName.startsWith("sample:")} title="Delete the selected saved level (undo for a few seconds)">DELETE</button>
+          {levelDoc.canUndoRemove && <button type="button" onClick={undoDelete}>UNDO DELETE</button>}
+          <button type="button" onClick={duplicateLevel} title="Copy this level to (copy) and edit the copy (Ctrl+Shift+S)">DUPLICATE</button>
+          <button type="button" className="primary" onClick={saveLevel} disabled={!levelDoc.dirty} title="Save (Ctrl+S)">SAVE</button>
+          <button type="button" onClick={() => importRef.current?.click()}>IMPORT…</button>
           <button type="button" onClick={exportLevel}>EXPORT</button>
-          <button type="button" onClick={() => void shareLevel()}>SHARE</button>
+          <button type="button" onClick={() => void shareLevel()}>SHARE LINK</button>
           <input ref={importRef} className="hidden-input" type="file" accept="application/json,.json" onChange={(event) => { const file = event.target.files?.[0]; if (file) void importLevel(file); event.target.value = ""; }} />
         </div>
       </section>
@@ -2328,7 +2425,8 @@ export function StarlineGame() {
       {editingAsset && <SpriteStudio asset={editingAsset} onSave={saveSpriteAsset} onCancel={() => setEditingAsset(null)} />}
       {pendingConfirm && <EbDialog visible title={pendingConfirm.title} onVisibleChange={(open) => { if (!open) setPendingConfirm(null); }} showCloseButton={false} className="confirm-dialog" footerContent={<>
         <button type="button" onClick={() => setPendingConfirm(null)}>CANCEL</button>
-        <button type="button" className="confirm-commit" onClick={() => { const act = pendingConfirm.action; setPendingConfirm(null); act(); }}>CONFIRM</button>
+        {pendingConfirm.alternate && <button type="button" onClick={() => { const act = pendingConfirm.alternate!.action; setPendingConfirm(null); act(); }}>{pendingConfirm.alternate.label}</button>}
+        <button type="button" className="confirm-commit" onClick={() => { const act = pendingConfirm.action; setPendingConfirm(null); act(); }}>{pendingConfirm.confirmLabel ?? "CONFIRM"}</button>
       </>}><p>{pendingConfirm.message}</p></EbDialog>}
       {showSettings && <EbDialog visible title="EDITOR SETTINGS" onVisibleChange={(open) => { if (!open) setShowSettings(false); }} className="settings-dialog" footerContent={<button type="button" onClick={() => setShowSettings(false)}>DONE</button>}>
         <label className="field wide"><span>TOOLBAR BEHAVIOR</span><select value={sectionMode} onChange={(event) => applySectionMode(event.target.value as SectionMode)}><option value="multiple">SEVERAL SECTIONS OPEN</option><option value="single">ONE SECTION AT A TIME</option></select></label>

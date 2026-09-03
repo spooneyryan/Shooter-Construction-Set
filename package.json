@@ -14,8 +14,8 @@
     "db:generate": "drizzle-kit generate"
   },
   "dependencies": {
-    "@ccllc/arcade": "^2.0.14",
-    "@ccllc/studio": "^2.0.14",
+    "@ccllc/arcade": "^2.0.15-dev.285",
+    "@ccllc/studio": "dev",
     "@electricblazor/react": "file:vendor/electricblazor-react-0.9.2.tgz",
     "drizzle-orm": "0.45.2",
     "react": "19.2.8",
