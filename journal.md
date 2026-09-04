@@ -397,3 +397,34 @@ coordinates came out where the transform predicts.
 That throw is a test artifact rather than a bug — a real pointerdown always
 has an active pointer — but an unguarded `setPointerCapture` aborting the
 click handler is a sharp edge worth knowing about.
+
+## 2026-09-03 (later) — Why the selected sprite was the sharp one
+
+A bug report worth keeping because the *shape* of it gave the answer away:
+coarse normally, sharp when selected. Selection is the one case that skips the
+sprite cache, so the cache was the suspect before any code was read. C-24 has
+the fix.
+
+**The measurement nearly fooled me.** A first comparison, on a built-in vector
+sprite at the editor's default zoom, moved the sharpness metric from 68 to 74
+-- real, but so slight it would have been fair to call it noise and wrong to
+call it a fix. The reason was that the editor was showing the sector at 0.63x
+while the item was at 2x, so the bake was only being magnified 1.25 times. The
+bug needs magnification to show, and the test had almost none.
+
+Redone with an imported 256-square checkerboard at 4x, which is both the
+user's actual case and the probe that makes under-resolution obvious, the
+difference was not subtle: **the sprite did not render at all** before the
+fix. That is how the second bug surfaced -- an image asset that has not
+decoded draws nothing, and baking nothing caches it forever.
+
+The lesson is about picking the probe rather than about canvas: a metric that
+barely moves may be measuring a case the bug does not apply to, and the honest
+response is to find the case where it does rather than to report the 9%.
+
+**A loose end, deliberately not chased.** The localStorage draft does not carry
+`assets` -- the level in memory has them (the COMPONENTS tab lists an imported
+sprite quite happily) but the persisted draft does not, so a reload would lose
+an import that was never saved to the library. The data URLs are large and the
+library's own notes talk about quota, so this may well be deliberate. Recorded
+rather than changed, because it is nothing to do with the bug in hand.

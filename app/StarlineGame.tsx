@@ -12,7 +12,7 @@ import { BulletPatternStudio, SfxStudio, SpriteStudio, blankImageAsset } from "@
 import { advanceBurst, burstFrame, createBurstPreset, createBurstRuntime, drawBurst, normalizeBurst, type BurstDefinition, type BurstRuntime } from "@ccllc/arcade/burst";
 import { createSfxPlayer, createSfxPreset, normalizeSfx, type SfxDefinition } from "@ccllc/arcade/sfx";
 import { EbAccordion, EbAccordionItem, EbDialog, EbNumericInput, EbTabbedCard } from "@electricblazor/react";
-import { drawSpriteAsset } from "@ccllc/studio/render";
+import { drawSpriteAsset, imageAssetElement } from "@ccllc/studio/render";
 import {
   clamp,
   createPatternPreset,
@@ -557,8 +557,20 @@ function assetIdentity(asset: SpriteAsset) {
 // most of the atlas on the sprites with the least to gain from it.
 const BAKE_MAX_SIZE = 72;
 
-/** Half a baked region. The widest any recipe reaches is the comet's tail at
- *  1.7x size; the constant covers the shadow blur, the stroke and slack. */
+// The same judgement in device pixels rather than authored units. A sprite
+// magnified past this is one of a few on screen, and its region would be large
+// enough that the atlas could hold only a handful -- so it is drawn straight
+// from the recipe, which is sharper anyway.
+const BAKE_MAX_PIXELS = 128;
+
+// Bakes are made at multiples of this, so a scale slider sweeping through a
+// hundred values reuses a dozen bakes rather than minting a hundred.
+const BAKE_STEP = 8;
+
+/** Half a baked region, in the pixels the region is rasterised at. The widest
+ *  any recipe reaches is the comet's tail at 1.7x size; the constant covers the
+ *  shadow blur, the stroke and slack, and stays constant because a shadow is
+ *  blurred in device pixels rather than in the transform's units. */
 const bakeHalf = (size: number) => Math.ceil(size * 1.75 + 22);
 
 /** The recipe: one sprite, at the origin, with no transform of its own. */
@@ -662,32 +674,63 @@ function paintSprite(context: CanvasRenderingContext2D, sprite: string, size: nu
 /**
  * A baked copy of this sprite, or null when it is not worth baking.
  *
- * Null for the three cases where a cache would lose: a sprite too big to be
- * numerous, and the selected one, of which there is exactly one on screen and
- * whose dashed ring would otherwise double the key space for nothing.
+ * Null for the cases where a cache would lose: a sprite too big to be
+ * numerous, the selected one, of which there is exactly one on screen and
+ * whose dashed ring would otherwise double the key space for nothing, and one
+ * magnified so far that its bake would cost more atlas than it saves.
+ *
+ * **A bake is made at the resolution it will be drawn at.** The transform in
+ * force here decides that -- the display's pixel ratio, the editor's zoom and
+ * the item's own scale all multiply together -- and it is read off the context
+ * rather than passed in, so no call site can forget it and quietly lose
+ * resolution. Baking at `size` and letting the transform magnify the result is
+ * what made a scaled-up sprite blocky while the selected copy, which skips the
+ * cache entirely, stayed sharp.
  */
-function spriteRegion(sprite: string, size: number, selected: boolean, assets: SpriteAsset[], tint: number, glow?: SpriteGlow) {
+function spriteRegion(context: CanvasRenderingContext2D, sprite: string, size: number, selected: boolean, assets: SpriteAsset[], tint: number, glow?: SpriteGlow) {
   if (selected || !(size > 0) || size > BAKE_MAX_SIZE) return null;
-  // The halo is part of what was baked, so it is part of the key.
-  let key = `${sprite}|${size}|${tint}|${glow ? glow.color + ":" + glow.blur : "-"}`;
+  const matrix = context.getTransform();
+  // The larger of the two axes, so a non-uniform scale over-resolves the minor
+  // one rather than under-resolving the major one.
+  const detail = Math.max(Math.hypot(matrix.a, matrix.b), Math.hypot(matrix.c, matrix.d));
+  // Quantised, because scale is a slider: without this, dragging it would mint
+  // a fresh bake every frame. Rounding up never under-resolves.
+  const pixels = Math.ceil(size * detail / BAKE_STEP) * BAKE_STEP;
+  // Past the ceiling, drawing straight from the recipe is both sharper and
+  // cheaper than an atlas region only a handful of sprites could share.
+  if (!(pixels > 0) || pixels > BAKE_MAX_PIXELS) return null;
+  const baked = pixels / size;
+  // The halo is part of what was baked, so it is part of the key -- and so is
+  // the resolution, or the first bake would be reused at every later size.
+  let key = `${sprite}|${size}|${pixels}|${tint}|${glow ? glow.color + ":" + glow.blur : "-"}`;
   if (sprite.startsWith("asset:")) {
     const asset = assets.find((entry) => `asset:${entry.id}` === sprite);
     // An unresolved asset draws nothing and must not be cached under a key
     // that would still miss once the asset arrives.
     if (!asset) return null;
+    // Nor may an image that has not finished decoding. `drawSpriteAsset` skips
+    // one of those entirely, and baking that nothing would store an empty
+    // region under a key that never changes again -- the sprite would stay
+    // invisible for the rest of the session. Declining costs one blank frame
+    // and fixes itself on the next.
+    if (asset.kind === "image") {
+      const element = imageAssetElement(asset);
+      if (!element.complete || element.naturalWidth === 0) return null;
+    }
     key += `|${assetIdentity(asset)}`;
   }
-  const half = bakeHalf(size);
-  return spriteCache.sprite(key, half * 2, half * 2, (own) => {
+  const half = bakeHalf(pixels);
+  const region = spriteCache.sprite(key, half * 2, half * 2, (own) => {
     own.translate(half, half);
+    own.scale(baked, baked);
     paintSprite(own, sprite, size, false, assets, tint, glow);
   });
+  return region ? { region, detail: baked } : null;
 }
 
 /** `extra` rather than two more positional parameters: this already takes
  *  eleven, and a call site with two bare numbers on the end says nothing. */
 function drawSprite(context: CanvasRenderingContext2D, sprite: string, x: number, y: number, size: number, selected = false, alpha = 1, rotation = 0, scale = 1, faceLeft = false, assets: SpriteAsset[] = [], tint = 0, extra: { scaleY?: number; glow?: SpriteGlow } = {}) {
-  const region = spriteRegion(sprite, size, selected, assets, tint, extra.glow);
   context.save();
   context.translate(x, y);
   context.rotate(rotation * Math.PI / 180);
@@ -695,7 +738,16 @@ function drawSprite(context: CanvasRenderingContext2D, sprite: string, x: number
   // site keeps the uniform scale it was written with.
   context.scale(scale * (faceLeft && (sprite === "raider" || sprite === "wraith" || sprite === "carrier") ? -1 : 1), extra.scaleY ?? scale);
   context.globalAlpha = alpha;
-  if (region) context.drawImage(region.canvas, region.x, region.y, region.width, region.height, -region.width / 2, -region.height / 2, region.width, region.height);
+  // Asked for AFTER the transform is in force, because the transform is what
+  // decides how much resolution the bake needs.
+  const baked = spriteRegion(context, sprite, size, selected, assets, tint, extra.glow);
+  if (baked) {
+    // Divided back out so the blit lands 1:1 on device pixels: the region was
+    // rasterised `detail` times larger than the units it is drawn in.
+    const width = baked.region.width / baked.detail;
+    const height = baked.region.height / baked.detail;
+    context.drawImage(baked.region.canvas, baked.region.x, baked.region.y, baked.region.width, baked.region.height, -width / 2, -height / 2, width, height);
+  }
   else paintSprite(context, sprite, size, selected, assets, tint, extra.glow);
   context.restore();
 }

@@ -561,3 +561,39 @@ the inverse pins it to the 640-wide band the author can actually see.
 Verified by clicking one point in both modes: 62% across and 75% down the
 stage lands at `(795, 487)` in horizontal — straight through — and at
 `(154, 474)` in vertical, which is that same point taken through the inverse.
+
+## C-24 — A bake is made at the size it is drawn
+
+Ryan noticed an imported sprite looking coarse in the editor and sharp the
+moment it was selected, which is the symptom that names the cause: **the
+selected copy is the one that skips the cache.**
+
+`spriteRegion` rasterised at the sprite's authored `size` and `drawSprite`
+then blitted that bitmap under the transform in force — the display's pixel
+ratio, the editor's zoom and the item's own scale, all multiplying. A sprite
+scaled to 4x was a `size`-pixel bake magnified four times. Selection returns
+null from the cache, so it went straight to the recipe and stayed sharp; C-14
+had made the fast path the blurry one and nobody had a reason to compare the
+two until an image asset, which carries real detail to lose, was scaled up.
+
+**The resolution is now read off the context rather than passed in.** A call
+site cannot forget what it never supplies, and `getTransform` already knows
+about the pixel ratio, the zoom and the quarter turn C-23 added. Bakes are
+quantised to 8-pixel steps so dragging a scale slider reuses a dozen bakes
+instead of minting one per frame, and past `BAKE_MAX_PIXELS` the bake is
+declined entirely — a sprite magnified that far is one of a few on screen, its
+region would crowd the atlas, and drawing from the recipe is sharper anyway.
+
+**A second bug fell out of the first.** `drawSpriteAsset` draws *nothing* for
+an image whose data URL has not decoded yet, and decoding is asynchronous with
+no way around it. On the direct path that costs one blank frame. Baked, that
+nothing was stored under a key that never changes again, so an asset unlucky
+enough to be baked on its first frame stayed **invisible for the rest of the
+session**. `spriteRegion` now declines to bake an image that is not `complete`
+— `imageAssetElement` is exported by `@ccllc/studio/render` for exactly this,
+and its own doc comment says so.
+
+Verified by pointing an item at a 256-square checkerboard: at 4x it is drawn
+from the recipe and the checkers stay separate, and at 1x it goes through the
+cache and is both present and sharp. Before the fix the same sprite at 4x did
+not appear at all, which is the second bug caught in the act.
