@@ -89,112 +89,12 @@ This adds fields to the level contract in `@ccllc/arcade`, normalized the way
 bake key must include both numbers, and a blur is a shadow-space effect that
 `C-24`'s resolution rules have to account for.
 
-## F-08 — The raster editor is called Pixel Art
-
-"Raster" is the data model's word, not the user's. The editor calls itself
-**RASTER SPRITE EDITOR** and Starline's button says **+ RASTER SPRITE**; both
-should say Pixel Art.
-
-The title lives in `@ccllc/studio` (`RasterEditor.js` carries the string), so
-the rename is a package change and a release before Starline can show it; the
-palette button is this repository's. The asset `kind` stays `"raster"` —
-renaming that would be a level-format break for every saved sprite, and the
-label is the only thing anybody reads.
-
-## F-09 — Components for what you saved, Assets for what you author
-
-The palette's middle tab is doing two jobs. **COMPONENTS** currently holds the
-five editor buttons, the sprite list, and the saved components; **ENHANCEMENTS**
-holds the built-in library. Neither name describes its contents.
-
-The intent is a clean split:
-
-- **COMPONENTS** — game items the user has saved: an object plus its add-ons
-  and settings. Weapons, armor and satellites join it from Enhancements,
-  keeping the categories they already have.
-- **ASSETS** — a new tab for authored material: sprites, sounds, explosions
-  and bullet patterns, plus the buttons that open their editors.
-
-`componentCategory` already maps every `kind` to a heading, so the work is
-mostly deciding which headings belong to which tab and splitting one
-`panelContent` branch into two. `PaletteTab` gains a member and
-`EbTabbedCard` a fourth item.
-
-**One decision has to be made first, because the two halves of the request
-pull against each other:** Components is asked to show "only game items the
-user has saved", and also to receive the *built-in* weapons, armor and
-satellites. Those are different sets — `savedComponents` versus
-`enhancements`. Either the built-ins live under Components alongside saved
-ones (and ENHANCEMENTS disappears entirely, which is what moving all four of
-its categories away implies), or Components stays user-only and the built-ins
-keep a tab of their own. Settle that before writing any of it.
-
-## F-10 — The player ship is an object like any other
-
-The player is edited through a **PLAYER SHIP** card pinned above the palette
-tools, with an EDIT button that swings the Inspector over via `inspectPlayer`.
-Every other thing in the level is edited by clicking it on the playfield.
-
-Make the ship selectable on the canvas — click it, get it in the Inspector,
-resize and rotate it with the same handles — and drop the card. `C-22`'s work
-already made the ship's hitbox the whole sprite, so a hit test the editor can
-reuse exists.
-
-The pieces that need deciding: the player is not a `LevelItem` and has no
-`id`, so selection state has to admit something that is not in `items`; the
-ship is drawn at a fixed `x` while the sector scrolls past it, so it is always
-at the same screen place and never at a world one; and `inspectPlayer` is
-threaded through enough of the Inspector that removing it is most of the
-change. Deleting the player must stay impossible.
-
-## F-11 — Presentation mode has no way out
-
-**A bug in `C-19`, not a new feature.** Entering presentation mode works —
-`is-presenting` lands on the root, the chrome goes to `display: none`, the
-grid collapses to one column — but **Escape does not leave it**, and every
-control that could is hidden. The only way out is a reload. Confirmed on
-production: the hint reads ESC TO RETURN TO THE EDITOR, the tab is focused and
-the simulation is running, and a real Escape changes nothing.
-
-The binding looks right on the page — `{ code: "Escape", when: () => !build(),
-run: () => exitPlay() }` — so the fault is in delivery or in the guard rather
-than in the intent, and finding out which is the first job.
-
-A second, smaller thing found while testing: in **vertical** mode presentation
-wastes half the screen. The sector is 640 units of a 1280-wide canvas, and
-scaling the whole canvas to the window scales the empty margins with it.
-Presentation should frame the sector, not the canvas.
-
-## F-12 — Escape returns to the select tool after placing
-
-Placing leaves the palette armed, so every click spawns another object;
-Escape should put the select tool back.
-
-The binding already exists and reads exactly that way — Escape in build mode
-switches to select, and clears the selection if select is already active. So
-this is a **verification job before it is a coding one**: either the binding
-is not firing (which would make it the same fault as `F-11`, and the two
-should be fixed together) or it fires and the palette stays armed anyway,
-which is a different bug in the same sentence.
-
-## F-13 — Image editor: grouped buttons, an Apply that says so, a frame you can drag
-
-Three small things in the image editor, all of them in `@ccllc/studio` and so
-all of them a package change and a release before Starline sees them:
-
-- **Group the button row.** Undo and redo read as one pair, mirror X and
-  mirror Y as another, and Clear as its own thing. Space them so the eye can
-  see that, rather than running eleven buttons together.
-- **Say Apply when there is something to apply.** The SCALE button should read
-  **APPLY** while either size field is dirty, so it is clear the typed numbers
-  have not taken effect yet.
-- **Make the editor resizable.** It is a fixed panel today; let the whole
-  frame be dragged bigger, the way the tool panels became draggable in `C-18`.
-
-The first two are contained. The third is the one with a design question: what
-the canvas does with the extra room — grow the artboard, grow the zoom, or
-keep the artboard and add margin — and whether the chosen size is remembered
-between sessions the way the panel widths are.
+**Half of this has shipped.** `@ccllc/arcade` 2.0.16 carries the field:
+`LevelItem.depth` is `{ darken, blur }`, normalized by `normalizeDepth`,
+absent by default so every level saved before it draws as it did, with a test
+covering the clamps and the absent case. What is left is this repository's
+half — drawing it, and the two Inspector controls that author it — which waits
+on that version reaching the feed as `latest`.
 
 # Completed Implementation Plan
 
@@ -753,3 +653,99 @@ from `-webkit-appearance:slider-vertical` in the vendored
 a parse-time notice that fires because the sheet is loaded, whether or not the
 component is used. Fixing it means rebuilding the vendored tarball, and it has
 no effect on anything Starline draws.
+
+## C-26 — The raster editor is called Pixel Art
+
+Was F-08. `RasterEditor` says **PIXEL ART EDITOR**, an unnamed sprite saves as
+"Untitled Pixel Art", and Starline's palette button is **+ PIXEL ART**. The
+asset `kind` stays `"raster"`: renaming that would break every sprite anyone
+has saved, and the label is the only part a person reads.
+
+## C-27 — Components for what goes in the level, Assets for what it is made of
+
+Was F-09. COMPONENTS holds the six object kinds a user has saved plus the
+weapons, armor and satellites that bolt onto one; ASSETS is new and holds
+sprites, explosions, sounds and bullet patterns together with the buttons that
+open their editors. ENHANCEMENTS is gone — moving all four of its categories
+left nothing in it.
+
+**The open question answered itself.** F-09 flagged that "only what the user
+saved" and "receive the built-in weapons" pull against each other. They stop
+pulling once the shelf is one list: saved entries first, built-ins after,
+inside each category. The card already distinguished them — a saved one offers
+a delete, a built-in offers a copy — so the tab never had to, and splitting by
+authorship put the answer to "what weapons do I have" in two places depending
+on who made them.
+
+The split lives in two arrays, `componentCategories` and `assetCategories`,
+which are the only thing that decides which heading goes where.
+
+## C-28 — The player ship is an object like any other
+
+Was F-10. Click the ship, get it in the Inspector, with the same dashed ring
+every other selection draws. The PLAYER SHIP card is gone.
+
+Two things made it smaller than F-10 feared. The hit test is against the
+**screen** point rather than a world one, because the ship holds a fixed place
+while the sector scrolls past it and therefore has no world position to test.
+And it reuses `playerRadius` — the engine's own collision radius, from C-22 —
+so the ship you can click is exactly the ship that gets shot, with no second
+idea of how big it is.
+
+`inspectPlayer` stayed. It is still not a `LevelItem` and still has no id, so
+the Inspector is switched over directly rather than through the selection;
+what changed is what sets it. `setSelection` already cleared it, so picking an
+object still puts the ship down.
+
+## C-29 — The stage frames the sector, not the canvas
+
+Was F-11, and the entry was half wrong.
+
+**The real fault:** a vertical level occupies a `VIEW_H`-wide band down the
+middle of a `VIEW_W`-wide canvas — C-23's quarter turn puts it there — and the
+fit scaled the whole canvas anyway, spending half the screen on the empty
+margins. In presentation, where the screen is all there is, that is a game in
+a strip with black either side, which is what "presentation mode doesn't work"
+looked like. The fit now measures the sector: horizontal frames the full width
+and the arithmetic is unchanged, vertical frames 640 and comes out at twice
+the scale. The editor gains the same room, since both draw through one
+viewport. Changing mode reframes without resizing the canvas element, so the
+`ResizeObserver` never hears about it — hence the mode effect calling the
+loop's own resize.
+
+**What was wrong:** F-11 recorded that Escape does not leave presentation mode
+and that the only way out is a reload. It does leave. The browser automation
+sends `keydown` with an empty `code`, the keymap matches on `code`, and so no
+shortcut fired under it in any mode — including the control test that was
+supposed to prove keys worked. Diagnosed from a tool's behaviour and written
+up as the product's.
+
+## C-30 — Escape returns to the select tool after placing
+
+Was F-12, and it needed no code. The binding was already there and already
+correct: Escape in build mode switches to select, and clears the selection if
+select is already active. It failed only under the automation described in
+C-29. Verified with a well-formed event — arm a palette card, press Escape,
+the card disarms.
+
+Kept as an entry rather than deleted, because "we checked, it works, here is
+the proof" is worth more to the next reader than a gap in the numbering.
+
+## C-31 — Image editor: grouped buttons, an Apply that says so, a resizable frame
+
+Was F-13, all three in `@ccllc/studio`.
+
+The footer reads as groups: undo with redo, the two rotations, the two
+mirrors, and Clear on its own because it throws the picture away. Eleven
+evenly spaced buttons made the reader find the pairs every time. The grouping
+is scoped to the image editor, since the other editors have no groups and
+widening their gap would only spread them out.
+
+SCALE reads **APPLY** while either size field holds a number the picture has
+not taken yet — the same trick the crop tool already played, and the reason
+that button was worth copying rather than inventing something new.
+
+The studio frame takes `resize: both`, with the viewport as its ceiling and a
+floor low enough to stay usable. F-13 asked what the extra room should do; the
+grid already answers it — the canvas row is the `minmax(0, 1fr)` one, so the
+artboard takes the space and the toolbars keep their height.

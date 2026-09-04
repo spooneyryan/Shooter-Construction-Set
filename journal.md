@@ -444,3 +444,38 @@ turned one repeated warning into a real input bug and sent the other one
 away: the `slider-vertical` deprecation is inside the vendored
 ElectricBlazor stylesheet and fires on parse whether or not anything uses the
 component it styles.
+
+## 2026-09-04 — Eleven requests, and three lies the browser told me
+
+Ryan approved the plan for F-07 to F-13 and asked for all of it. Six of the
+seven shipped; F-07's own half waits on a package reaching the feed.
+
+**The harness misled me three times, in the same shape each time**, and the
+shape is worth keeping because it will happen again:
+
+- **Keys.** The automation sends `keydown` with an empty `code`, and the
+  keymap matches on `code`. So no shortcut fired under it, in any mode — and
+  I wrote that up as "presentation mode is a trap with no way out", which was
+  entirely false. The control test that should have caught it (press P, see
+  if anything pauses) failed for the same reason and I read its silence as
+  more evidence rather than as the same fault.
+- **Backgrounded tabs.** `requestAnimationFrame` is throttled in a tab that
+  is not fronted, so the game did not animate and I nearly filed that too.
+- **ResizeObserver.** It does not fire in this pane at all — a fresh observer
+  reported zero callbacks on attach, which is not something a browser does.
+  I had already started reasoning about a resize bug that does not exist.
+
+The common thread is that **a negative result from a tool is not a negative
+result from the product**, and the tell each time was available: an empty
+`code` field, a ship that never moved between frames, an observer that never
+fired even once. The discipline that would have saved all three is to prove
+the instrument works before trusting what it says about the subject.
+
+What survived the correction was the part I had actually seen with my own
+eyes: a vertical level presented in a strip with black either side. That one
+was real, had nothing to do with keys, and is C-29.
+
+**The release taught the other lesson.** `npm run release` refused to include
+work that was on `dev-claude` but not on `dev`, and said so in its preflight
+rather than tagging a commit that did not have it. Reading that notice was the
+difference between publishing the change and publishing nothing.
