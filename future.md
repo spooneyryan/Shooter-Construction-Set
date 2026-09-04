@@ -750,3 +750,35 @@ blur is in device pixels rather than in the transform's units — the same space
 default so every level saved before it draws as it did. The player ship does
 not get it: `PlayerSettings` has no `depth`, and a ship the player is meant to
 watch is not something to push into the background.
+
+## C-33 — A sprite may turn to face the way it flies
+
+Ryan's example was exact: a rocket riding a sine wave should nose into the
+wave, not stay level and bob. **FACE DIRECTION OF TRAVEL** in the Inspector,
+from LEVEL to 100%, is how far it follows its heading.
+
+**The engine records the heading and never reads it back.** Each runtime enemy
+carries `vx`/`vy`, measured as a finite difference across the step rather than
+as each pattern's derivative — so sine, zigzag and the arena's homing, which
+has no closed form, all answer the same way, and a new pattern needs no second
+formula. Zero on the spawn frame, because the phase is folded into the first
+position and the jump from the origin is not a velocity. It is plain
+arithmetic on state, so a replay reproduces it exactly and no trigonometry
+enters the simulation; `atan2` stays in the renderer, where presentation is
+allowed it.
+
+**The lean is measured from the sprite's own forward axis**, not from
+screen-right. `atan2(vy, |vx|)` is the angle off straight-ahead, and the sign
+of `vx` puts it back on the side the picture actually tilts toward — which is
+what makes a left-flying enemy leaning down read as leaning down rather than
+up. With no along-speed at all, the sprite is taken to face left, the way every
+enemy flies.
+
+**The editor shows it without a playtest.** A placed item has no velocity, so
+the preview uses each pattern's derivative at age zero — a sine starts crossing
+at its fastest, `amplitude x 2 pi x frequency`; a zigzag at its constant slope,
+`4 x amplitude x frequency` — through the same `travelTilt` helper play uses,
+so the two cannot disagree about which way is down.
+
+Zero is stored as absent, so a level that never touched the slider saves
+exactly as it did. In `@ccllc/arcade` 2.0.17.

@@ -479,3 +479,23 @@ was real, had nothing to do with keys, and is C-29.
 work that was on `dev-claude` but not on `dev`, and said so in its preflight
 rather than tagging a commit that did not have it. Reading that notice was the
 difference between publishing the change and publishing nothing.
+
+## 2026-09-04 (later) — Which way is down
+
+Ryan asked for sprites to lean into their path — a rocket on a sine wave
+nosing into the wave. C-33.
+
+The decision worth recording is where the heading comes from. The obvious
+place is each movement pattern's derivative, and it is wrong twice: the arena's
+homing has no closed form, and every future pattern would need a second
+formula kept in step with the first. A finite difference across the step
+answers for all of them with one subtraction, costs nothing the simulation was
+not already doing, and — because it is arithmetic on state rather than
+trigonometry — keeps `atan2` out of the engine entirely. The renderer turns
+the picture; the engine only says which way it went.
+
+The one trap was the spawn frame. The phase is folded into an enemy's first
+position, so the difference between "at the origin" and "one step in" includes
+the whole phase offset at once — a one-frame spike that would flick a rocket
+sideways as it appears. Read `settled` before the age advances and the spawn
+frame reports nothing, which is also the truth.

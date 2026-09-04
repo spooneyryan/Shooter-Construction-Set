@@ -371,6 +371,23 @@ function DepthField({ depth, onChange }: { depth?: SpriteDepth; onChange: (next:
 }
 
 /**
+ * Degrees a sprite turns to face the way it is flying, scaled by how far the
+ * author wants it to follow (0 level, 1 fully along the velocity).
+ *
+ * Measured from the sprite's own forward axis rather than from screen-right,
+ * so a left-flying enemy leaning down reads as leaning down: atan2 against the
+ * SIZE of the along-speed gives the lean off straight-ahead, and the sign of
+ * the along-speed puts it back on the side the picture actually tilts toward.
+ * With no along-speed at all the sprite is assumed to face left, which is the
+ * way every enemy flies. Presentation only -- Math.atan2 is fine here, and
+ * nothing in the simulation reads the result.
+ */
+function travelTilt(vx: number, vy: number, follow: number) {
+  if (!follow || (!vx && !vy)) return 0;
+  return Math.atan2(vy, Math.abs(vx)) * (Math.sign(vx) || -1) * follow * 180 / Math.PI;
+}
+
+/**
  * The quarter turn a vertical sector is seen through.
  *
  * A level is always authored and simulated in (along, across): x is distance
@@ -1806,6 +1823,19 @@ export function StarlineGame() {
         context.fillText(text, 0, 0);
         context.restore();
       };
+      // The lean the game will draw on the item's first frame, so FACE
+      // DIRECTION OF TRAVEL shows its effect without a playtest. The world
+      // measures a real velocity; here each pattern's derivative at age zero
+      // stands in -- a sine starts crossing at its fastest, a zigzag at its
+      // constant slope, and everything else flies straight. Through the same
+      // helper as play, so the two cannot disagree about which way is down.
+      const previewTilt = (item: LevelItem) => {
+        const follow = item.heading?.follow ?? 0;
+        if (!follow || item.type === "terrain" || item.movement.pattern === "stationary") return 0;
+        const { pattern, speed, amplitude, frequency } = item.movement;
+        const vy = pattern === "sine" ? amplitude * frequency * Math.PI * 2 : pattern === "zigzag" ? 4 * amplitude * frequency : 0;
+        return travelTilt(-Math.max(1, speed), vy, follow);
+      };
       const drawPlacedItem = (item: LevelItem) => {
         const selectedItem = editorFor().selection.ids.includes(item.id);
         const offsets = groupOffsets(item.group, item.rotation, item.scale);
@@ -1813,7 +1843,7 @@ export function StarlineGame() {
           const screenX = item.x + offset.x - cameraX;
           if (screenX < -240 || screenX > VIEW_W + 240) return;
           const alpha = item.type === "decoration" ? item.decoration?.opacity ?? .5 : item.type === "group" ? .82 : 1;
-          drawSprite(context, item.sprite, screenX, item.y + offset.y, item.size, selectedItem && index === 0, alpha, item.rotation, item.scale, item.type === "enemy" || item.type === "group", current.assets, item.tint, { glow: item.glow, depth: item.depth });
+          drawSprite(context, item.sprite, screenX, item.y + offset.y, item.size, selectedItem && index === 0, alpha, item.rotation + previewTilt(item), item.scale, item.type === "enemy" || item.type === "group", current.assets, item.tint, { glow: item.glow, depth: item.depth });
         });
         if (item.type === "group" && item.x - cameraX > -100 && item.x - cameraX < VIEW_W + 100) {
           context.fillStyle = "#eaff62"; context.font = "10px monospace"; label(`GROUP x${item.group?.count ?? 1}`, item.x - cameraX - 28, item.y - item.size * item.scale - 22);
@@ -1943,7 +1973,7 @@ export function StarlineGame() {
         const parallax = playMode !== "arena" && enemy.type === "decoration" ? enemy.decoration?.parallax ?? 1 : 1;
         const x = enemy.x - renderCam * parallax;
         if (x < -260 || x > VIEW_W + 260) return;
-        drawSprite(context, enemy.sprite, x, enemy.y, enemy.size, false, enemy.type === "decoration" ? enemy.decoration?.opacity ?? .5 : 1, enemy.rotation, enemy.scale, enemy.type === "enemy", levelRef.current.assets, enemy.tint, { glow: enemy.glow, depth: enemy.depth });
+        drawSprite(context, enemy.sprite, x, enemy.y, enemy.size, false, enemy.type === "decoration" ? enemy.decoration?.opacity ?? .5 : 1, enemy.rotation + travelTilt(enemy.vx, enemy.vy, enemy.heading?.follow ?? 0), enemy.scale, enemy.type === "enemy", levelRef.current.assets, enemy.tint, { glow: enemy.glow, depth: enemy.depth });
         if (enemy.shield > 0 && enemy.armor?.type === "forcefield") { context.strokeStyle = "rgba(100,227,255,.7)"; context.lineWidth = 2; context.beginPath(); context.arc(x, enemy.y, enemy.size * enemy.scale + 8, 0, Math.PI * 2); context.stroke(); }
       };
       runtime.enemies.filter((item) => item.type === "decoration" && item.decoration?.layer === "background").forEach(drawRuntimeItem);
@@ -2598,6 +2628,11 @@ export function StarlineGame() {
             {section("transform", "TRANSFORM", <>
               <label className="range-field"><span><b>SCALE{selectedIds.length > 1 ? " / ALL" : ""}</b><em>{selected.scale.toFixed(2)}×</em></span><input type="range" min="0.25" max="4" step="0.05" value={selected.scale} onChange={(event) => updateSelectedItems((item) => ({ ...item, scale: Number(event.target.value) }), "selection-scale")} /></label>
               <label className="range-field"><span><b>ROTATION{selectedIds.length > 1 ? " / ALL" : ""}</b><em>{Math.round(selected.rotation)}°</em></span><input type="range" min="-180" max="180" step="1" value={selected.rotation} onChange={(event) => updateSelectedItems((item) => ({ ...item, rotation: Number(event.target.value) }), "selection-rotation")} /></label>
+              {/* How far the sprite turns to face the way it flies. LEVEL is the
+                  bob every sprite had before this; a rocket on a sine wave wants
+                  something near 100%. Zero is stored as absent, so a level that
+                  never touched this saves exactly as it did. */}
+              <label className="range-field"><span><b>FACE DIRECTION OF TRAVEL</b><em>{selected.heading?.follow ? Math.round(selected.heading.follow * 100) + "%" : "LEVEL"}</em></span><input type="range" min="0" max="1" step="0.05" value={selected.heading?.follow ?? 0} onChange={(event) => updateSelectedItems((item) => ({ ...item, heading: Number(event.target.value) > 0 ? { follow: Number(event.target.value) } : undefined }), "selection-heading")} /></label>
               <GlowField glow={selected.glow} onChange={(glow) => updateSelectedItems((item) => ({ ...item, glow }), "item-glow")} />
               <DepthField depth={selected.depth} onChange={(depth) => updateSelectedItems((item) => ({ ...item, depth }), "item-depth")} />
             </>)}
