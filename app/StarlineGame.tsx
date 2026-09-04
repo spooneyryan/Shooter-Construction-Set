@@ -807,6 +807,11 @@ export function StarlineGame() {
   // snapshot, and giving the snapshot the coalesce key the library worked out.
   const editorCameraRef = useRef(0);
   const viewportRef = useRef({ scale: 1, offsetX: 0, offsetY: 0 });
+  // Switching to vertical reframes the stage, and nothing about the canvas
+  // ELEMENT changes when it does -- so the ResizeObserver never fires and the
+  // fit would stay stale until the window was dragged. The loop publishes its
+  // own resize here for the mode effect below to call.
+  const resizeViewRef = useRef<() => void>(() => {});
   const satellitePointerRef = useRef({ x: VIEW_W * .7, y: VIEW_H / 2, active: false });
   const mouseFireRef = useRef(false);
   const dragRef = useRef<CanvasDrag | null>(null);
@@ -1632,8 +1637,18 @@ export function StarlineGame() {
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
       const rect = canvas.getBoundingClientRect();
       canvas.width = Math.round(rect.width * dpr); canvas.height = Math.round(rect.height * dpr);
-      const scale = Math.min(rect.width / VIEW_W, rect.height / VIEW_H);
-      const offsetX = (rect.width - VIEW_W * scale) / 2;
+      // Fit the SECTOR, not the canvas. A vertical level occupies a VIEW_H-wide
+      // band down the middle of a VIEW_W-wide canvas -- C-23's quarter turn puts
+      // it there -- so fitting the whole canvas scales a picture that is half
+      // empty and throws away half the screen. Worst in presentation, where the
+      // screen is all there is, but the editor gains the same room.
+      const framed = levelRef.current.mode === "vertical" ? VIEW_H : VIEW_W;
+      const scale = Math.min(rect.width / framed, rect.height / VIEW_H);
+      // Centre the framed band rather than the canvas: the band starts at
+      // (VIEW_W - framed) / 2, and that is the point that has to land on the
+      // left edge of the fitted area. Horizontal frames the full width, where
+      // the second term is zero and this is the arithmetic it always was.
+      const offsetX = (rect.width - framed * scale) / 2 - ((VIEW_W - framed) / 2) * scale;
       const offsetY = (rect.height - VIEW_H * scale) / 2;
       viewportRef.current = { scale, offsetX, offsetY };
       context.setTransform(scale * dpr, 0, 0, scale * dpr, offsetX * dpr, offsetY * dpr);
@@ -1643,6 +1658,7 @@ export function StarlineGame() {
       miniContext.setTransform(dpr, 0, 0, dpr, 0, 0);
     };
     resize();
+    resizeViewRef.current = resize;
     const observer = new ResizeObserver(resize); observer.observe(canvas); observer.observe(mini);
 
     // Poll once a frame, then read edges. The deadzone, the union of keyboard
@@ -2172,6 +2188,10 @@ export function StarlineGame() {
     }
     const value = clamp(next, 0, Math.max(0, levelRef.current.length - VIEW_W)); setCamera(value); editorCameraRef.current = value;
   };
+
+  // The stage is framed around the sector, so changing which way the sector
+  // runs changes the fit. See resizeViewRef.
+  useEffect(() => { resizeViewRef.current(); }, [level.mode]);
 
   /**
    * Scrolling the sector, as a native listener rather than an `onWheel` prop.
