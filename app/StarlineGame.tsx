@@ -37,6 +37,7 @@ import {
   type ComponentDefinition,
   type ItemEffects,
   type ShmupEvent,
+  type SpriteDepth,
   type SpriteGlow,
   type DecorationLayer,
   type GroupPattern,
@@ -341,6 +342,34 @@ function GlowField({ glow, onChange }: { glow?: SpriteGlow; onChange: (next: Spr
   );
 }
 
+const DEFAULT_DEPTH: SpriteDepth = { darken: 0.35, blur: 2 };
+
+/**
+ * Pushing a sprite back into the scene, which is not the same as fading it.
+ *
+ * Alpha is the obvious control and the wrong one: the starfield is drawn
+ * behind everything, so a faded sprite shows stars through its own hull. These
+ * two keep it opaque -- darkening walks it toward the near-black the backdrop
+ * already is, and softening blurs the outline the way distance does.
+ */
+function DepthField({ depth, onChange }: { depth?: SpriteDepth; onChange: (next: SpriteDepth | undefined) => void }) {
+  const live = depth ?? DEFAULT_DEPTH;
+  return (
+    <>
+      <label className="toggle-row"><span>SIT BACK IN SCENE</span>
+        <input type="checkbox" checked={depth !== undefined} onChange={(event) => onChange(event.target.checked ? { ...DEFAULT_DEPTH } : undefined)} /><i />
+      </label>
+      {depth !== undefined && <>
+        <label className="range-field"><span><b>DARKEN</b><em>{live.darken === 0 ? "OFF" : Math.round(live.darken * 100) + "%"}</em></span>
+          <input type="range" min="0" max="1" step="0.05" value={live.darken} onChange={(event) => onChange({ ...live, darken: Number(event.target.value) })} /></label>
+        <label className="range-field"><span><b>SOFTEN</b><em>{live.blur === 0 ? "OFF" : live.blur + "px"}</em></span>
+          <input type="range" min="0" max="40" step="1" value={live.blur} onChange={(event) => onChange({ ...live, blur: Number(event.target.value) })} /></label>
+      </>}
+      <p className="inspector-note">{depth === undefined ? "Drawn at full strength, in front of the backdrop." : "Darkened and softened rather than faded, so the starfield stays behind it."}</p>
+    </>
+  );
+}
+
 /**
  * The quarter turn a vertical sector is seen through.
  *
@@ -575,8 +604,18 @@ const BAKE_STEP = 8;
 const bakeHalf = (size: number) => Math.ceil(size * 1.75 + 22);
 
 /** The recipe: one sprite, at the origin, with no transform of its own. */
-function paintSprite(context: CanvasRenderingContext2D, sprite: string, size: number, selected: boolean, assets: SpriteAsset[], tint: number, glow?: SpriteGlow) {
-  if (tint) context.filter = `hue-rotate(${tint}deg)`;
+function paintSprite(context: CanvasRenderingContext2D, sprite: string, size: number, selected: boolean, assets: SpriteAsset[], tint: number, glow?: SpriteGlow, depth?: SpriteDepth) {
+  // One filter string for everything that recolours or softens the sprite.
+  //
+  // Darken is `brightness`, deliberately NOT alpha: the starfield is drawn
+  // behind everything, so a transparent sprite shows stars *inside* its own
+  // artwork, which is the whole reason `depth` exists. Brightness below 1
+  // walks the sprite toward black, and black is what the backdrop nearly is.
+  const filters: string[] = [];
+  if (tint) filters.push(`hue-rotate(${tint}deg)`);
+  if (depth?.darken) filters.push(`brightness(${(1 - depth.darken).toFixed(3)})`);
+  if (depth?.blur) filters.push(`blur(${depth.blur}px)`);
+  if (filters.length) context.filter = filters.join(" ");
   const isPickup = sprite === "energy" || sprite === "upgrade";
   // An authored halo wins; without one these are the defaults this renderer
   // has always used, which is what keeps every level saved before the field
@@ -688,7 +727,7 @@ function paintSprite(context: CanvasRenderingContext2D, sprite: string, size: nu
  * what made a scaled-up sprite blocky while the selected copy, which skips the
  * cache entirely, stayed sharp.
  */
-function spriteRegion(context: CanvasRenderingContext2D, sprite: string, size: number, selected: boolean, assets: SpriteAsset[], tint: number, glow?: SpriteGlow) {
+function spriteRegion(context: CanvasRenderingContext2D, sprite: string, size: number, selected: boolean, assets: SpriteAsset[], tint: number, glow?: SpriteGlow, depth?: SpriteDepth) {
   if (selected || !(size > 0) || size > BAKE_MAX_SIZE) return null;
   const matrix = context.getTransform();
   // The larger of the two axes, so a non-uniform scale over-resolves the minor
@@ -703,7 +742,7 @@ function spriteRegion(context: CanvasRenderingContext2D, sprite: string, size: n
   const baked = pixels / size;
   // The halo is part of what was baked, so it is part of the key -- and so is
   // the resolution, or the first bake would be reused at every later size.
-  let key = `${sprite}|${size}|${pixels}|${tint}|${glow ? glow.color + ":" + glow.blur : "-"}`;
+  let key = `${sprite}|${size}|${pixels}|${tint}|${glow ? glow.color + ":" + glow.blur : "-"}|${depth ? depth.darken + ":" + depth.blur : "-"}`;
   if (sprite.startsWith("asset:")) {
     const asset = assets.find((entry) => `asset:${entry.id}` === sprite);
     // An unresolved asset draws nothing and must not be cached under a key
@@ -720,18 +759,21 @@ function spriteRegion(context: CanvasRenderingContext2D, sprite: string, size: n
     }
     key += `|${assetIdentity(asset)}`;
   }
-  const half = bakeHalf(pixels);
+  // A Gaussian reaches about three times its radius, and the blur is in device
+  // pixels rather than in the transform's units -- so the padding is added
+  // after the scaling, in the same space `bakeHalf`'s own slack lives in.
+  const half = bakeHalf(pixels) + Math.ceil((depth?.blur ?? 0) * 3);
   const region = spriteCache.sprite(key, half * 2, half * 2, (own) => {
     own.translate(half, half);
     own.scale(baked, baked);
-    paintSprite(own, sprite, size, false, assets, tint, glow);
+    paintSprite(own, sprite, size, false, assets, tint, glow, depth);
   });
   return region ? { region, detail: baked } : null;
 }
 
 /** `extra` rather than two more positional parameters: this already takes
  *  eleven, and a call site with two bare numbers on the end says nothing. */
-function drawSprite(context: CanvasRenderingContext2D, sprite: string, x: number, y: number, size: number, selected = false, alpha = 1, rotation = 0, scale = 1, faceLeft = false, assets: SpriteAsset[] = [], tint = 0, extra: { scaleY?: number; glow?: SpriteGlow } = {}) {
+function drawSprite(context: CanvasRenderingContext2D, sprite: string, x: number, y: number, size: number, selected = false, alpha = 1, rotation = 0, scale = 1, faceLeft = false, assets: SpriteAsset[] = [], tint = 0, extra: { scaleY?: number; glow?: SpriteGlow; depth?: SpriteDepth } = {}) {
   context.save();
   context.translate(x, y);
   context.rotate(rotation * Math.PI / 180);
@@ -741,7 +783,7 @@ function drawSprite(context: CanvasRenderingContext2D, sprite: string, x: number
   context.globalAlpha = alpha;
   // Asked for AFTER the transform is in force, because the transform is what
   // decides how much resolution the bake needs.
-  const baked = spriteRegion(context, sprite, size, selected, assets, tint, extra.glow);
+  const baked = spriteRegion(context, sprite, size, selected, assets, tint, extra.glow, extra.depth);
   if (baked) {
     // Divided back out so the blit lands 1:1 on device pixels: the region was
     // rasterised `detail` times larger than the units it is drawn in.
@@ -749,7 +791,7 @@ function drawSprite(context: CanvasRenderingContext2D, sprite: string, x: number
     const height = baked.region.height / baked.detail;
     context.drawImage(baked.region.canvas, baked.region.x, baked.region.y, baked.region.width, baked.region.height, -width / 2, -height / 2, width, height);
   }
-  else paintSprite(context, sprite, size, selected, assets, tint, extra.glow);
+  else paintSprite(context, sprite, size, selected, assets, tint, extra.glow, extra.depth);
   context.restore();
 }
 
@@ -1771,7 +1813,7 @@ export function StarlineGame() {
           const screenX = item.x + offset.x - cameraX;
           if (screenX < -240 || screenX > VIEW_W + 240) return;
           const alpha = item.type === "decoration" ? item.decoration?.opacity ?? .5 : item.type === "group" ? .82 : 1;
-          drawSprite(context, item.sprite, screenX, item.y + offset.y, item.size, selectedItem && index === 0, alpha, item.rotation, item.scale, item.type === "enemy" || item.type === "group", current.assets, item.tint, { glow: item.glow });
+          drawSprite(context, item.sprite, screenX, item.y + offset.y, item.size, selectedItem && index === 0, alpha, item.rotation, item.scale, item.type === "enemy" || item.type === "group", current.assets, item.tint, { glow: item.glow, depth: item.depth });
         });
         if (item.type === "group" && item.x - cameraX > -100 && item.x - cameraX < VIEW_W + 100) {
           context.fillStyle = "#eaff62"; context.font = "10px monospace"; label(`GROUP x${item.group?.count ?? 1}`, item.x - cameraX - 28, item.y - item.size * item.scale - 22);
@@ -1901,7 +1943,7 @@ export function StarlineGame() {
         const parallax = playMode !== "arena" && enemy.type === "decoration" ? enemy.decoration?.parallax ?? 1 : 1;
         const x = enemy.x - renderCam * parallax;
         if (x < -260 || x > VIEW_W + 260) return;
-        drawSprite(context, enemy.sprite, x, enemy.y, enemy.size, false, enemy.type === "decoration" ? enemy.decoration?.opacity ?? .5 : 1, enemy.rotation, enemy.scale, enemy.type === "enemy", levelRef.current.assets, enemy.tint, { glow: enemy.glow });
+        drawSprite(context, enemy.sprite, x, enemy.y, enemy.size, false, enemy.type === "decoration" ? enemy.decoration?.opacity ?? .5 : 1, enemy.rotation, enemy.scale, enemy.type === "enemy", levelRef.current.assets, enemy.tint, { glow: enemy.glow, depth: enemy.depth });
         if (enemy.shield > 0 && enemy.armor?.type === "forcefield") { context.strokeStyle = "rgba(100,227,255,.7)"; context.lineWidth = 2; context.beginPath(); context.arc(x, enemy.y, enemy.size * enemy.scale + 8, 0, Math.PI * 2); context.stroke(); }
       };
       runtime.enemies.filter((item) => item.type === "decoration" && item.decoration?.layer === "background").forEach(drawRuntimeItem);
@@ -2557,6 +2599,7 @@ export function StarlineGame() {
               <label className="range-field"><span><b>SCALE{selectedIds.length > 1 ? " / ALL" : ""}</b><em>{selected.scale.toFixed(2)}×</em></span><input type="range" min="0.25" max="4" step="0.05" value={selected.scale} onChange={(event) => updateSelectedItems((item) => ({ ...item, scale: Number(event.target.value) }), "selection-scale")} /></label>
               <label className="range-field"><span><b>ROTATION{selectedIds.length > 1 ? " / ALL" : ""}</b><em>{Math.round(selected.rotation)}°</em></span><input type="range" min="-180" max="180" step="1" value={selected.rotation} onChange={(event) => updateSelectedItems((item) => ({ ...item, rotation: Number(event.target.value) }), "selection-rotation")} /></label>
               <GlowField glow={selected.glow} onChange={(glow) => updateSelectedItems((item) => ({ ...item, glow }), "item-glow")} />
+              <DepthField depth={selected.depth} onChange={(depth) => updateSelectedItems((item) => ({ ...item, depth }), "item-depth")} />
             </>)}
 
             {(selected.type === "enemy" || selected.type === "terrain" || selected.type === "group") && section("durability", "DURABILITY", <>

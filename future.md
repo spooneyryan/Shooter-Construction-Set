@@ -69,33 +69,6 @@ Two things bound the sweep. **The suite has no select and no toggle** — there 
 
 Adopt per component rather than in one pass, with the test being whether the result survives the cockpit's density: Starline runs 8–10px mono type and roughly 31px controls, tighter than the suite's defaults, and the palette's tab strip already needed overrides to fit two tabs and more to fit three. Keep the swaps that hold up and revert the ones that fight it. The mechanics are settled and should not change: `styles.css` is imported once in `layout.tsx` and already carries every component's stylesheet, including the subpath ones, so a new component needs no new stylesheet; `theme.css` is never loaded, because the `--eb-*` bridge in `globals.css` maps the suite's tokens onto Starline's palette; and appearance overrides go through the suite's stable public class names scoped under `.workspace`. The package is a committed tarball, so a component that needs a newer release means re-packing `vendor/` first.
 
-## F-07 — Sprites that sit in the backdrop rather than on it
-
-A sprite meant to read as distant scenery can only be faded today, and fading
-lets the starfield through it: the stars are drawn behind, so any alpha below
-1 punches holes in the artwork. What is wanted is the opposite of
-transparency — the sprite stays opaque and is pushed *back*, by darkening it
-toward the backdrop colour and softening its edges.
-
-Two controls, both per item, beside the `tint` and `glow` that are already
-there: a **darken** amount that mixes the sprite toward the background rather
-than toward nothing, and a **blur** that softens it. Neither is alpha, which
-is the point. Decide whether darken mixes toward a fixed colour or toward the
-level's own backdrop once `F-03` gives it one — the two features want the same
-number, and doing this one first should not paint that one into a corner.
-
-This adds fields to the level contract in `@ccllc/arcade`, normalized the way
-`normalizeGlow` already is, and rendering here. Watch the sprite cache: the
-bake key must include both numbers, and a blur is a shadow-space effect that
-`C-24`'s resolution rules have to account for.
-
-**Half of this has shipped.** `@ccllc/arcade` 2.0.16 carries the field:
-`LevelItem.depth` is `{ darken, blur }`, normalized by `normalizeDepth`,
-absent by default so every level saved before it draws as it did, with a test
-covering the clamps and the absent case. What is left is this repository's
-half — drawing it, and the two Inspector controls that author it — which waits
-on that version reaching the feed as `latest`.
-
 # Completed Implementation Plan
 
 The ten features should be delivered as a series of compatible foundations rather than ten isolated additions. The key is to establish stable data models and generic editor operations first, then let the editor, asset, and combat workstreams progress in parallel.
@@ -749,3 +722,31 @@ The studio frame takes `resize: both`, with the viewport as its ceiling and a
 floor low enough to stay usable. F-13 asked what the extra room should do; the
 grid already answers it — the canvas row is the `minmax(0, 1fr)` one, so the
 artboard takes the space and the toolbars keep their height.
+
+## C-32 — Sprites that sit in the backdrop rather than on it
+
+Was F-07, and the last of the eleven. **SIT BACK IN SCENE** in the Inspector,
+with DARKEN and SOFTEN under it.
+
+**The point is that it is not alpha.** Fading was the only way to say "distant"
+before, and it lets the starfield through — stars appear *inside* the hull
+rather than behind it, which is the opposite of distance. Darkening keeps the
+sprite fully opaque and walks it toward the near-black the backdrop already is;
+softening blurs the outline the way air does. Measured on the real filter
+string, `brightness(0.150) blur(9px)` takes mean brightness from 103 to 29 and
+distinct levels across an edge from 5 to 57, while fully-opaque pixels stay at
+14400 — dimmer and softer, and not one pixel see-through.
+
+Both are one `context.filter` string alongside the existing hue rotation, so
+the three compose instead of fighting.
+
+**The bake had to learn about it**, per C-24: `depth` is in the cache key, or
+the first bake would be reused at every later setting. The region also grows by
+three times the blur radius, because a Gaussian reaches about that far and the
+blur is in device pixels rather than in the transform's units — the same space
+`bakeHalf`'s existing slack lives in.
+
+`LevelItem.depth` is `{ darken, blur }` in `@ccllc/arcade` 2.0.16, absent by
+default so every level saved before it draws as it did. The player ship does
+not get it: `PlayerSettings` has no `depth`, and a ship the player is meant to
+watch is not something to push into the background.
