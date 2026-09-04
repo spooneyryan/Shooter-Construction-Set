@@ -340,6 +340,28 @@ function GlowField({ glow, onChange }: { glow?: SpriteGlow; onChange: (next: Spr
   );
 }
 
+/**
+ * The quarter turn a vertical sector is seen through.
+ *
+ * A level is always authored and simulated in (along, across): x is distance
+ * into the sector and y is position across it, whatever the mode. Vertical is
+ * purely a way of LOOKING at that, and this is the only place that says so —
+ * the same transform the game already used, now used by the editor too, so
+ * the two cannot disagree about which way a sector faces.
+ *
+ * Along runs bottom-to-top, which is why later content enters from the top,
+ * and the 640-wide band is centred on the wide canvas.
+ */
+function applyVerticalView(context: CanvasRenderingContext2D) {
+  context.translate((VIEW_W - VIEW_H) / 2, VIEW_H);
+  context.rotate(-Math.PI / 2);
+}
+
+/** The same mapping backwards, for turning a pointer into (along, across). */
+function unapplyVerticalView(x: number, y: number) {
+  return { x: VIEW_H - y, y: x - (VIEW_W - VIEW_H) / 2 };
+}
+
 type TransformOrigin = { id: string; x: number; y: number; rotation: number; scale: number };
 type CanvasDrag =
   | { kind: "items"; ids: string[]; startWorld: Point; origins: TransformOrigin[]; startSnapshot: string }
@@ -1651,7 +1673,25 @@ export function StarlineGame() {
     const drawEditor = (now: number) => {
       const current = levelRef.current;
       const cameraX = editorCameraRef.current;
+      // The backdrop stays put, exactly as it does in play: it is the window,
+      // not the sector seen through it.
       drawBackground(cameraX, false, 0);
+      const vertical = current.mode === "vertical";
+      context.save();
+      if (vertical) applyVerticalView(context);
+      /**
+       * A label that survives the quarter turn. Rotating the stage rotates its
+       * text with it, and a sideways ruler is unreadable, so each label
+       * counter-rotates about its own anchor. A drop-in for `context.fillText`:
+       * the save keeps whatever alignment the caller had already set.
+       */
+      const label = (text: string, x: number, y: number) => {
+        context.save();
+        context.translate(x, y);
+        if (vertical) context.rotate(Math.PI / 2);
+        context.fillText(text, 0, 0);
+        context.restore();
+      };
       const drawPlacedItem = (item: LevelItem) => {
         const selectedItem = editorFor().selection.ids.includes(item.id);
         const offsets = groupOffsets(item.group, item.rotation, item.scale);
@@ -1662,10 +1702,10 @@ export function StarlineGame() {
           drawSprite(context, item.sprite, screenX, item.y + offset.y, item.size, selectedItem && index === 0, alpha, item.rotation, item.scale, item.type === "enemy" || item.type === "group", current.assets, item.tint, { glow: item.glow });
         });
         if (item.type === "group" && item.x - cameraX > -100 && item.x - cameraX < VIEW_W + 100) {
-          context.fillStyle = "#eaff62"; context.font = "10px monospace"; context.fillText(`GROUP x${item.group?.count ?? 1}`, item.x - cameraX - 28, item.y - item.size * item.scale - 22);
+          context.fillStyle = "#eaff62"; context.font = "10px monospace"; label(`GROUP x${item.group?.count ?? 1}`, item.x - cameraX - 28, item.y - item.size * item.scale - 22);
         }
         if ((item.type === "powerup" || item.type === "upgrade") && item.x - cameraX > -100 && item.x - cameraX < VIEW_W + 100) {
-          context.fillStyle = item.type === "powerup" ? "#eaff62" : "#64e3ff"; context.font = "9px monospace"; context.fillText(item.type.toUpperCase(), item.x - cameraX - 22, item.y - item.size * item.scale - 15);
+          context.fillStyle = item.type === "powerup" ? "#eaff62" : "#64e3ff"; context.font = "9px monospace"; label(item.type.toUpperCase(), item.x - cameraX - 22, item.y - item.size * item.scale - 15);
         }
       };
       current.items.filter((item) => item.type === "decoration" && item.decoration?.layer === "background").forEach(drawPlacedItem);
@@ -1678,7 +1718,7 @@ export function StarlineGame() {
         context.strokeStyle = worldX % 1000 === 0 ? "rgba(234,255,98,.18)" : "rgba(126,174,194,.09)";
         context.beginPath(); context.moveTo(x, 0); context.lineTo(x, VIEW_H); context.stroke();
         context.fillStyle = worldX % 1000 === 0 ? "rgba(234,255,98,.7)" : "rgba(126,174,194,.45)";
-        context.font = "11px monospace"; context.fillText(worldX.toString().padStart(5, "0"), x + 7, 20);
+        context.font = "11px monospace"; label(worldX.toString().padStart(5, "0"), x + 7, 20);
       }
       const selected = current.items.find((item) => item.id === editorFor().selection.primary);
       if (selected && selected.movement.pattern !== "stationary") {
@@ -1701,19 +1741,20 @@ export function StarlineGame() {
         context.beginPath(); context.moveTo(centerX, top); context.lineTo(centerX, top - 30); context.stroke();
         context.fillStyle = "#09131b"; context.strokeStyle = "#eaff62"; context.lineWidth = 3; context.beginPath(); context.arc(centerX, top - 34, 9, 0, Math.PI * 2); context.fill(); context.stroke();
         context.fillStyle = "#eaff62"; context.strokeStyle = "#09131b"; context.lineWidth = 2; context.fillRect(right - 9, bottom - 9, 18, 18); context.strokeRect(right - 9, bottom - 9, 18, 18);
-        context.fillStyle = "#eaff62"; context.font = "bold 10px monospace"; context.fillText(selectedItems.length > 1 ? `${selectedItems.length} SELECTED` : "ROTATE / SCALE", left, Math.max(14, top - 13)); context.restore();
+        context.fillStyle = "#eaff62"; context.font = "bold 10px monospace"; label(selectedItems.length > 1 ? `${selectedItems.length} SELECTED` : "ROTATE / SCALE", left, Math.max(14, top - 13)); context.restore();
       }
       const endX = current.length - cameraX;
       if (endX >= -24 && endX <= VIEW_W + 24) {
         context.strokeStyle = "#ff6a4d"; context.lineWidth = 2; context.setLineDash([8, 6]);
         context.beginPath(); context.moveTo(endX, 0); context.lineTo(endX, VIEW_H); context.stroke(); context.setLineDash([]);
-        context.fillStyle = "#ff8a74"; context.fillRect(endX - 7, 0, 14, 28); context.font = "bold 11px monospace"; context.fillText("DRAG END LEVEL", endX - 105, 47);
+        context.fillStyle = "#ff8a74"; context.fillRect(endX - 7, 0, 14, 28); context.font = "bold 11px monospace"; label("DRAG END LEVEL", endX - 105, 47);
       }
       if (current.items.length === 0) {
         context.fillStyle = "rgba(201,222,230,.38)"; context.font = "14px monospace"; context.textAlign = "center";
-        context.fillText("SELECT AN OBJECT FROM THE PALETTE, THEN PLACE IT HERE", VIEW_W / 2, VIEW_H / 2); context.textAlign = "start";
+        label("SELECT AN OBJECT FROM THE PALETTE, THEN PLACE IT HERE", VIEW_W / 2, VIEW_H / 2); context.textAlign = "start";
       }
       drawShip(context, 95, VIEW_H / 2, now, current.player.sprite, false, current.assets, current.player.tint, { scale: current.player.scale, glow: current.player.glow });
+      context.restore();
     };
 
     // Everything the simulation used to do inline is now one call. What is left
@@ -1925,10 +1966,12 @@ export function StarlineGame() {
   const canvasPoint = (event: React.PointerEvent<HTMLCanvasElement>) => {
     const rect = event.currentTarget.getBoundingClientRect();
     const viewport = viewportRef.current;
-    return {
-      x: clamp((event.clientX - rect.left - viewport.offsetX) / viewport.scale, 0, VIEW_W),
-      y: clamp((event.clientY - rect.top - viewport.offsetY) / viewport.scale, 0, VIEW_H),
-    };
+    const x = (event.clientX - rect.left - viewport.offsetX) / viewport.scale;
+    const y = (event.clientY - rect.top - viewport.offsetY) / viewport.scale;
+    // Undo the view before clamping, so a vertical sector is clamped in the
+    // space the level is actually authored in rather than in screen space.
+    const point = levelRef.current.mode === "vertical" ? unapplyVerticalView(x, y) : { x, y };
+    return { x: clamp(point.x, 0, VIEW_W), y: clamp(point.y, 0, VIEW_H) };
   };
 
   const findItem = (world: Point) => {

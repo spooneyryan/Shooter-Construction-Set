@@ -370,3 +370,30 @@ a 140x90 PNG imported through it (centre pixel `#42f5ec`, exactly what was
 drawn), and the saved asset came back into the level list as `IMAGE /
 140x90`. `+ EXPLOSION` and `+ SOUND` are there too, so the per-enemy
 explosions work shipped in the same deploy.
+
+## 2026-09-03 — The ship is its sprite, and the editor turns
+
+Four commits, three of them Ryan's running commentary on the player ship and
+one on the editor's orientation.
+
+**"The X Y and size controls don't make sense to me."** They didn't. The ship
+carried `size`, `scaleX` and `scaleY` — three knobs for one question — and the
+hitbox was a constant radius that had nothing to do with the sprite you could
+see. Replaced with a single `scale`, and `playerExtent` in the shmup contract
+now derives the hitbox from the sprite's own dimensions when the sprite is an
+imported asset. The three old keys migrate on load and are stripped on write,
+which needed a destructuring spread: `player: { ...player }` was faithfully
+carrying the legacy keys straight back out again.
+
+**The editor drew a vertical sector sideways.** C-23 has the design; the part
+worth recording here is the verification, because the obvious way to check it
+was wrong. Synthetic `PointerEvent`s reach the handler but have no *real*
+active pointer, so `setPointerCapture` throws and takes the whole placement
+path down with it — which reads exactly like "the click did nothing" and had
+me briefly believing the horizontal case had regressed. It hadn't. Driving
+genuine clicks through the browser instead placed items in both modes and the
+coordinates came out where the transform predicts.
+
+That throw is a test artifact rather than a bug — a real pointerdown always
+has an active pointer — but an unguarded `setPointerCapture` aborting the
+click handler is a sharp edge worth knowing about.

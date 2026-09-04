@@ -528,3 +528,36 @@ would pass for the bug too.
 Per-*item* sounds fall out of the same `fx` field as explosions, so the two
 features are one mechanism wearing two labels — which is why they shipped
 together rather than one waiting on the other.
+
+## C-23 — The editor faces the way the sector does
+
+A direct request rather than a backlog item: a vertical level played upright
+and was *edited* sideways, so every placement was a mental rotation the author
+had to perform for themselves.
+
+**A level is authored and simulated in (along, across) whatever the mode** —
+`x` is distance into the sector, `y` is position across it — and C-15 settled
+that vertical is a way of *looking* at that, not a second coordinate system.
+The fix follows from taking that seriously: the editor draws through the same
+quarter turn the game already drew through, and the pointer comes back through
+its inverse. `applyVerticalView` / `unapplyVerticalView` are the only two
+places that know the rotation, so the editor and the game cannot drift apart
+on which way a sector faces.
+
+**The backdrop stays outside the transform**, exactly as it does in play. It
+is the window, not the sector seen through it, and rotating it would tilt the
+starfield with the level.
+
+**Labels counter-rotate about their own anchor.** Rotating the stage rotates
+its text, and a sideways ruler is unreadable, so a `label()` helper stands in
+for `fillText` at the six places the editor writes on the canvas. It saves and
+restores around the turn, which keeps whatever `textAlign` the caller had set
+— the empty-level prompt centres itself and still does.
+
+**The pointer is un-rotated before it is clamped**, not after. Clamping in
+screen space would pin a click to the wrong edge of the sector; clamping after
+the inverse pins it to the 640-wide band the author can actually see.
+
+Verified by clicking one point in both modes: 62% across and 75% down the
+stage lands at `(795, 487)` in horizontal — straight through — and at
+`(154, 474)` in vertical, which is that same point taken through the inverse.
