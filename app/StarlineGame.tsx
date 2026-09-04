@@ -26,6 +26,7 @@ import {
   normalizeBulletPattern,
   PLAYER_R,
   normalizeLevel,
+  playerRadius,
   palette,
   VIEW_H,
   VIEW_W,
@@ -100,7 +101,7 @@ function withEffect(fx: ItemEffects | undefined, key: keyof ItemEffects, value: 
 /** Short ids, the shape this game's saved levels already carry. */
 const uid = () => uniqueId("item");
 type Tool = "select" | "scroll" | "erase" | PaletteKey | `component:${string}`;
-type PaletteTab = "objects" | "components" | "enhancements";
+type PaletteTab = "objects" | "components" | "assets";
 /** Toolbar Behavior: whether a tool panel keeps one section open, or several. */
 type SectionMode = "single" | "multiple";
 type PatternEditorTarget = { kind: "item"; id: string } | { kind: "weapon"; id: string } | { kind: "pattern"; id: string };
@@ -905,6 +906,9 @@ export function StarlineGame() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [inspectPlayer, setInspectPlayer] = useState(false);
+  // The draw loop reads refs, not state, and the ship now has a selected look.
+  const inspectPlayerRef = useRef(false);
+  useEffect(() => { inspectPlayerRef.current = inspectPlayer; }, [inspectPlayer]);
   const [camera, setCamera] = useState(0);
   const [score, setScore] = useState(0);
   const [lives, setLives] = useState(3);
@@ -1822,6 +1826,15 @@ export function StarlineGame() {
         label("SELECT AN OBJECT FROM THE PALETTE, THEN PLACE IT HERE", VIEW_W / 2, VIEW_H / 2); context.textAlign = "start";
       }
       drawShip(context, 95, VIEW_H / 2, now, current.player.sprite, false, current.assets, current.player.tint, { scale: current.player.scale, glow: current.player.glow });
+      // Selected the same way an object is, because it is now selected the same
+      // way. The ring is drawn at the collision radius, so what reads as picked
+      // is exactly what the click tested.
+      if (inspectPlayerRef.current) {
+        context.save();
+        context.strokeStyle = "rgba(234,255,98,.85)"; context.lineWidth = 2; context.setLineDash([5, 5]);
+        context.beginPath(); context.arc(95, VIEW_H / 2, playerRadius(current.player, current.assets) + 9, 0, Math.PI * 2); context.stroke();
+        context.restore();
+      }
       context.restore();
     };
 
@@ -2042,6 +2055,21 @@ export function StarlineGame() {
     return { x: clamp(point.x, 0, VIEW_W), y: clamp(point.y, 0, VIEW_H) };
   };
 
+  /**
+   * Whether a click landed on the player ship.
+   *
+   * Against the SCREEN point, not the world one: the ship holds a fixed place
+   * while the sector scrolls past it, so it has no world position to test. And
+   * `playerRadius` is the engine's own collision radius, so the ship you can
+   * click is exactly the ship that gets shot.
+   */
+  const hitsPlayer = (screen: Point) => {
+    const radius = playerRadius(levelRef.current.player, levelRef.current.assets);
+    const dx = screen.x - 95;
+    const dy = screen.y - VIEW_H / 2;
+    return dx * dx + dy * dy < radius * radius;
+  };
+
   const findItem = (world: Point) => {
     const items = levelRef.current.items;
     for (let i = items.length - 1; i >= 0; i -= 1) {
@@ -2071,6 +2099,14 @@ export function StarlineGame() {
           dragRef.current = { kind: "transform", mode: rotateDistance <= 18 ? "rotate" : "scale", ids: editorFor().selection.ids.slice(), center: geometry.center, startAngle: Math.atan2(world.y - geometry.center.y, world.x - geometry.center.x), startDistance: Math.max(1, Math.hypot(world.x - geometry.center.x, world.y - geometry.center.y)), origins, startSnapshot: JSON.stringify(levelRef.current) }; return;
         }
       }
+    }
+    // The ship is selected by clicking it, like everything else in the level.
+    // It is not a LevelItem -- it has no id and never enters `items` -- so the
+    // Inspector is switched over directly rather than through the selection.
+    if (currentTool === "select" && hitsPlayer(screen)) {
+      setSelection([]);
+      setInspectPlayer(true);
+      return;
     }
     const hit = findItem(world);
     if (currentTool === "erase") {
@@ -2161,13 +2197,30 @@ export function StarlineGame() {
   };
 
   const selected = level.items.find((item) => item.id === selectedId) ?? null;
-  const componentCategories = ["ENEMIES", "TERRAIN", "GROUPS", "POWERUPS", "UPGRADES", "DECORATIONS", "WEAPONS", "PATTERNS", "EXPLOSIONS", "SOUNDS", "ARMOR", "SATELLITES"];
+  // The split between the two tabs, and the only place that decides it.
+  //
+  // COMPONENTS is a thing you place or equip: the six object kinds, plus the
+  // three that bolt onto one. ASSETS is material you author in an editor and
+  // then point something at -- a pattern, an explosion, a sound, a sprite. The
+  // question each answers is different: "what goes in the level" against "what
+  // is it made of".
+  const componentCategories = ["ENEMIES", "TERRAIN", "GROUPS", "POWERUPS", "UPGRADES", "DECORATIONS", "WEAPONS", "ARMOR", "SATELLITES"];
+  const assetCategories = ["PATTERNS", "EXPLOSIONS", "SOUNDS"];
   // Components are what the user saved; Enhancements are the fixed library that
   // arrives with every level. The id prefix already told the two apart — it is
   // what gates the delete button — so the split needed nothing added to the
   // level format and no migration for levels saved before it.
-  const savedComponents = level.components.filter((component) => component.id.startsWith("component-"));
-  const enhancements = level.components.filter((component) => !component.id.startsWith("component-"));
+  // One shelf, in both tabs, sorted so the user's own work comes before the
+  // built-ins inside each category.
+  //
+  // The two used to be separate tabs, which put the answer to "what weapons do
+  // I have" in two places depending on who made them. The card already knows
+  // the difference -- a saved one offers a delete, a built-in offers a copy --
+  // so the tab does not have to.
+  const shelf = [
+    ...level.components.filter((component) => component.id.startsWith("component-")),
+    ...level.components.filter((component) => !component.id.startsWith("component-")),
+  ];
 
   // -- bullet patterns, as a field rather than a gesture ---------------------
   //
@@ -2283,7 +2336,7 @@ export function StarlineGame() {
   // A saved Component and a built-in Enhancement are the same card in two
   // tabs; only the corner action differs, because only one of the two is the
   // user's to delete.
-  const componentSections = (entries: ComponentDefinition[], prefix: string) => componentCategories.map((category) => {
+  const componentSections = (entries: ComponentDefinition[], prefix: string, categories: string[]) => categories.map((category) => {
     const inCategory = entries.filter((component) => componentCategory(component) === category);
     if (!inCategory.length) return null;
     return section(`${prefix}-${category}`, category, <div className="palette-category-items">{inCategory.map((component) => <div className="component-card-row" key={component.id}><button className={`palette-card ${tool === `component:${component.id}` ? "active" : ""}`} type="button" onClick={() => { if (component.object) { const value = `component:${component.id}` as Tool; setTool(value); toolRef.current = value; setInspectPlayer(false); } else applyEquipmentComponent(component); }}><span className={`sprite-icon ${component.object && !component.object.sprite.startsWith("asset:") ? component.object.sprite : component.kind === "weapon" ? "turret" : component.kind === "armor" ? "energy" : component.kind === "pattern" ? "blade" : "upgrade"}`} /><span><strong>{component.name}</strong><small>{component.object ? "PLACE COMPONENT" : component.kind === "weapon" ? `${component.weapon?.tag.toUpperCase()} WEAPON` : component.kind === "pattern" ? `${component.pattern?.spawns.length ?? 0} EMITTER PATTERN` : component.kind.toUpperCase()}</small></span><b>{component.object ? "+" : component.kind === "pattern" ? "EDIT / USE" : "USE"}</b></button>{component.id.startsWith("component-") ? <button className="component-delete" type="button" onClick={() => deleteComponent(component.id)} title="Delete Component">×</button> : <button className="component-save" type="button" onClick={() => saveAsComponent(component)} title="Save as Component">+</button>}</div>)}</div>, "palette");
@@ -2353,11 +2406,10 @@ export function StarlineGame() {
         <PanelResizer side="inspector" width={inspectorWidth} other={paletteWidth} onResize={setInspectorWidth} onCommit={(next) => { setInspectorWidth(next); editorSettings.set("inspectorWidth", next); }} />
         <aside className="palette-panel">
           <div className="panel-heading"><span>FOUNDRY PALETTE</span><small>{level.items.length} PLACED</small>{sectionControls("palette")}</div>
-          <button className="player-card" type="button" onClick={() => { setTool("select"); toolRef.current = "select"; setSelection([]); setInspectPlayer(true); }}><span className={`player-icon ${level.player.sprite.startsWith("asset:") ? "asset-custom" : level.player.sprite}`} /><span><strong>PLAYER SHIP</strong><small>{level.player.sprite.startsWith("asset:") ? "CUSTOM" : level.player.sprite.toUpperCase()} / {level.player.weaponSlots.length} WEAPON SLOT{level.player.weaponSlots.length === 1 ? "" : "S"}</small></span><b>EDIT</b></button>
           <div className="tool-strip">
             {(["select", "scroll", "erase"] as Tool[]).map((value) => <button type="button" className={tool === value ? "active" : ""} onClick={() => { setTool(value); toolRef.current = value; }} key={value}><b>{value === "select" ? "↖" : value === "scroll" ? "↔" : "⌫"}</b>{value.toUpperCase()}</button>)}
           </div>
-          {/* The OBJECTS / COMPONENTS / ENHANCEMENTS switch is ElectricBlazor's
+          {/* The OBJECTS / COMPONENTS / ASSETS switch is ElectricBlazor's
               tabbed card in its bare form, moved below the player card and
               tools so the strip sits directly on the list it switches — which
               is also what lets the list live inside the tab panel it belongs
@@ -2365,7 +2417,7 @@ export function StarlineGame() {
               tabs went with it, since ENHANCEMENTS does not fit a third of a
               214px column. */}
           <EbTabbedCard<PaletteTab>
-            items={[{ value: "objects", label: "OBJECTS" }, { value: "components", label: "COMPONENTS" }, { value: "enhancements", label: "ENHANCEMENTS" }]}
+            items={[{ value: "objects", label: "OBJECTS" }, { value: "components", label: "COMPONENTS" }, { value: "assets", label: "ASSETS" }]}
             value={paletteTab}
             onValueChange={setPaletteTab}
             ariaLabel="Palette tabs"
@@ -2379,16 +2431,18 @@ export function StarlineGame() {
                   <span className={`sprite-icon ${entry.sprite}`} /><span><strong>{entry.label}</strong><small>{entry.meta}</small></span><b>+</b>
                 </button>)}
               </div>, "palette")) : tab === "components" ? <>
-              <div className="asset-actions"><button type="button" onClick={() => setEditingAsset({ id: uid(), name: "New Raster", kind: "raster", width: 16, height: 16, pixels: Array(256).fill("") })}>+ RASTER SPRITE</button><button type="button" onClick={() => setEditingAsset({ id: uid(), name: "New Vector", kind: "vector", width: 256, height: 256, shapes: [] })}>+ VECTOR SPRITE</button>{/* An image asset is defined by carrying real bytes, so a blank one is a
+              {componentSections(shelf, "COMP", componentCategories)}
+              {!shelf.some((component) => componentCategories.includes(componentCategory(component))) && <p className="palette-empty">Nothing here yet. Select an Object and choose SAVE AS COMPONENT to keep it.</p>}
+            </> : <>
+              <div className="asset-actions"><button type="button" onClick={() => setEditingAsset({ id: uid(), name: "New Pixel Art", kind: "raster", width: 16, height: 16, pixels: Array(256).fill("") })}>+ PIXEL ART</button><button type="button" onClick={() => setEditingAsset({ id: uid(), name: "New Vector", kind: "vector", width: 256, height: 256, shapes: [] })}>+ VECTOR SPRITE</button>{/* An image asset is defined by carrying real bytes, so a blank one is a
                   real transparent PNG rather than an empty string -- which is what
                   blankImageAsset exists for, and what normalizeAssets would drop. */}<button type="button" onClick={() => setEditingAsset(blankImageAsset(uid(), "New Image", 256, 256))}>+ IMAGE</button><button type="button" onClick={() => setEditingExplosion({ id: `component-${uid()}`, name: "New Explosion", burst: { ...createBurstPreset("Blast"), name: "New Explosion" } })}>+ EXPLOSION</button><button type="button" onClick={() => setEditingSound({ id: `component-${uid()}`, sound: { ...createSfxPreset("Explosion"), name: "New Sound" } })}>+ SOUND</button></div>
               {level.assets.length > 0 && section("SPRITES", "SPRITES", <div className="palette-category-items">{level.assets.map((asset) => <div className="component-card-row" key={asset.id}><button className="palette-card" type="button" onClick={() => setEditingAsset(structuredClone(asset))}><SpriteAssetPreview asset={asset} /><span><strong>{asset.name}</strong><small>{asset.kind.toUpperCase()} / {asset.width}×{asset.height}</small></span><b>EDIT</b></button><button className="component-delete" type="button" onClick={() => deleteSpriteAsset(asset.id)} title="Delete sprite">×</button></div>)}</div>, "palette")}
-              {componentSections(savedComponents, "COMP")}
-              {!savedComponents.length && !level.assets.length && <p className="palette-empty">Nothing saved yet. Select an Object and choose SAVE AS COMPONENT, or keep a copy of one of the Enhancements.</p>}
-            </> : componentSections(enhancements, "ENH")}
+              {componentSections(shelf, "ASSET", assetCategories)}
+            </>}
           </EbAccordion>}
           />
-          <p className="palette-hint">{paletteTab === "objects" ? "Choose an object, then click the playfield to place it." : paletteTab === "components" ? "What you have saved: place your Objects, equip your Components, or author custom sprite assets." : "The built-in library. Apply one to the current selection, or keep an editable copy of it with +."}</p>
+          <p className="palette-hint">{paletteTab === "objects" ? "Choose an object, then click the playfield to place it." : paletteTab === "components" ? "Things that go in the level: place a saved Object, or apply a weapon, armor or satellite to the selection." : "What things are made of. Author a sprite, explosion, sound or pattern here, then point an object at it."}</p>
         </aside>
 
         <section className="stage-panel">
