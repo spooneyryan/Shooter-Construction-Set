@@ -69,6 +69,133 @@ Two things bound the sweep. **The suite has no select and no toggle** — there 
 
 Adopt per component rather than in one pass, with the test being whether the result survives the cockpit's density: Starline runs 8–10px mono type and roughly 31px controls, tighter than the suite's defaults, and the palette's tab strip already needed overrides to fit two tabs and more to fit three. Keep the swaps that hold up and revert the ones that fight it. The mechanics are settled and should not change: `styles.css` is imported once in `layout.tsx` and already carries every component's stylesheet, including the subpath ones, so a new component needs no new stylesheet; `theme.css` is never loaded, because the `--eb-*` bridge in `globals.css` maps the suite's tokens onto Starline's palette; and appearance overrides go through the suite's stable public class names scoped under `.workspace`. The package is a committed tarball, so a component that needs a newer release means re-packing `vendor/` first.
 
+## F-07 — Sprites that sit in the backdrop rather than on it
+
+A sprite meant to read as distant scenery can only be faded today, and fading
+lets the starfield through it: the stars are drawn behind, so any alpha below
+1 punches holes in the artwork. What is wanted is the opposite of
+transparency — the sprite stays opaque and is pushed *back*, by darkening it
+toward the backdrop colour and softening its edges.
+
+Two controls, both per item, beside the `tint` and `glow` that are already
+there: a **darken** amount that mixes the sprite toward the background rather
+than toward nothing, and a **blur** that softens it. Neither is alpha, which
+is the point. Decide whether darken mixes toward a fixed colour or toward the
+level's own backdrop once `F-03` gives it one — the two features want the same
+number, and doing this one first should not paint that one into a corner.
+
+This adds fields to the level contract in `@ccllc/arcade`, normalized the way
+`normalizeGlow` already is, and rendering here. Watch the sprite cache: the
+bake key must include both numbers, and a blur is a shadow-space effect that
+`C-24`'s resolution rules have to account for.
+
+## F-08 — The raster editor is called Pixel Art
+
+"Raster" is the data model's word, not the user's. The editor calls itself
+**RASTER SPRITE EDITOR** and Starline's button says **+ RASTER SPRITE**; both
+should say Pixel Art.
+
+The title lives in `@ccllc/studio` (`RasterEditor.js` carries the string), so
+the rename is a package change and a release before Starline can show it; the
+palette button is this repository's. The asset `kind` stays `"raster"` —
+renaming that would be a level-format break for every saved sprite, and the
+label is the only thing anybody reads.
+
+## F-09 — Components for what you saved, Assets for what you author
+
+The palette's middle tab is doing two jobs. **COMPONENTS** currently holds the
+five editor buttons, the sprite list, and the saved components; **ENHANCEMENTS**
+holds the built-in library. Neither name describes its contents.
+
+The intent is a clean split:
+
+- **COMPONENTS** — game items the user has saved: an object plus its add-ons
+  and settings. Weapons, armor and satellites join it from Enhancements,
+  keeping the categories they already have.
+- **ASSETS** — a new tab for authored material: sprites, sounds, explosions
+  and bullet patterns, plus the buttons that open their editors.
+
+`componentCategory` already maps every `kind` to a heading, so the work is
+mostly deciding which headings belong to which tab and splitting one
+`panelContent` branch into two. `PaletteTab` gains a member and
+`EbTabbedCard` a fourth item.
+
+**One decision has to be made first, because the two halves of the request
+pull against each other:** Components is asked to show "only game items the
+user has saved", and also to receive the *built-in* weapons, armor and
+satellites. Those are different sets — `savedComponents` versus
+`enhancements`. Either the built-ins live under Components alongside saved
+ones (and ENHANCEMENTS disappears entirely, which is what moving all four of
+its categories away implies), or Components stays user-only and the built-ins
+keep a tab of their own. Settle that before writing any of it.
+
+## F-10 — The player ship is an object like any other
+
+The player is edited through a **PLAYER SHIP** card pinned above the palette
+tools, with an EDIT button that swings the Inspector over via `inspectPlayer`.
+Every other thing in the level is edited by clicking it on the playfield.
+
+Make the ship selectable on the canvas — click it, get it in the Inspector,
+resize and rotate it with the same handles — and drop the card. `C-22`'s work
+already made the ship's hitbox the whole sprite, so a hit test the editor can
+reuse exists.
+
+The pieces that need deciding: the player is not a `LevelItem` and has no
+`id`, so selection state has to admit something that is not in `items`; the
+ship is drawn at a fixed `x` while the sector scrolls past it, so it is always
+at the same screen place and never at a world one; and `inspectPlayer` is
+threaded through enough of the Inspector that removing it is most of the
+change. Deleting the player must stay impossible.
+
+## F-11 — Presentation mode has no way out
+
+**A bug in `C-19`, not a new feature.** Entering presentation mode works —
+`is-presenting` lands on the root, the chrome goes to `display: none`, the
+grid collapses to one column — but **Escape does not leave it**, and every
+control that could is hidden. The only way out is a reload. Confirmed on
+production: the hint reads ESC TO RETURN TO THE EDITOR, the tab is focused and
+the simulation is running, and a real Escape changes nothing.
+
+The binding looks right on the page — `{ code: "Escape", when: () => !build(),
+run: () => exitPlay() }` — so the fault is in delivery or in the guard rather
+than in the intent, and finding out which is the first job.
+
+A second, smaller thing found while testing: in **vertical** mode presentation
+wastes half the screen. The sector is 640 units of a 1280-wide canvas, and
+scaling the whole canvas to the window scales the empty margins with it.
+Presentation should frame the sector, not the canvas.
+
+## F-12 — Escape returns to the select tool after placing
+
+Placing leaves the palette armed, so every click spawns another object;
+Escape should put the select tool back.
+
+The binding already exists and reads exactly that way — Escape in build mode
+switches to select, and clears the selection if select is already active. So
+this is a **verification job before it is a coding one**: either the binding
+is not firing (which would make it the same fault as `F-11`, and the two
+should be fixed together) or it fires and the palette stays armed anyway,
+which is a different bug in the same sentence.
+
+## F-13 — Image editor: grouped buttons, an Apply that says so, a frame you can drag
+
+Three small things in the image editor, all of them in `@ccllc/studio` and so
+all of them a package change and a release before Starline sees them:
+
+- **Group the button row.** Undo and redo read as one pair, mirror X and
+  mirror Y as another, and Clear as its own thing. Space them so the eye can
+  see that, rather than running eleven buttons together.
+- **Say Apply when there is something to apply.** The SCALE button should read
+  **APPLY** while either size field is dirty, so it is clear the typed numbers
+  have not taken effect yet.
+- **Make the editor resizable.** It is a fixed panel today; let the whole
+  frame be dragged bigger, the way the tool panels became draggable in `C-18`.
+
+The first two are contained. The third is the one with a design question: what
+the canvas does with the extra room — grow the artboard, grow the zoom, or
+keep the artboard and add margin — and whether the chosen size is remembered
+between sessions the way the panel widths are.
+
 # Completed Implementation Plan
 
 The ten features should be delivered as a series of compatible foundations rather than ten isolated additions. The key is to establish stable data models and generic editor operations first, then let the editor, asset, and combat workstreams progress in parallel.
