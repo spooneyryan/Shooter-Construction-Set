@@ -2173,6 +2173,37 @@ export function StarlineGame() {
     const value = clamp(next, 0, Math.max(0, levelRef.current.length - VIEW_W)); setCamera(value); editorCameraRef.current = value;
   };
 
+  /**
+   * Scrolling the sector, as a native listener rather than an `onWheel` prop.
+   *
+   * React registers `wheel` at the root **passively**, so `preventDefault`
+   * from inside a prop handler is refused: the browser logs "Unable to
+   * preventDefault inside passive event listener invocation" once per notch
+   * and scrolls the PAGE as well as the sector. A listener that means to
+   * cancel the scroll has to say `passive: false` when it is attached, which
+   * only a native `addEventListener` can do.
+   *
+   * The handler lives in a ref because `setCameraSafe` is a plain function of
+   * the render: re-attaching a listener on every render would be the
+   * alternative, and this way the listener is attached once and always calls
+   * the current one.
+   */
+  const scrollSectorRef = useRef<(event: WheelEvent) => void>(() => {});
+  useEffect(() => {
+    scrollSectorRef.current = (event) => {
+      if (modeRef.current !== "build") return;
+      event.preventDefault();
+      setCameraSafe(editorCameraRef.current + event.deltaY + event.deltaX);
+    };
+  });
+  useEffect(() => {
+    const canvas = mainCanvasRef.current;
+    if (!canvas) return;
+    const onWheel = (event: WheelEvent) => scrollSectorRef.current(event);
+    canvas.addEventListener("wheel", onWheel, { passive: false });
+    return () => canvas.removeEventListener("wheel", onWheel);
+  }, []);
+
   // Declared here, after setCameraSafe, which is a plain function of the
   // render; the level bar below is the only caller.
   const newLevel = () => {
@@ -2353,7 +2384,6 @@ export function StarlineGame() {
               onPointerMove={onCanvasMove}
               onPointerUp={finishCanvasDrag}
               onPointerCancel={finishCanvasDrag}
-              onWheel={(event) => { if (modeRef.current === "build") { event.preventDefault(); setCameraSafe(editorCameraRef.current + event.deltaY + event.deltaX); } }}
               onContextMenu={(event) => event.preventDefault()}
               aria-label={mode === "build" ? "Scrollable level editing playfield" : "Playable Starline level"}
             />

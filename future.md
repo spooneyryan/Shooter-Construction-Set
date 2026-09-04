@@ -597,3 +597,32 @@ Verified by pointing an item at a 256-square checkerboard: at 4x it is drawn
 from the recipe and the checkers stay separate, and at 1x it goes through the
 cache and is both present and sharp. Before the fix the same sprite at 4x did
 not appear at all, which is the second bug caught in the act.
+
+## C-25 — Scrolling the sector is a native listener
+
+Ryan sent a production console with twenty-two copies of "Unable to
+preventDefault inside passive event listener invocation".
+
+**React registers `wheel` at the root passively**, along with `touchstart` and
+`touchmove`, so `preventDefault` from inside an `onWheel` prop is refused. The
+editor had been calling it on every notch: the console filled up, and because
+the cancel never took, the *page* scrolled as well as the sector. The error was
+the visible half of a real misbehaviour rather than noise on its own.
+
+A listener that intends to cancel a scroll has to say `passive: false` when it
+is attached, and only `addEventListener` can say it — so this is an effect on
+the canvas rather than a prop. The handler sits in a ref because
+`setCameraSafe` is a plain function of the render; the alternative is
+re-attaching a listener every render, and this way it is attached once and
+always calls the current one.
+
+Verified by dispatching a cancelable wheel on the canvas: `defaultPrevented`
+comes back true, the sector moves 00000 to 00240, and `window.scrollY` stays
+at zero.
+
+**The `slider-vertical` deprecation in the same console is not ours.** It comes
+from `-webkit-appearance:slider-vertical` in the vendored
+`@electricblazor/react` stylesheet, on the audio player's equaliser slider —
+a parse-time notice that fires because the sheet is loaded, whether or not the
+component is used. Fixing it means rebuilding the vendored tarball, and it has
+no effect on anything Starline draws.

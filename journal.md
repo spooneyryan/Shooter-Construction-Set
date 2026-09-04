@@ -428,3 +428,19 @@ sprite quite happily) but the persisted draft does not, so a reload would lose
 an import that was never saved to the library. The data URLs are large and the
 library's own notes talk about quota, so this may well be deliberate. Recorded
 rather than changed, because it is nothing to do with the bug in hand.
+
+## 2026-09-03 (later still) — Twenty-two console errors that were one bug
+
+A screenshot of the production console, and the useful part was that the
+errors were not cosmetic. "Unable to preventDefault inside passive event
+listener invocation" reads like lint, but it means a cancel that did not
+happen: React attaches `wheel` passively, the editor's `onWheel` prop called
+`preventDefault` anyway, and the page scrolled behind the sector on every
+notch. C-25 has the fix.
+
+The reflex with a console full of warnings is to rank them by count and start
+at the top. The better question was what each one *does*, and here the answer
+turned one repeated warning into a real input bug and sent the other one
+away: the `slider-vertical` deprecation is inside the vendored
+ElectricBlazor stylesheet and fires on parse whether or not anything uses the
+component it styles.
