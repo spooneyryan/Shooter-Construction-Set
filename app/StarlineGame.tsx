@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
-import { createDocumentSession, createHistory, createLoop, createPerformanceMonitor, defineLibrary, defineSettings, DocumentError, type DocumentFormat, type PerfStats } from "@ccllc/arcade/core";
+import { createDocumentSession, createHistory, createIndexedDbStorage, createLoop, createPerformanceMonitor, defineLibrary, defineSettings, DocumentError, type DocumentFormat, type PerfStats } from "@ccllc/arcade/core";
 import { useSyncExternalStore } from "react";
 import { createInput } from "@ccllc/arcade/platform";
 import { createSelection, createEditorCommands, createKeymap } from "@ccllc/arcade/editor";
@@ -503,6 +503,31 @@ const STORAGE_KEY = "starline-level-library-v1";
 const DRAFT_KEY = "starline-level-draft-v1";
 const SETTINGS_KEY = "starline-editor-settings-v1";
 
+/** Where the store's complaints go once the editor is mounted; the console until then. */
+let storageNotice: (message: string) => void = (message) => console.warn(message);
+
+/**
+ * The shelf lives in IndexedDB. localStorage gives an origin about five
+ * megabytes for everything, and a level carrying image sprites as data URLs
+ * spent that in a few saves -- which is what "this browser blocked local saves"
+ * turned out to mean (C-36). The first run over an old shelf carries it across
+ * and then frees the localStorage it was filling. Reads and writes stay
+ * synchronous against the facade's Map; the one thing the editor owes it is to
+ * wait on `ready` before asking for a draft, which the mount effect does.
+ *
+ * A store that could not open, or a write that did not commit, is said out
+ * loud: a save that will not survive a reload must not look like one that will.
+ */
+const levelStore = createIndexedDbStorage({
+  database: "starline",
+  migrateFrom: [STORAGE_KEY, DRAFT_KEY],
+  report: (name) => {
+    if (name === "storage.migrated") storageNotice("SAVED LEVELS MOVED INTO INDEXEDDB");
+    if (name === "storage.write-failed") storageNotice("SAVE DID NOT PERSIST — THE BROWSER REFUSED THE WRITE");
+    if (name === "storage.load-failed") storageNotice("SAVED LEVELS COULD NOT BE READ — THIS SESSION WILL NOT SURVIVE A RELOAD");
+  },
+});
+
 // Editor preferences, which belong to the person rather than the level and so
 // live beside the library rather than inside it. One field today; the point of
 // the schema is that the second one costs a line instead of another
@@ -572,6 +597,7 @@ const levelLibrary = defineLibrary<Level>({
   format: levelDocument,
   key: STORAGE_KEY,
   draftKey: DRAFT_KEY,
+  storage: levelStore,
   limit: 60,
   migrate: (raw) => (raw && typeof raw === "object" && !Array.isArray(raw)
     ? Object.entries(raw as Record<string, Level>).map(([name, document]) => ({ name, document }))
@@ -1227,28 +1253,41 @@ export function StarlineGame() {
   }, [flash]);
 
   useEffect(() => {
+    storageNotice = flash;
+    return () => { storageNotice = (message) => console.warn(message); };
+  }, [flash]);
+
+  useEffect(() => {
     starsRef.current = createStars(155);
-    try {
-      // A shared link wins over the local draft: the player followed it to see
-      // somebody else's sector, not to resume their own. Reading it also clears
-      // the fragment, so a reload does not reopen it over the later edits.
-      const shared = levelDocument.readShareFromLocation();
-      // A shared link opens as unsaved work; failing that, the draft from last
-      // time; the session owns both, so what it holds is what is on screen.
-      let opened = false;
-      if (shared.document) opened = levelSession.openDocument(shared.document, { force: true });
-      if (!opened && levelSession.hasDraft()) opened = levelSession.restoreDraft();
-      // A deliberate second render: the exported HTML is built with the
-      // starter level, so the first client render has to match it, and
-      // localStorage only gets a say after mount. The rule is right that
-      // this cascades; here the cascade is the feature.
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      if (opened) installLevel(levelSession.state.doc, true);
-      // Same two-phase load and the same reason: a link that will not decode
-      // has to say so, and there is nowhere earlier to say it from.
-      if (shared.error) flash("SHARED LINK UNREADABLE");
-      setSavedEntries(levelLibrary.list().map(({ id, name }) => ({ id, name, bytes: (JSON.stringify(levelLibrary.read(id)) ?? "").length * 2 })));
-    } catch { /* use the starter level */ }
+    // The shelf is in IndexedDB, and IndexedDB has to be read before it can be
+    // asked for a draft: everything below waits on the library's `ready`, which
+    // localStorage and memory resolve at once and IndexedDB resolves a few
+    // milliseconds after mount. It was always a second render; it still is.
+    let stale = false;
+    void levelLibrary.ready.then(() => {
+      if (stale) return;
+      try {
+        // A shared link wins over the local draft: the player followed it to see
+        // somebody else's sector, not to resume their own. Reading it also clears
+        // the fragment, so a reload does not reopen it over the later edits.
+        const shared = levelDocument.readShareFromLocation();
+        // A shared link opens as unsaved work; failing that, the draft from last
+        // time; the session owns both, so what it holds is what is on screen.
+        let opened = false;
+        if (shared.document) opened = levelSession.openDocument(shared.document, { force: true });
+        if (!opened && levelSession.hasDraft()) opened = levelSession.restoreDraft();
+        // A deliberate second render: the exported HTML is built with the
+        // starter level, so the first client render has to match it, and
+        // localStorage only gets a say after mount. The rule is right that
+        // this cascades; here the cascade is the feature.
+        if (opened) installLevel(levelSession.state.doc, true);
+        // Same two-phase load and the same reason: a link that will not decode
+        // has to say so, and there is nowhere earlier to say it from.
+        if (shared.error) flash("SHARED LINK UNREADABLE");
+        setSavedEntries(levelLibrary.list().map(({ id, name }) => ({ id, name, bytes: (JSON.stringify(levelLibrary.read(id)) ?? "").length * 2 })));
+      } catch { /* use the starter level */ }
+    });
+    return () => { stale = true; };
   }, [flash, installLevel]);
 
   // Toolbar Behavior belongs to the user, not to the level, so it is stored

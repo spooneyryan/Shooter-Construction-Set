@@ -69,40 +69,6 @@ Two things bound the sweep. **The suite has no select and no toggle** — there 
 
 Adopt per component rather than in one pass, with the test being whether the result survives the cockpit's density: Starline runs 8–10px mono type and roughly 31px controls, tighter than the suite's defaults, and the palette's tab strip already needed overrides to fit two tabs and more to fit three. Keep the swaps that hold up and revert the ones that fight it. The mechanics are settled and should not change: `styles.css` is imported once in `layout.tsx` and already carries every component's stylesheet, including the subpath ones, so a new component needs no new stylesheet; `theme.css` is never loaded, because the `--eb-*` bridge in `globals.css` maps the suite's tokens onto Starline's palette; and appearance overrides go through the suite's stable public class names scoped under `.workspace`. The package is a committed tarball, so a component that needs a newer release means re-packing `vendor/` first.
 
-## F-07 — Saved levels in IndexedDB
-
-Ryan hit "this browser blocked local saves" while saving on production. C-36
-corrected the wording — the store was not blocked, it was **full** — and made
-each saved level's size visible so the shelf can be emptied on purpose. This is
-the fix that makes the shelf big enough not to need emptying.
-
-**The ceiling is the browser's, not ours.** Every saved level lives in one
-`localStorage` key, and an origin gets about five megabytes for everything.
-An image sprite is a data URL inside the level it belongs to, so a few levels
-carrying imported pictures reach the ceiling by themselves. IndexedDB allows
-hundreds of megabytes on the same origin.
-
-**The obstacle is that the library is synchronous and IndexedDB is not.**
-`defineLibrary` reads and writes through a `Storage`-shaped store, and
-`createDocumentSession` reads the draft the moment it is constructed — at
-module evaluation, in Starline. `resolveStorage(preferred)` already accepts a
-store, which is the seam: a **sync facade over IndexedDB** with a write-behind
-— every key read into a `Map` at startup, reads and writes served from the
-`Map` synchronously, writes persisted to IndexedDB asynchronously and in order.
-What that costs is a startup gate: the session cannot be created until the
-`Map` is loaded, so the session moves from module scope to inside the
-component, behind the facade's `ready`, and the page shows its shell for the
-few milliseconds that takes. That is the load-path change, and it is the whole
-reason this is an entry rather than a commit.
-
-**Migration is one read.** On first run with the facade, if the old
-`localStorage` keys exist and IndexedDB is empty, copy them across and leave
-the originals in place until a later version removes them — so a downgrade
-still finds its levels.
-
-The facade belongs in `@ccllc/arcade/core` beside `resolveStorage`, because
-Pinball and the others have the same shelf and the same ceiling.
-
 # Completed Implementation Plan
 
 The ten features should be delivered as a series of compatible foundations rather than ten isolated additions. The key is to establish stable data models and generic editor operations first, then let the editor, asset, and combat workstreams progress in parallel.
@@ -930,3 +896,43 @@ below the band holds its fire, for the reason one off the right edge always
 has — a shot from a ship the player cannot see is an unavoidable hit whichever
 edge it is behind. Tested with two armed scouts, one on the band and one
 above it, over two seconds: the first fires, the second does not.
+
+## C-37 — Saved levels in IndexedDB
+
+Was F-07. The shelf that "this browser blocked local saves" turned out to be
+overflowing now lives in IndexedDB, where an origin has hundreds of megabytes
+rather than five.
+
+**Built in GameBase, consumed here — which is where the seam already was.**
+`resolveStorage(preferred)` had always accepted a store; nothing had ever
+handed it one that was not Web Storage. `createIndexedDbStorage` in
+`@ccllc/arcade/core` is that store: a Map is the truth, every read and write is
+synchronous against it, every write is also queued to the backend in order, and
+`ready` is the promise that the Map has been loaded. The library exposes
+`ready` and `flush` so a host can wait and can commit. Pinball and the others
+have the same shelf and the same ceiling, so the facade is theirs to adopt too.
+
+**The startup gate F-07 feared was one line.** The entry expected the session
+to read its draft at construction, forcing the session out of module scope
+behind a loading shell. It does not: the host asks for the draft in a mount
+effect, through `hasDraft()` and `restoreDraft()`. So the whole gate is that
+effect waiting on `levelLibrary.ready` first — a promise localStorage resolves
+at once and IndexedDB resolves a few milliseconds after mount. The exported
+page already rendered the starter level and re-rendered from storage after
+mount; it still does.
+
+**The first run carries the old shelf across and then frees it.** `migrateFrom`
+names the localStorage keys; any the backend does not already hold are copied,
+committed, and only then removed — because a full localStorage is the reason
+anyone arrives here, and leaving the shelf in it would keep it full. A key the
+backend already holds is never overwritten by an older copy. A downgrade after
+that would find an empty localStorage shelf; that is the trade, and it is
+written down.
+
+**Failure is spoken, not swallowed.** A write that does not commit or a load
+that fails flips `persistent` and reports; the editor turns those into toasts,
+because a save that will not survive a reload must not look like one that
+will. The backend is injectable, which is how five tests run it under Node
+without a browser: synchronous reads and writes, ordered commits, an early
+write surviving the load, migration with the originals let go, a store with
+no backend saying so, and a library seeing its shelf only once ready.

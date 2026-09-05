@@ -573,3 +573,30 @@ you see it. The editor had always clamped placement to the band; the world had
 never cared. The only engine change was the one that had to come with the
 room: an enemy still off the band holds its fire, exactly as one off the right
 edge always has.
+
+## 2026-09-05 (night) — The gate that was one line
+
+Ryan asked for IndexedDB, in GameBase if GameBase lacked it, consumed here.
+C-37.
+
+**Read the seam before designing around it.** F-07 had sketched a loading
+shell and a session moved out of module scope, because I assumed the session
+read its draft when constructed. It does not; the host asks in a mount
+effect. One `await ready` in that effect was the whole gate, and the design
+that would have taken an afternoon was a paragraph that turned out to be
+wrong. The lesson is not that the sketch was careless -- it was a reasonable
+guess written down as a guess -- but that the first act of building it should
+be to check the guess, and that checking took one grep.
+
+**Synchronous facade, asynchronous truth.** Every consumer of the store is
+synchronous and stays so; only the persistence moved. The Map is what the
+library reads and writes; the queue carries the same writes to IndexedDB in
+order; `ready` is the moment the Map matches the disk. The one subtlety is a
+write made before the load finishes -- it must win over the older value the
+load brings back -- and the test for it is the one most worth keeping.
+
+**Let go of the originals, and say so.** Copying the shelf into IndexedDB and
+leaving it in localStorage would have fixed the message and kept the problem:
+the store would still be full for everything else. So the originals are
+removed once their copies have committed, a downgrade would then find them
+gone, and both halves of that are written in the entry rather than discovered.
