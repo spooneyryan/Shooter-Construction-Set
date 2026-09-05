@@ -394,6 +394,52 @@ function bezierControlLocal(item: LevelItem, world: Point): Point {
   return { x: Math.round(Math.cos(a) * dx + Math.sin(a) * dy), y: Math.round(-Math.sin(a) * dx + Math.cos(a) * dy) };
 }
 
+/**
+ * Room above and below the play band, in world units, where an enemy that
+ * should enter from the top or the bottom of the screen is placed. Half a
+ * screen each way. The world has never cared where an enemy starts -- only the
+ * editor clamped placement to the band -- so this is an editor allowance, and
+ * the one engine change beside it is that an enemy still off the band does not
+ * fire, for the same reason one off the right edge never did.
+ */
+const PLACE_MARGIN = VIEW_H / 2;
+const ZOOM_MIN = 0.4;
+const ZOOM_MAX = 3;
+
+/** Every byte localStorage holds for this origin, as the browser counts it: UTF-16, two per character. */
+function localStorageBytes() {
+  try {
+    let total = 0;
+    for (let i = 0; i < localStorage.length; i += 1) {
+      const key = localStorage.key(i) ?? "";
+      total += (key.length + (localStorage.getItem(key)?.length ?? 0)) * 2;
+    }
+    return total;
+  } catch { return 0; }
+}
+
+/**
+ * The toast for a save that did not write, worded by cause.
+ *
+ * The library reports every failed write the same way, but a browser that
+ * refuses storage and a store that is simply full are different problems with
+ * different fixes -- and with image sprites travelling inside levels, full is
+ * the likelier one by far: every saved level sits in one key, and the browser
+ * allows about five megabytes for the whole origin. A one-byte probe tells the
+ * two apart: refused storage throws for a byte as well; a full store takes the
+ * byte and fails only on the shelf.
+ */
+function describeSaveFailure() {
+  try {
+    localStorage.setItem("starline-probe", "1");
+    localStorage.removeItem("starline-probe");
+  } catch (error) {
+    const quota = error instanceof DOMException && (error.name === "QuotaExceededError" || error.code === 22);
+    if (!quota) return "SAVE FAILED — THIS BROWSER BLOCKED LOCAL SAVES";
+  }
+  return `SAVE FAILED — LOCAL STORAGE IS FULL (${(localStorageBytes() / 1048576).toFixed(1)} MB IN USE). DELETE A SAVED LEVEL, OR SHRINK ITS IMAGE SPRITES`;
+}
+
 /** The reading beside PATH ANGLE and CURVE: the compass points by name, the rest signed. */
 function describeAngle(degrees: number, unit = "") {
   if (degrees === 0) return unit ? "STRAIGHT" : "LEFT";
@@ -906,6 +952,12 @@ export function StarlineGame() {
   // fit would stay stale until the window was dragged. The loop publishes its
   // own resize here for the mode effect below to call.
   const resizeViewRef = useRef<() => void>(() => {});
+  // The editor's own view of the stage: a zoom about the centre, and a pan
+  // across the sector in stage pixels. Play always shows the sector at its
+  // fit, so a zoom left over from editing never changes what a player sees.
+  const zoomRef = useRef(1);
+  const panRef = useRef(0);
+  const [viewZoom, setViewZoom] = useState(1);
   const satellitePointerRef = useRef({ x: VIEW_W * .7, y: VIEW_H / 2, active: false });
   const mouseFireRef = useRef(false);
   const dragRef = useRef<CanvasDrag | null>(null);
@@ -1008,7 +1060,7 @@ export function StarlineGame() {
   const [hullMax, setHullMax] = useState(3);
   const [shield, setShield] = useState(0);
   const [progress, setProgress] = useState(0);
-  const [savedEntries, setSavedEntries] = useState<{ id: string; name: string }[]>([]);
+  const [savedEntries, setSavedEntries] = useState<{ id: string; name: string; bytes: number }[]>([]);
   const [loadName, setLoadName] = useState("");
   // The third argument is the server snapshot: this page is prerendered, and
   // without it React refuses to render the store on the server at all.
@@ -1195,7 +1247,7 @@ export function StarlineGame() {
       // Same two-phase load and the same reason: a link that will not decode
       // has to say so, and there is nowhere earlier to say it from.
       if (shared.error) flash("SHARED LINK UNREADABLE");
-      setSavedEntries(levelLibrary.list().map(({ id, name }) => ({ id, name })));
+      setSavedEntries(levelLibrary.list().map(({ id, name }) => ({ id, name, bytes: (JSON.stringify(levelLibrary.read(id)) ?? "").length * 2 })));
     } catch { /* use the starter level */ }
   }, [flash, installLevel]);
 
@@ -1267,7 +1319,7 @@ export function StarlineGame() {
       offset: (copy) => ({
         ...copy,
         x: Math.min(levelRef.current.length, copy.x + 80),
-        y: clamp(copy.y + 45, 30, VIEW_H - 30),
+        y: clamp(copy.y + 45, -PLACE_MARGIN, VIEW_H + PLACE_MARGIN),
       }),
     });
     if (copies.length) flash(`${copies.length} OBJECT${copies.length === 1 ? "" : "S"} DUPLICATED`);
@@ -1406,12 +1458,12 @@ export function StarlineGame() {
   }, [flash, updateLevel]);
 
   const refreshSaved = useCallback(() => {
-    setSavedEntries(levelLibrary.list().map(({ id, name }) => ({ id, name })));
+    setSavedEntries(levelLibrary.list().map(({ id, name }) => ({ id, name, bytes: (JSON.stringify(levelLibrary.read(id)) ?? "").length * 2 })));
   }, []);
 
   const commitSave = useCallback(() => {
     const entry = levelSession.save();
-    if (!entry) { flash("SAVE FAILED — THIS BROWSER BLOCKED LOCAL SAVES"); return false; }
+    if (!entry) { flash(describeSaveFailure()); return false; }
     refreshSaved();
     setLoadName(entry.id); flash("LEVEL SAVED TO THIS DEVICE");
     return true;
@@ -1419,7 +1471,7 @@ export function StarlineGame() {
 
   const duplicateLevel = useCallback(() => {
     const entry = levelSession.duplicate();
-    if (!entry) { flash("SAVE FAILED — THIS BROWSER BLOCKED LOCAL SAVES"); return; }
+    if (!entry) { flash(describeSaveFailure()); return; }
     installLevel(levelSession.state.doc, true);
     refreshSaved();
     setLoadName(entry.id); flash(`DUPLICATED AS ${entry.name.toUpperCase()} — EDITING THE COPY`);
@@ -1658,7 +1710,7 @@ export function StarlineGame() {
       editorFor().commands.update((item) => ({
         ...item,
         x: clamp(item.x + dx, 0, levelRef.current.length),
-        y: clamp(item.y + dy, 30, VIEW_H - 30),
+        y: clamp(item.y + dy, -PLACE_MARGIN, VIEW_H + PLACE_MARGIN),
       }), { reason: "nudge" });
     };
     const keymap = createKeymap([
@@ -1740,13 +1792,20 @@ export function StarlineGame() {
       // empty and throws away half the screen. Worst in presentation, where the
       // screen is all there is, but the editor gains the same room.
       const framed = levelRef.current.mode === "vertical" ? VIEW_H : VIEW_W;
-      const scale = Math.min(rect.width / framed, rect.height / VIEW_H);
+      const editing = modeRef.current === "build";
+      const zoom = editing ? zoomRef.current : 1;
+      const scale = Math.min(rect.width / framed, rect.height / VIEW_H) * zoom;
       // Centre the framed band rather than the canvas: the band starts at
       // (VIEW_W - framed) / 2, and that is the point that has to land on the
       // left edge of the fitted area. Horizontal frames the full width, where
       // the second term is zero and this is the arithmetic it always was.
-      const offsetX = (rect.width - framed * scale) / 2 - ((VIEW_W - framed) / 2) * scale;
-      const offsetY = (rect.height - VIEW_H * scale) / 2;
+      // The pan moves the view across the sector -- down the screen for a
+      // horizontal sector, across it for a vertical one, which is the axis the
+      // off-stage room lies along in either case.
+      const pan = editing ? panRef.current : 0;
+      const vertical = levelRef.current.mode === "vertical";
+      const offsetX = (rect.width - framed * scale) / 2 - ((VIEW_W - framed) / 2) * scale + (vertical ? pan : 0);
+      const offsetY = (rect.height - VIEW_H * scale) / 2 + (vertical ? 0 : pan);
       viewportRef.current = { scale, offsetX, offsetY };
       context.setTransform(scale * dpr, 0, 0, scale * dpr, offsetX * dpr, offsetY * dpr);
       const miniRect = mini.getBoundingClientRect();
@@ -1857,6 +1916,20 @@ export function StarlineGame() {
         context.fillText(text, 0, 0);
         context.restore();
       };
+      // The room above and below the play band, tinted so it reads as
+      // off-stage, with the band's edges ruled. Only visible once the view is
+      // zoomed out enough to show any of it. In world space, so a vertical
+      // sector shows it to either side, which is where its across axis lies.
+      context.save();
+      context.fillStyle = "rgba(100,227,255,.035)";
+      context.fillRect(-VIEW_W, -PLACE_MARGIN, VIEW_W * 3, PLACE_MARGIN);
+      context.fillRect(-VIEW_W, VIEW_H, VIEW_W * 3, PLACE_MARGIN);
+      context.strokeStyle = "rgba(100,227,255,.35)"; context.lineWidth = 1; context.setLineDash([6, 6]);
+      context.beginPath(); context.moveTo(-VIEW_W, 0); context.lineTo(VIEW_W * 2, 0); context.moveTo(-VIEW_W, VIEW_H); context.lineTo(VIEW_W * 2, VIEW_H); context.stroke();
+      context.fillStyle = "rgba(100,227,255,.55)"; context.font = "10px monospace";
+      label("OFF-STAGE — PLACE HERE TO ENTER FROM OUTSIDE THE PLAY BAND", 12, -PLACE_MARGIN + 16);
+      label("OFF-STAGE — PLACE HERE TO ENTER FROM OUTSIDE THE PLAY BAND", 12, VIEW_H + PLACE_MARGIN - 8);
+      context.restore();
       // The lean the game will draw on the item's first frame, so FACE
       // DIRECTION OF TRAVEL shows its effect without a playtest. One step of
       // the world's own path, differenced the way the world differences it --
@@ -2107,7 +2180,7 @@ export function StarlineGame() {
       miniContext.strokeStyle = "rgba(126,174,194,.12)";
       for (let i = 1; i < 10; i += 1) { const x = miniWidth * i / 10; miniContext.beginPath(); miniContext.moveTo(x, 0); miniContext.lineTo(x, miniHeight); miniContext.stroke(); }
       for (const item of current.items) {
-        const x = item.x / current.length * miniWidth; const y = item.y / VIEW_H * miniHeight;
+        const x = item.x / current.length * miniWidth; const y = clamp(item.y, 0, VIEW_H) / VIEW_H * miniHeight;
         miniContext.fillStyle = item.type === "terrain" ? "#72838b" : item.type === "group" ? "#eaff62" : item.type === "powerup" ? "#eaff62" : item.type === "upgrade" ? "#64e3ff" : item.type === "decoration" ? "#744f93" : "#ff6a4d";
         const size = item.type === "group" ? 4 : 3; miniContext.fillRect(x - size / 2, y - size / 2, size, size);
       }
@@ -2181,7 +2254,7 @@ export function StarlineGame() {
     // Undo the view before clamping, so a vertical sector is clamped in the
     // space the level is actually authored in rather than in screen space.
     const point = levelRef.current.mode === "vertical" ? unapplyVerticalView(x, y) : { x, y };
-    return { x: clamp(point.x, 0, VIEW_W), y: clamp(point.y, 0, VIEW_H) };
+    return { x: clamp(point.x, 0, VIEW_W), y: clamp(point.y, -PLACE_MARGIN, VIEW_H + PLACE_MARGIN) };
   };
 
   /**
@@ -2287,7 +2360,7 @@ export function StarlineGame() {
       if (safeCamera !== editorCameraRef.current) { editorCameraRef.current = safeCamera; setCamera(safeCamera); }
     } else if (drag.kind === "items") {
       const world = { x: screen.x + editorCameraRef.current, y: screen.y }; const dx = world.x - drag.startWorld.x; const dy = world.y - drag.startWorld.y;
-      updateLevel((current) => ({ ...current, items: current.items.map((item) => { const origin = drag.origins.find((entry) => entry.id === item.id); return origin ? { ...item, x: Math.round(clamp(origin.x + dx, 0, current.length)), y: Math.round(clamp(origin.y + dy, 30, VIEW_H - 30)) } : item; }) }), false);
+      updateLevel((current) => ({ ...current, items: current.items.map((item) => { const origin = drag.origins.find((entry) => entry.id === item.id); return origin ? { ...item, x: Math.round(clamp(origin.x + dx, 0, current.length)), y: Math.round(clamp(origin.y + dy, -PLACE_MARGIN, VIEW_H + PLACE_MARGIN)) } : item; }) }), false);
     } else if (drag.kind === "bezier") {
       // The handle follows the pointer; the point stored is that position
       // brought back into the path's own frame, so it stays put when PATH
@@ -2390,7 +2463,22 @@ export function StarlineGame() {
 
   // The stage is framed around the sector, so changing which way the sector
   // runs changes the fit. See resizeViewRef.
-  useEffect(() => { resizeViewRef.current(); }, [level.mode]);
+  useEffect(() => { resizeViewRef.current(); }, [level.mode, mode]);
+
+  /** Zoom about the stage centre; at or below the fit there is nothing to pan to. */
+  const setZoom = (next: number) => {
+    const zoom = clamp(next, ZOOM_MIN, ZOOM_MAX);
+    zoomRef.current = zoom;
+    setViewZoom(zoom);
+    if (zoom <= 1) panRef.current = 0;
+    resizeViewRef.current();
+  };
+  /** Pan across the sector, in stage pixels, never past the off-stage room. */
+  const panBy = (delta: number) => {
+    const limit = (VIEW_H / 2 + PLACE_MARGIN) * viewportRef.current.scale;
+    panRef.current = clamp(panRef.current + delta, -limit, limit);
+    resizeViewRef.current();
+  };
 
   /**
    * Scrolling the sector, as a native listener rather than an `onWheel` prop.
@@ -2412,6 +2500,8 @@ export function StarlineGame() {
     scrollSectorRef.current = (event) => {
       if (modeRef.current !== "build") return;
       event.preventDefault();
+      if (event.ctrlKey || event.metaKey) { setZoom(zoomRef.current * (event.deltaY < 0 ? 1.15 : 1 / 1.15)); return; }
+      if (event.shiftKey) { panBy(-event.deltaY); return; }
       setCameraSafe(editorCameraRef.current + event.deltaY + event.deltaX);
     };
   });
@@ -2533,7 +2623,7 @@ export function StarlineGame() {
         </select></label>
         <div className="file-actions">
           <button type="button" onClick={newLevel}>NEW</button>
-          <select value={loadName} onChange={(event) => setLoadName(event.target.value)} aria-label="Saved levels"><option value="">LOAD LEVEL...</option><optgroup label="SAMPLES">{starterLevels.map((sample) => <option value={`sample:${sample.key}`} key={sample.key}>{sample.name}</option>)}</optgroup>{savedEntries.map((entry) => <option value={entry.id} key={entry.id}>{entry.name}</option>)}</select>
+          <select value={loadName} onChange={(event) => setLoadName(event.target.value)} aria-label="Saved levels"><option value="">LOAD LEVEL...</option><optgroup label="SAMPLES">{starterLevels.map((sample) => <option value={`sample:${sample.key}`} key={sample.key}>{sample.name}</option>)}</optgroup>{savedEntries.map((entry) => <option value={entry.id} key={entry.id}>{entry.name}{entry.bytes > 200000 ? ` · ${(entry.bytes / 1048576).toFixed(1)} MB` : ""}</option>)}</select>
           <button type="button" onClick={loadLevel} disabled={!loadName}>LOAD</button>
           <button type="button" onClick={deleteSavedLevel} disabled={!loadName || loadName.startsWith("sample:")} title="Delete the selected saved level (undo for a few seconds)">DELETE</button>
           {levelDoc.canUndoRemove && <button type="button" onClick={undoDelete}>UNDO DELETE</button>}
@@ -2596,7 +2686,12 @@ export function StarlineGame() {
           <div className="stage-toolbar">
             <div><span>SECTOR POSITION</span><strong>{Math.round(camera).toString().padStart(5, "0")} — {Math.round(Math.min(level.length, camera + VIEW_W)).toString().padStart(5, "0")}</strong></div>
             <div className="camera-controls"><button type="button" onClick={() => setCameraSafe(camera - VIEW_W * .7)}>◀</button><input type="range" min="0" max={Math.max(0, level.length - VIEW_W)} value={camera} onChange={(event) => setCameraSafe(Number(event.target.value))} aria-label="Horizontal level position" /><button type="button" onClick={() => setCameraSafe(camera + VIEW_W * .7)}>▶</button></div>
-            <span className="zoom-readout">1:1 VIEW</span>
+            <div className="zoom-controls" aria-label="Stage zoom">
+              <button type="button" onClick={() => setZoom(zoomRef.current / 1.25)} title="Zoom out (Ctrl + wheel)">−</button>
+              <span>{Math.round(viewZoom * 100)}%</span>
+              <button type="button" onClick={() => setZoom(zoomRef.current * 1.25)} title="Zoom in (Ctrl + wheel)">+</button>
+              <button type="button" onClick={() => { panRef.current = 0; setZoom(1); }} title="Back to the fit">FIT</button>
+            </div>
           </div>
           <div className="stage-canvas-wrap">
             <canvas

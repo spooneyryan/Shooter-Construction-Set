@@ -549,3 +549,27 @@ the control points' world positions, and had they been two formulas the angle
 rotation would have drifted between them sooner or later. `bezierControlWorld`
 is used by both, so a handle is grabbed where it is drawn by construction — the
 same shape of decision as `movementPosition` for the path itself, one level up.
+
+## 2026-09-05 (evening) — Blocked, or full
+
+Ryan could not save: "this browser blocked local saves." The sentence came from
+Starline, and it was written for a browser that refuses storage — but the
+library returns the same null for a shelf too big to write, and with image
+sprites travelling inside their levels, a full five-megabyte origin is the far
+likelier way to get there. C-36 tells the two apart with a one-byte probe and
+says how full the store is; F-07 is the real fix, IndexedDB behind a sync
+facade, and why it is an entry rather than a commit.
+
+**The lesson is about error messages that name a cause.** "Blocked" is a
+diagnosis, and the code that wrote it had not diagnosed anything — it had a
+null. A message that names the one cause its author imagined sends the reader
+looking in the wrong place with confidence; one that says what was observed
+("the save did not write") at least sends them looking. Better still is the
+probe: one more byte of work turned a guess into a finding.
+
+Zoom and the off-stage room shipped in the same pass, and they belong together
+— the room is half a screen above and below the band, and zooming out is how
+you see it. The editor had always clamped placement to the band; the world had
+never cared. The only engine change was the one that had to come with the
+room: an enemy still off the band holds its fire, exactly as one off the right
+edge always has.
