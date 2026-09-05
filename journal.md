@@ -499,3 +499,29 @@ position, so the difference between "at the origin" and "one step in" includes
 the whole phase offset at once — a one-frame spike that would flick a rocket
 sideways as it appears. Read `settled` before the age advances and the spawn
 frame reports nothing, which is also the truth.
+
+## 2026-09-05 — One path function, and a decision made out loud
+
+Ryan asked for movement paths that point in any direction and for a curve —
+"a bezier would be AMAZING, a resizable arc would be acceptable." C-34 shipped
+the turn and the arc; F-07 holds the bezier with its design written down.
+
+**Taking the fallback was a decision, not a shortcut, and saying so mattered.**
+The bezier's math is a page; what makes it amazing is dragging control points
+on the canvas, and that is a real editor feature with its own hit-testing,
+drag kind and group interplay. Shipping the arc with the bezier scoped and
+waiting is honest about that. Shipping a numbers-only bezier and calling it
+amazing would not have been.
+
+**The design move worth keeping is the single function.** The editor's path
+preview was a second copy of the movement formulas, and it had already drifted
+— `Math.sin` where the simulation uses core's deterministic `sin`, which F-05
+had noticed and filed as a nit. Turning and curving paths would have doubled
+the surface for that drift. Exporting `movementPosition` from the engine and
+drawing the preview with it removed the copy instead of maintaining it, and
+C-33's lean preview fell into the same function for free.
+
+**The regression guard is `deepEqual`, not a tolerance.** An untouched level
+must be placed on the same numbers it always was — a replay depends on it —
+and "close" is not the same claim. Angle zero takes the old arithmetic branch
+so the assertion can be exact.

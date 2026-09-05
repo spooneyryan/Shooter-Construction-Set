@@ -25,6 +25,7 @@ import {
   makeItem,
   normalizeBulletPattern,
   PLAYER_R,
+  movementPosition,
   normalizeLevel,
   playerRadius,
   palette,
@@ -368,6 +369,15 @@ function DepthField({ depth, onChange }: { depth?: SpriteDepth; onChange: (next:
       <p className="inspector-note">{depth === undefined ? "Drawn at full strength, in front of the backdrop." : "Darkened and softened rather than faded, so the starfield stays behind it."}</p>
     </>
   );
+}
+
+/** The reading beside PATH ANGLE and CURVE: the compass points by name, the rest signed. */
+function describeAngle(degrees: number, unit = "") {
+  if (degrees === 0) return unit ? "STRAIGHT" : "LEFT";
+  if (!unit && degrees === 90) return "UP";
+  if (!unit && degrees === -90) return "DOWN";
+  if (!unit && Math.abs(degrees) === 180) return "RIGHT";
+  return `${degrees > 0 ? "+" : ""}${degrees}°${unit} ${degrees > 0 ? "UP" : "DOWN"}`;
 }
 
 /**
@@ -1824,17 +1834,17 @@ export function StarlineGame() {
         context.restore();
       };
       // The lean the game will draw on the item's first frame, so FACE
-      // DIRECTION OF TRAVEL shows its effect without a playtest. The world
-      // measures a real velocity; here each pattern's derivative at age zero
-      // stands in -- a sine starts crossing at its fastest, a zigzag at its
-      // constant slope, and everything else flies straight. Through the same
-      // helper as play, so the two cannot disagree about which way is down.
+      // DIRECTION OF TRAVEL shows its effect without a playtest. One step of
+      // the world's own path, differenced the way the world differences it --
+      // so a turned path or an arc leans in the editor exactly as it will in
+      // play, and there is no per-pattern derivative here to keep in step.
       const previewTilt = (item: LevelItem) => {
         const follow = item.heading?.follow ?? 0;
-        if (!follow || item.type === "terrain" || item.movement.pattern === "stationary") return 0;
-        const { pattern, speed, amplitude, frequency } = item.movement;
-        const vy = pattern === "sine" ? amplitude * frequency * Math.PI * 2 : pattern === "zigzag" ? 4 * amplitude * frequency : 0;
-        return travelTilt(-Math.max(1, speed), vy, follow);
+        if (!follow || item.movement.pattern === "stationary") return 0;
+        const holds = item.type === "terrain";
+        const from = movementPosition(item.movement, item.x, item.y, 0, { holds });
+        const to = movementPosition(item.movement, item.x, item.y, 1 / 120, { holds });
+        return travelTilt((to.x - from.x) * 120, (to.y - from.y) * 120, follow);
       };
       const drawPlacedItem = (item: LevelItem) => {
         const selectedItem = editorFor().selection.ids.includes(item.id);
@@ -1866,13 +1876,15 @@ export function StarlineGame() {
       }
       const selected = current.items.find((item) => item.id === editorFor().selection.primary);
       if (selected && selected.movement.pattern !== "stationary") {
+        // The path play will fly, from the world's own function -- turned path
+        // and arc included -- rather than a second copy of the formulas kept in
+        // step by hand (which F-05 noted had already drifted to Math.sin). Drawn
+        // both ways from the origin: behind it is where the thing came from.
         context.save(); context.translate(-cameraX, 0); context.strokeStyle = "rgba(100,227,255,.45)"; context.lineWidth = 2; context.setLineDash([5, 7]); context.beginPath();
-        for (let step = -260; step <= 260; step += 8) {
-          const t = -step / Math.max(1, selected.movement.speed);
-          let pathY = selected.y;
-          if (selected.movement.pattern === "sine") pathY += Math.sin(t * selected.movement.frequency * Math.PI * 2) * selected.movement.amplitude;
-          if (selected.movement.pattern === "zigzag") pathY += Math.asin(Math.sin(t * selected.movement.frequency * Math.PI * 2)) * 2 / Math.PI * selected.movement.amplitude;
-          if (step === -260) context.moveTo(selected.x + step, pathY); else context.lineTo(selected.x + step, pathY);
+        const horizon = 260 / Math.max(1, selected.movement.speed);
+        for (let i = -40; i <= 40; i += 1) {
+          const spot = movementPosition(selected.movement, selected.x, selected.y, (i / 40) * horizon, { holds: selected.type === "terrain" });
+          if (i === -40) context.moveTo(spot.x, spot.y); else context.lineTo(spot.x, spot.y);
         }
         context.stroke(); context.restore();
       }
@@ -2651,8 +2663,16 @@ export function StarlineGame() {
             </>)}
 
             {section("movement", selected.type === "decoration" ? "DECORATION MOTION" : "MOVEMENT", <>
-              <label className="field wide"><span>MOVEMENT</span><select value={selected.movement.pattern} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, movement: { ...item.movement, pattern: event.target.value as MovePattern } }))}><option value="straight">STRAIGHT</option><option value="sine">SINE WAVE</option><option value="zigzag">ZIGZAG</option><option value="stationary">STATIONARY</option></select></label>
+              <label className="field wide"><span>MOVEMENT</span><select value={selected.movement.pattern} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, movement: { ...item.movement, pattern: event.target.value as MovePattern } }))}><option value="straight">STRAIGHT</option><option value="sine">SINE WAVE</option><option value="zigzag">ZIGZAG</option><option value="arc">ARC</option><option value="stationary">STATIONARY</option></select></label>
               <label className="range-field"><span><b>SPEED</b><em>{selected.movement.speed}u/s</em></span><input type="range" min="0" max="240" value={selected.movement.speed} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, movement: { ...item.movement, speed: Number(event.target.value) } }))} /></label>
+              {/* Which way the whole path points. LEFT is the flight every level
+                  already had; positive turns toward the top of the screen. The
+                  dashed preview redraws as this moves, from the world's own path
+                  function, so what is shown is what will fly. */}
+              {selected.movement.pattern !== "stationary" && <label className="range-field"><span><b>PATH ANGLE</b><em>{describeAngle(selected.movement.angle ?? 0)}</em></span><input type="range" min="-180" max="180" step="5" value={selected.movement.angle ?? 0} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, movement: { ...item.movement, angle: Number(event.target.value) } }))} /></label>}
+              {/* How fast an arc turns its heading. Radius is speed over this:
+                  a slow, gentle curve or a tight dive are both here. */}
+              {selected.movement.pattern === "arc" && <label className="range-field"><span><b>CURVE</b><em>{describeAngle(selected.movement.curve ?? 0, "/s")}</em></span><input type="range" min="-180" max="180" step="5" value={selected.movement.curve ?? 0} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, movement: { ...item.movement, curve: Number(event.target.value) } }))} /></label>}
               {(selected.movement.pattern === "sine" || selected.movement.pattern === "zigzag") && <><label className="range-field"><span><b>AMPLITUDE</b><em>{selected.movement.amplitude}u</em></span><input type="range" min="10" max="200" value={selected.movement.amplitude} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, movement: { ...item.movement, amplitude: Number(event.target.value) } }))} /></label><label className="range-field"><span><b>FREQUENCY</b><em>{selected.movement.frequency.toFixed(2)}Hz</em></span><input type="range" min="0.1" max="1.5" step="0.05" value={selected.movement.frequency} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, movement: { ...item.movement, frequency: Number(event.target.value) } }))} /></label></>}
             </>)}
 
