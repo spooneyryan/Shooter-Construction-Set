@@ -548,3 +548,8 @@ kbd { min-width: 22px; padding: 3px 5px; display: inline-block; border: 1px soli
  * beside the level's name while it has unsaved changes. */
 .dirty-dot { display: inline-block; width: 7px; height: 7px; margin-left: 6px; border-radius: 50%; background: var(--cyan, #64e3ff); vertical-align: middle; }
 .file-actions button:disabled { opacity: .45; }
+
+/* A bezier's points in the Inspector: X beside Y, because the pair is one
+   thing and two stacked rows would read as two settings. */
+.bezier-xy { display: flex; gap: 6px; }
+.bezier-xy input { flex: 1 1 0; min-width: 0; }

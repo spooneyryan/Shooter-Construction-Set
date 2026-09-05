@@ -525,3 +525,27 @@ C-33's lean preview fell into the same function for free.
 must be placed on the same numbers it always was — a replay depends on it —
 and "close" is not the same claim. Angle zero takes the old arithmetic branch
 so the assertion can be exact.
+
+## 2026-09-05 (later) — The amazing version
+
+Ryan came back for the bezier. C-35.
+
+**Distance, not parameter, was the decision that made it feel right.** The
+first thing anyone does with a bezier is fly it by `t`, and the first thing
+they notice is the rocket lurching — fast through the straight middle, slow
+into the tight bend, because `t` is not length. Measuring the curve into a
+table once and walking distance along it is a page of arithmetic, and it is
+the difference between a path and an effect. The test asserts the speed is
+constant to within the polyline's coarseness, which is the claim that matters.
+
+**The handles taught the order of hit-tests.** The control points live inside
+the selection box, exactly where the rotate grip at the top and the scale grip
+at the corner already wait for a click. Testing the handles first is a one-line
+decision that would have been a confusing bug if made the other way — a drag
+that rotated the sprite when you meant to bend its path.
+
+**One function for where a handle IS.** Drawing and hit-testing each computed
+the control points' world positions, and had they been two formulas the angle
+rotation would have drifted between them sooner or later. `bezierControlWorld`
+is used by both, so a handle is grabbed where it is drawn by construction — the
+same shape of decision as `movementPosition` for the path itself, one level up.

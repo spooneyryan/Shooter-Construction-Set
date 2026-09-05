@@ -69,37 +69,6 @@ Two things bound the sweep. **The suite has no select and no toggle** — there 
 
 Adopt per component rather than in one pass, with the test being whether the result survives the cockpit's density: Starline runs 8–10px mono type and roughly 31px controls, tighter than the suite's defaults, and the palette's tab strip already needed overrides to fit two tabs and more to fit three. Keep the swaps that hold up and revert the ones that fight it. The mechanics are settled and should not change: `styles.css` is imported once in `layout.tsx` and already carries every component's stylesheet, including the subpath ones, so a new component needs no new stylesheet; `theme.css` is never loaded, because the `--eb-*` bridge in `globals.css` maps the suite's tokens onto Starline's palette; and appearance overrides go through the suite's stable public class names scoped under `.workspace`. The package is a committed tarball, so a component that needs a newer release means re-packing `vendor/` first.
 
-## F-07 — Bezier paths, with handles
-
-Ryan's word was that an arbitrary bezier would be *amazing*, and that a
-resizable arc would do. C-34 shipped the arc. This is what the amazing version
-needs, worked out so it can be picked up without re-deriving it.
-
-**The math is the small part.** A cubic with `P0` at the origin and `P1..P3`
-authored as offsets from it, turned by `movement.angle` like every other path.
-Two things the arc did not have to solve:
-
-- **Speed along the curve.** A bezier's parameter is not distance, so flying it
-  by `t = age x speed / length` speeds up and slows down along the way. Sample
-  the curve at spawn into a cumulative-length table — deterministic arithmetic,
-  `hypot` from core — and walk `age x speed` along it. Fifty to a hundred
-  samples per enemy is nothing.
-- **After the end.** A curve finishes. The obvious answer is to continue
-  straight along the end tangent at the same speed, which is what a rocket
-  would do, and it keeps `movementPosition`'s closed form: everything past the
-  end is a line from a known point.
-
-Both fit inside `movementPosition`, so the world, the editor's preview and
-C-33's lean all pick it up for free.
-
-**The editor is the real work.** Three control points as six numbers in the
-Inspector would function, and would not be amazing. Amazing is dragging the
-handles on the canvas — which means three more grab targets per selected item,
-hit-testing them ahead of the rotate and scale handles, a drag kind of their
-own in `CanvasDrag`, and deciding how they behave under a group's
-`groupOffsets`, under `rotation`, and when the level is vertical. Start with
-the numbers so the path can be seen, then earn the handles.
-
 # Completed Implementation Plan
 
 The ten features should be delivered as a series of compatible foundations rather than ten isolated additions. The key is to establish stable data models and generic editor operations first, then let the editor, asset, and combat workstreams progress in parallel.
@@ -850,3 +819,44 @@ each serialises for no change in how it flies, so absent stays absent.
 
 The bezier is F-07, with its design worked out. The arc covers the stated use;
 the bezier's real cost is on-canvas handles, not the curve.
+
+## C-35 — Bezier paths, with handles
+
+Was F-07, and Ryan's word for it was *amazing*. A cubic from the object through
+two control points to an end point, shaped by dragging three cyan handles on
+the playfield, or typed as numbers in the Inspector for exactness.
+
+**Flown by distance, not by the curve's parameter.** A bezier's `t` is not arc
+length, and flying it by `t` speeds up and slows down along the way. The engine
+measures the curve once into a cumulative-length table — sixty-four pieces,
+cached in a `WeakMap` per movement object, which is stable for a runtime enemy
+and replaced on every edit so the cache can never go stale — and walks
+`speed × age` along it. The test drives that home: every twentieth of a second
+covers five units, within the polyline's own coarseness, the whole way round.
+
+**Past either end it flies straight along the tangent.** That is what a rocket
+would do, and it keeps `movementPosition` a closed form in `age`: everything
+past the end is a line from a known point, so a rewind is still a subtraction.
+Backward past the start, the same, which is what lets the editor draw a little
+of where the thing came from.
+
+**The points are offsets in the path's own frame**, before `PATH ANGLE` turns
+them — so a curve shaped at angle 0 turns as one piece when the angle changes,
+and a handle dragged at any angle stores the point brought back into that
+frame. A bezier always has three good points: a missing or nonsense one takes
+its slot's default, and a shape authored under another pattern is kept so
+switching away and back does not lose the curve.
+
+**The handles were the real work, as F-07 said.** They sit inside the selection
+box, where the rotate and scale grips would otherwise claim the click, so they
+are hit-tested first. One function gives their world positions for both drawing
+and hit-testing — a handle is grabbed exactly where it is drawn — and it turns
+them by the angle the same way the engine turns the path. A `bezier` drag kind
+joins `items`, `transform`, `scroll` and `end`, and rides the same snapshot
+rule: one undo step per drag, and none if nothing moved. Drawn in world space
+inside the vertical view, so they turn with the sector.
+
+The preview draws a bezier whole plus a little of the straight flight after
+it, via `movementPathLength`, rather than the fixed stretch the other paths
+show — and because it is the engine's own function, the dashed curve is the
+flight, and C-33's lean noses along it for free.

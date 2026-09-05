@@ -25,6 +25,8 @@ import {
   makeItem,
   normalizeBulletPattern,
   PLAYER_R,
+  defaultBezierPoints,
+  movementPathLength,
   movementPosition,
   normalizeLevel,
   playerRadius,
@@ -371,6 +373,27 @@ function DepthField({ depth, onChange }: { depth?: SpriteDepth; onChange: (next:
   );
 }
 
+/**
+ * Where a bezier's control points sit in the world: offsets from the object,
+ * turned by PATH ANGLE the same way the engine turns the path. One function
+ * for drawing the handles and for hit-testing them, so a handle is grabbed
+ * exactly where it is drawn. Math.cos is fine here -- this is the editor's
+ * picture of the points, not the simulation's flight along them.
+ */
+function bezierControlWorld(item: LevelItem): Point[] {
+  const points = item.movement.points ?? defaultBezierPoints();
+  const a = (item.movement.angle ?? 0) * Math.PI / 180;
+  return points.map((point) => ({ x: item.x + Math.cos(a) * point.x - Math.sin(a) * point.y, y: item.y + Math.sin(a) * point.x + Math.cos(a) * point.y }));
+}
+
+/** The reverse, for a handle being dragged: a world point back to an offset. */
+function bezierControlLocal(item: LevelItem, world: Point): Point {
+  const a = (item.movement.angle ?? 0) * Math.PI / 180;
+  const dx = world.x - item.x;
+  const dy = world.y - item.y;
+  return { x: Math.round(Math.cos(a) * dx + Math.sin(a) * dy), y: Math.round(-Math.sin(a) * dx + Math.cos(a) * dy) };
+}
+
 /** The reading beside PATH ANGLE and CURVE: the compass points by name, the rest signed. */
 function describeAngle(degrees: number, unit = "") {
   if (degrees === 0) return unit ? "STRAIGHT" : "LEFT";
@@ -424,6 +447,7 @@ type CanvasDrag =
   | { kind: "items"; ids: string[]; startWorld: Point; origins: TransformOrigin[]; startSnapshot: string }
   | { kind: "transform"; mode: "rotate" | "scale"; ids: string[]; center: Point; startAngle: number; startDistance: number; origins: TransformOrigin[]; startSnapshot: string }
   | { kind: "scroll"; startX: number; startCamera: number }
+  | { kind: "bezier"; id: string; index: number; startSnapshot: string }
   | { kind: "end"; startSnapshot: string };
 
 // Storage keys, above the two definitions that take them: both are read at
@@ -1881,9 +1905,14 @@ export function StarlineGame() {
         // step by hand (which F-05 noted had already drifted to Math.sin). Drawn
         // both ways from the origin: behind it is where the thing came from.
         context.save(); context.translate(-cameraX, 0); context.strokeStyle = "rgba(100,227,255,.45)"; context.lineWidth = 2; context.setLineDash([5, 7]); context.beginPath();
-        const horizon = 260 / Math.max(1, selected.movement.speed);
+        const speed = Math.max(1, selected.movement.speed);
+        const bezier = selected.movement.pattern === "bezier";
+        // A bezier is drawn whole plus a little of the straight flight after
+        // it; every other path shows a fixed stretch either side of the object.
+        const ahead = (bezier ? movementPathLength(selected.movement) + 160 : 260) / speed;
+        const behind = (bezier ? 60 : 260) / speed;
         for (let i = -40; i <= 40; i += 1) {
-          const spot = movementPosition(selected.movement, selected.x, selected.y, (i / 40) * horizon, { holds: selected.type === "terrain" });
+          const spot = movementPosition(selected.movement, selected.x, selected.y, (i / 40) * (i < 0 ? behind : ahead), { holds: selected.type === "terrain" });
           if (i === -40) context.moveTo(spot.x, spot.y); else context.lineTo(spot.x, spot.y);
         }
         context.stroke(); context.restore();
@@ -1898,6 +1927,22 @@ export function StarlineGame() {
         context.fillStyle = "#09131b"; context.strokeStyle = "#eaff62"; context.lineWidth = 3; context.beginPath(); context.arc(centerX, top - 34, 9, 0, Math.PI * 2); context.fill(); context.stroke();
         context.fillStyle = "#eaff62"; context.strokeStyle = "#09131b"; context.lineWidth = 2; context.fillRect(right - 9, bottom - 9, 18, 18); context.strokeRect(right - 9, bottom - 9, 18, 18);
         context.fillStyle = "#eaff62"; context.font = "bold 10px monospace"; label(selectedItems.length > 1 ? `${selectedItems.length} SELECTED` : "ROTATE / SCALE", left, Math.max(14, top - 13)); context.restore();
+      }
+      // A bezier's control points ARE its shape, so a selected one shows them:
+      // the polygon from the object through P1 and P2 to P3, and a handle on
+      // each -- in the preview's cyan, so they read as the path's own and not
+      // as the yellow rotate/scale pair. Drawn in world space inside the
+      // vertical view, so they turn with the sector like everything else.
+      if (selected && selected.movement.pattern === "bezier") {
+        const handles = bezierControlWorld(selected).map((point) => ({ x: point.x - cameraX, y: point.y }));
+        context.save(); context.shadowBlur = 0; context.lineWidth = 1.5; context.strokeStyle = "rgba(100,227,255,.55)"; context.setLineDash([3, 4]);
+        context.beginPath(); context.moveTo(selected.x - cameraX, selected.y); handles.forEach((point) => context.lineTo(point.x, point.y)); context.stroke(); context.setLineDash([]);
+        handles.forEach((point, index) => {
+          context.fillStyle = index === 2 ? "#64e3ff" : "#09131b"; context.strokeStyle = "#64e3ff"; context.lineWidth = 2;
+          context.beginPath(); context.arc(point.x, point.y, 7, 0, Math.PI * 2); context.fill(); context.stroke();
+        });
+        context.fillStyle = "#64e3ff"; context.font = "bold 9px monospace"; label("DRAG TO SHAPE", handles[2].x + 12, handles[2].y + 4);
+        context.restore();
       }
       const endX = current.length - cameraX;
       if (endX >= -24 && endX <= VIEW_W + 24) {
@@ -2175,6 +2220,13 @@ export function StarlineGame() {
     if (Math.abs(world.x - levelRef.current.length) <= 18) { dragRef.current = { kind: "end", startSnapshot: JSON.stringify(levelRef.current) }; return; }
     if (currentTool === "scroll") { dragRef.current = { kind: "scroll", startX: screen.x, startCamera: editorCameraRef.current }; return; }
     if (currentTool === "select" && editorFor().selection.ids.length) {
+      // A bezier's handles are tested first: they sit inside the selection
+      // box, where the rotate and scale grips would otherwise claim the click.
+      const primary = levelRef.current.items.find((item) => item.id === editorFor().selection.primary);
+      if (primary && primary.movement.pattern === "bezier") {
+        const index = bezierControlWorld(primary).findIndex((point) => Math.hypot(world.x - point.x, world.y - point.y) <= 12);
+        if (index >= 0) { dragRef.current = { kind: "bezier", id: primary.id, index, startSnapshot: JSON.stringify(levelRef.current) }; return; }
+      }
       const selectedItems = levelRef.current.items.filter((item) => editorFor().selection.ids.includes(item.id)); const geometry = selectionGeometry(selectedItems);
       if (geometry) {
         const origins = selectedItems.map((item) => ({ id: item.id, x: item.x, y: item.y, rotation: item.rotation, scale: item.scale }));
@@ -2236,6 +2288,16 @@ export function StarlineGame() {
     } else if (drag.kind === "items") {
       const world = { x: screen.x + editorCameraRef.current, y: screen.y }; const dx = world.x - drag.startWorld.x; const dy = world.y - drag.startWorld.y;
       updateLevel((current) => ({ ...current, items: current.items.map((item) => { const origin = drag.origins.find((entry) => entry.id === item.id); return origin ? { ...item, x: Math.round(clamp(origin.x + dx, 0, current.length)), y: Math.round(clamp(origin.y + dy, 30, VIEW_H - 30)) } : item; }) }), false);
+    } else if (drag.kind === "bezier") {
+      // The handle follows the pointer; the point stored is that position
+      // brought back into the path's own frame, so it stays put when PATH
+      // ANGLE is changed afterwards.
+      const world = { x: screen.x + editorCameraRef.current, y: screen.y };
+      updateLevel((current) => ({ ...current, items: current.items.map((item) => {
+        if (item.id !== drag.id) return item;
+        const local = bezierControlLocal(item, world);
+        return { ...item, movement: { ...item.movement, points: (item.movement.points ?? defaultBezierPoints()).map((point, index) => (index === drag.index ? local : point)) as LevelItem["movement"]["points"] } };
+      }) }), false);
     } else if (drag.kind === "transform") {
       const world = { x: screen.x + editorCameraRef.current, y: screen.y }; const angle = Math.atan2(world.y - drag.center.y, world.x - drag.center.x); let angleDelta = (angle - drag.startAngle) * 180 / Math.PI;
       if (event.shiftKey) angleDelta = Math.round(angleDelta / 15) * 15;
@@ -2663,7 +2725,7 @@ export function StarlineGame() {
             </>)}
 
             {section("movement", selected.type === "decoration" ? "DECORATION MOTION" : "MOVEMENT", <>
-              <label className="field wide"><span>MOVEMENT</span><select value={selected.movement.pattern} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, movement: { ...item.movement, pattern: event.target.value as MovePattern } }))}><option value="straight">STRAIGHT</option><option value="sine">SINE WAVE</option><option value="zigzag">ZIGZAG</option><option value="arc">ARC</option><option value="stationary">STATIONARY</option></select></label>
+              <label className="field wide"><span>MOVEMENT</span><select value={selected.movement.pattern} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, movement: { ...item.movement, pattern: event.target.value as MovePattern } }))}><option value="straight">STRAIGHT</option><option value="sine">SINE WAVE</option><option value="zigzag">ZIGZAG</option><option value="arc">ARC</option><option value="bezier">BEZIER</option><option value="stationary">STATIONARY</option></select></label>
               <label className="range-field"><span><b>SPEED</b><em>{selected.movement.speed}u/s</em></span><input type="range" min="0" max="240" value={selected.movement.speed} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, movement: { ...item.movement, speed: Number(event.target.value) } }))} /></label>
               {/* Which way the whole path points. LEFT is the flight every level
                   already had; positive turns toward the top of the screen. The
@@ -2673,6 +2735,18 @@ export function StarlineGame() {
               {/* How fast an arc turns its heading. Radius is speed over this:
                   a slow, gentle curve or a tight dive are both here. */}
               {selected.movement.pattern === "arc" && <label className="range-field"><span><b>CURVE</b><em>{describeAngle(selected.movement.curve ?? 0, "/s")}</em></span><input type="range" min="-180" max="180" step="5" value={selected.movement.curve ?? 0} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, movement: { ...item.movement, curve: Number(event.target.value) } }))} /></label>}
+              {/* The curve's three points as numbers, for exactness; the cyan
+                  handles on the playfield are the way to shape it by eye. Offsets
+                  from the object in the path's own frame, before PATH ANGLE. */}
+              {selected.movement.pattern === "bezier" && <>
+                {(selected.movement.points ?? defaultBezierPoints()).map((point, index) => <label className="field wide" key={index}><span>{index === 2 ? "END POINT" : `CONTROL POINT ${index + 1}`}</span>
+                  <span className="bezier-xy">
+                    <input type="number" step="10" value={Math.round(point.x)} aria-label={`${index === 2 ? "End point" : `Control point ${index + 1}`} X`} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, movement: { ...item.movement, points: (item.movement.points ?? defaultBezierPoints()).map((entry, i) => (i === index ? { ...entry, x: Number(event.target.value) } : entry)) as LevelItem["movement"]["points"] } }))} />
+                    <input type="number" step="10" value={Math.round(point.y)} aria-label={`${index === 2 ? "End point" : `Control point ${index + 1}`} Y`} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, movement: { ...item.movement, points: (item.movement.points ?? defaultBezierPoints()).map((entry, i) => (i === index ? { ...entry, y: Number(event.target.value) } : entry)) as LevelItem["movement"]["points"] } }))} />
+                  </span>
+                </label>)}
+                <p className="inspector-note">Drag the cyan handles on the playfield to shape the curve. Past the end point it flies straight on.</p>
+              </>}
               {(selected.movement.pattern === "sine" || selected.movement.pattern === "zigzag") && <><label className="range-field"><span><b>AMPLITUDE</b><em>{selected.movement.amplitude}u</em></span><input type="range" min="10" max="200" value={selected.movement.amplitude} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, movement: { ...item.movement, amplitude: Number(event.target.value) } }))} /></label><label className="range-field"><span><b>FREQUENCY</b><em>{selected.movement.frequency.toFixed(2)}Hz</em></span><input type="range" min="0.1" max="1.5" step="0.05" value={selected.movement.frequency} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, movement: { ...item.movement, frequency: Number(event.target.value) } }))} /></label></>}
             </>)}
 
