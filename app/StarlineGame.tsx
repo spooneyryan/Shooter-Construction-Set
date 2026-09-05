@@ -2509,7 +2509,6 @@ export function StarlineGame() {
               ))}
             </span>
           )}
-          <button className="fullscreen-button burst-button" type="button" onClick={() => setDesigningBursts(true)}><b>✳</b> EXPLOSIONS</button>
           <button className="fullscreen-button settings-button" type="button" onClick={() => setShowSettings(true)}><b>⚙</b> SETTINGS</button>
           {mode === "build" ? <>
             <button className="fullscreen-button present-button" type="button" onClick={() => enterPlay(true)}><b>▣</b> PRESENT</button>
@@ -2580,7 +2579,9 @@ export function StarlineGame() {
               {componentSections(shelf, "COMP", componentCategories)}
               {!shelf.some((component) => componentCategories.includes(componentCategory(component))) && <p className="palette-empty">Nothing here yet. Select an Object and choose SAVE AS COMPONENT to keep it.</p>}
             </> : <>
-              <div className="asset-actions"><button type="button" onClick={() => setEditingAsset({ id: uid(), name: "New Pixel Art", kind: "raster", width: 16, height: 16, pixels: Array(256).fill("") })}>+ PIXEL ART</button><button type="button" onClick={() => setEditingAsset({ id: uid(), name: "New Vector", kind: "vector", width: 256, height: 256, shapes: [] })}>+ VECTOR SPRITE</button>{/* An image asset is defined by carrying real bytes, so a blank one is a
+              <div className="asset-actions">{/* The level's default explosions by role -- spark, impact, blast -- as
+                  distinct from + EXPLOSION, which authors one saved explosion. Here rather than
+                  in the top bar, with the other editors. */}<button type="button" onClick={() => setDesigningBursts(true)}>✳ DEFAULT EXPLOSIONS</button><button type="button" onClick={() => setEditingAsset({ id: uid(), name: "New Pixel Art", kind: "raster", width: 16, height: 16, pixels: Array(256).fill("") })}>+ PIXEL ART</button><button type="button" onClick={() => setEditingAsset({ id: uid(), name: "New Vector", kind: "vector", width: 256, height: 256, shapes: [] })}>+ VECTOR SPRITE</button>{/* An image asset is defined by carrying real bytes, so a blank one is a
                   real transparent PNG rather than an empty string -- which is what
                   blankImageAsset exists for, and what normalizeAssets would drop. */}<button type="button" onClick={() => setEditingAsset(blankImageAsset(uid(), "New Image", 256, 256))}>+ IMAGE</button><button type="button" onClick={() => setEditingExplosion({ id: `component-${uid()}`, name: "New Explosion", burst: { ...createBurstPreset("Blast"), name: "New Explosion" } })}>+ EXPLOSION</button><button type="button" onClick={() => setEditingSound({ id: `component-${uid()}`, sound: { ...createSfxPreset("Explosion"), name: "New Sound" } })}>+ SOUND</button></div>
               {level.assets.length > 0 && section("SPRITES", "SPRITES", <div className="palette-category-items">{level.assets.map((asset) => <div className="component-card-row" key={asset.id}><button className="palette-card" type="button" onClick={() => setEditingAsset(structuredClone(asset))}><SpriteAssetPreview asset={asset} /><span><strong>{asset.name}</strong><small>{asset.kind.toUpperCase()} / {asset.width}×{asset.height}</small></span><b>EDIT</b></button><button className="component-delete" type="button" onClick={() => deleteSpriteAsset(asset.id)} title="Delete sprite">×</button></div>)}</div>, "palette")}
@@ -2726,7 +2727,7 @@ export function StarlineGame() {
 
             {section("movement", selected.type === "decoration" ? "DECORATION MOTION" : "MOVEMENT", <>
               <label className="field wide"><span>MOVEMENT</span><select value={selected.movement.pattern} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, movement: { ...item.movement, pattern: event.target.value as MovePattern } }))}><option value="straight">STRAIGHT</option><option value="sine">SINE WAVE</option><option value="zigzag">ZIGZAG</option><option value="arc">ARC</option><option value="bezier">BEZIER</option><option value="stationary">STATIONARY</option></select></label>
-              <label className="range-field"><span><b>SPEED</b><em>{selected.movement.speed}u/s</em></span><input type="range" min="0" max="240" value={selected.movement.speed} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, movement: { ...item.movement, speed: Number(event.target.value) } }))} /></label>
+              <label className="range-field"><span><b>SPEED</b><em>{selected.movement.speed}u/s</em></span><input type="range" min="0" max="720" step="5" value={selected.movement.speed} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, movement: { ...item.movement, speed: Number(event.target.value) } }))} /></label>
               {/* Which way the whole path points. LEFT is the flight every level
                   already had; positive turns toward the top of the screen. The
                   dashed preview redraws as this moves, from the world's own path
