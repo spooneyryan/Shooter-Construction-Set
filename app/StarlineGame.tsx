@@ -2131,6 +2131,17 @@ export function StarlineGame() {
       // subtracts a camera everywhere, so the arena subtracts zero.
       const renderCam = playMode === "arena" ? 0 : runtime.camera;
       const verticalPlay = playMode === "vertical";
+      // Nothing outside the sector is shown while playing. An enemy wakes 260
+      // units off the right edge, and on a stage wider than the sector it was
+      // drawn into the letterbox before it had crossed onto the backdrop -- the
+      // player saw it coming. The clip is set once, under the base transform,
+      // and holds through the vertical quarter turn below, so a vertical sector
+      // shows only its band. The editor never clips: the off-stage room exists
+      // to be seen there, and to be invisible here.
+      context.save();
+      context.beginPath();
+      if (verticalPlay) context.rect((VIEW_W - VIEW_H) / 2, 0, VIEW_H, VIEW_H); else context.rect(0, 0, VIEW_W, VIEW_H);
+      context.clip();
       drawBackground(renderCam, modeRef.current === "playing", dt);
       // Vertical is drawn through a quarter turn: the whole scene renders in
       // (along, across) exactly as the scroll modes do, and this transform is
@@ -2199,6 +2210,10 @@ export function StarlineGame() {
         context.beginPath(); context.moveTo(rail + .5, 0); context.lineTo(rail + .5, VIEW_H); context.stroke();
         context.beginPath(); context.moveTo(VIEW_W - rail - .5, 0); context.lineTo(VIEW_W - rail - .5, VIEW_H); context.stroke();
       }
+      // The sector clip ends here: the readouts below are chrome, drawn in the
+      // window's own frame, and a vertical sector keeps its weapon line in the
+      // margin beside the band.
+      context.restore();
       const settings = world.effectivePlayer();
       context.font = "10px monospace"; context.textAlign = "right"; context.fillStyle = "rgba(234,247,251,.62)";
       const activeWeapons = settings.weaponSlots.map((slot) => levelRef.current.components.find((component) => component.id === (runtime.slotWeapons[slot.id] ?? slot.weaponId))?.name ?? "EMPTY").join(" + ");
