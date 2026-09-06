@@ -681,3 +681,25 @@ like the classic grid-track-will-not-shrink problem, and the first fix was
 that. Measuring the boxes showed each was 220px wide inside a 111px cell:
 ElectricBlazor's numeric input carries its own minimum. The grid rule was
 kept because it is true; the component override is what fixed it.
+
+## 2026-09-06 (night) — A pointer you can see through
+
+Three of Ryan's: two fields that did not fit, a sprite for a pointer, and the
+GameBase site redeployed. C-45, and a note on C-44.
+
+**Measure before re-fixing.** The two fields in the screenshot had already
+been fixed by the previous slice's override; the picture was of the old
+bundle. Placing a powerup and measuring its four boxes settled it in a
+minute, where a second CSS rule for the same cause would have been noise.
+
+**Draw the pointer rather than declaring it.** The obvious reading of "make
+the pointer the sprite" is a CSS cursor, and it is the wrong tool: capped in
+size, static, untinted, and blind to a formation. The stage already knew
+where the pointer was for clicks and already drew every sprite each frame;
+one ref and one draw call made the ghost, and `cursor: none` made it the
+pointer. The rule kept from this: when the canvas already has a frame loop,
+prefer drawing into it over asking the browser to decorate it.
+
+**Check what already works before adding to it.** Escape-to-select existed.
+Testing it from the palette button that had focus, rather than assuming the
+keymap swallowed it, is what made the entry a note rather than a change.

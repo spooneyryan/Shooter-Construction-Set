@@ -1076,3 +1076,29 @@ Also in C-42, found by its test: a ship now knows its velocity on the frame it
 spawns in the scroll modes, read from the closed-form path's own first step,
 so one that fires the instant it appears fires where its nose points rather
 than dead level for one frame.
+
+## C-45 — The sprite is the pointer while you place it
+
+Ryan: in sprite placing mode, make the pointer the actual sprite image at 60%
+opacity; Escape ends the mode and returns to the select pointer.
+
+**The ghost is drawn by the frame loop, not set as a cursor image.** A CSS
+cursor is a static bitmap capped at 128px with no tint, rotation or group
+formation, and it cannot spin. Instead the stage remembers where the pointer
+last was in stage units — the same `canvasPoint` the click uses, so vertical
+mode and zoom come for free — and, while a palette or component tool is
+active, draws that tool's item there at 60% through the same `drawSprite` as
+everything placed, formation offsets and spin included. The native arrow is
+hidden over the stage meanwhile (`.stage-canvas-wrap.placing`), so the ghost
+is the pointer rather than a thing beside it. A palette item is built once per
+tool; a saved component's object is looked up each frame, so editing the
+component changes what you are about to place.
+
+**Escape already did the second half.** The build-mode binding switches any
+non-select tool to SELECT and flashes so; verified from a focused palette
+button, which the keymap does not treat as text entry. Nothing to add but the
+ghost leaving with it, which it does because the frame loop reads the tool.
+
+**SHOT SPEED and SHOT POWER** under TIMED POWERUP were the same 220px numeric
+input as POSITION X and Y; C-44's override already covers them, and all four
+boxes measure inside their columns. Ryan's screenshot predates that deploy.

@@ -1066,6 +1066,14 @@ export function StarlineGame() {
   const satellitePointerRef = useRef({ x: VIEW_W * .7, y: VIEW_H / 2, active: false });
   const mouseFireRef = useRef(false);
   const dragRef = useRef<CanvasDrag | null>(null);
+  /**
+   * Where the pointer last was over the stage in build mode, in stage units,
+   * or null once it has left. The frame loop reads it to draw the sprite a
+   * placement tool would put down, riding under the pointer.
+   */
+  const hoverRef = useRef<{ x: number; y: number } | null>(null);
+  /** That sprite, for a palette tool: built once per tool rather than once per frame. */
+  const ghostRef = useRef<{ tool: Tool; item: LevelItem | null }>({ tool: "select", item: null });
   const miniDragRef = useRef<{ offset: number } | null>(null);
   const starsRef = useRef<Star[]>([]);
   // Explosions are the renderer's, not the world's. The world asks for one at a
@@ -2181,6 +2189,25 @@ export function StarlineGame() {
       }
       current.items.filter((item) => item.type !== "decoration").forEach(drawPlacedItem);
       current.items.filter((item) => item.type === "decoration" && item.decoration?.layer === "foreground").forEach(drawPlacedItem);
+      // The sprite being placed rides under the pointer at 60%: what the click
+      // will put down is the pointer, and the native arrow is hidden meanwhile.
+      // A saved component's object is looked up each frame, so editing the
+      // component changes the ghost; a palette item is built once per tool.
+      const hover = hoverRef.current; const placingTool = toolRef.current;
+      if (hover && placingTool !== "select" && placingTool !== "scroll" && placingTool !== "erase") {
+        let ghost: LevelItem | null;
+        if (placingTool.startsWith("component:")) ghost = current.components.find((entry) => entry.id === placingTool.slice("component:".length))?.object ?? null;
+        else {
+          if (ghostRef.current.tool !== placingTool) ghostRef.current = { tool: placingTool, item: makeItem(placingTool as PaletteKey, 0, 0, () => "ghost") };
+          ghost = ghostRef.current.item;
+        }
+        if (ghost) {
+          const shape = ghost;
+          groupOffsets(shape.group, shape.rotation, shape.scale).forEach((offset) => {
+            drawSprite(context, shape.sprite, hover.x + offset.x, hover.y + offset.y, shape.size, false, .6, shape.rotation + previewSpin(shape), shape.scale, shape.type === "enemy" || shape.type === "group", current.assets, shape.tint, { glow: shape.glow, depth: shape.depth });
+          });
+        }
+      }
       const selectedItems = current.items.filter((item) => editorFor().selection.ids.includes(item.id)); const geometry = selectionGeometry(selectedItems);
       if (geometry) {
         const left = geometry.left - cameraX; const right = geometry.right - cameraX; const top = geometry.top; const bottom = geometry.bottom; const centerX = geometry.center.x - cameraX;
@@ -2579,6 +2606,7 @@ export function StarlineGame() {
   const onCanvasMove = (event: React.PointerEvent<HTMLCanvasElement>) => {
     const screen = canvasPoint(event);
     if (modeRef.current !== "build") { satellitePointerRef.current = { x: screen.x, y: screen.y, active: true }; return; }
+    hoverRef.current = screen;
     if (!event.currentTarget.hasPointerCapture(event.pointerId) || !dragRef.current) return;
     const drag = dragRef.current;
     if (drag.kind === "scroll") {
@@ -2927,13 +2955,16 @@ export function StarlineGame() {
               <button type="button" onClick={() => { panRef.current = 0; setZoom(1); }} title="Back to the fit">FIT</button>
             </div>
           </div>
-          <div className="stage-canvas-wrap">
+          {/* While a placement tool is active the sprite under the pointer IS the
+              pointer, so the native arrow is hidden (.placing). */}
+          <div className={`stage-canvas-wrap${tool !== "select" && tool !== "scroll" && tool !== "erase" ? " placing" : ""}`}>
             <canvas
               ref={mainCanvasRef}
               onPointerDown={onCanvasDown}
               onPointerMove={onCanvasMove}
               onPointerUp={finishCanvasDrag}
               onPointerCancel={finishCanvasDrag}
+              onPointerLeave={() => { hoverRef.current = null; }}
               onContextMenu={(event) => event.preventDefault()}
               aria-label={mode === "build" ? "Scrollable level editing playfield" : "Playable Starline level"}
             />
