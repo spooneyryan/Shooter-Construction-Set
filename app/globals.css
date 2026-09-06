@@ -300,7 +300,9 @@ button { cursor: pointer; }
 /* EbNumericInput in the Inspector's grid cells wears only its text half — the
    commit-on-Enter box is the point; a slider for a 9000-unit position is not.
    The .field input rule above dresses the box itself. */
-.field .eb-numeric-input { display: flex; flex-direction: column; gap: 5px; }
+/* The component pins itself to a 220px minimum, wider than half an Inspector,
+   so POSITION Y ran off the edge; the field's column decides its width here. */
+.field .eb-numeric-input { display: flex; flex-direction: column; gap: 5px; min-width: 0; width: 100%; }
 .field .eb-numeric-input-label { color: #607985; font-family: var(--font-mono); font-size: 9px; font-weight: 500; letter-spacing: .09em; }
 .field .eb-numeric-input-row { display: block; }
 .field .eb-numeric-input-slider-wrap { display: none; }
