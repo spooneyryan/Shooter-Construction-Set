@@ -643,3 +643,41 @@ peers, and a nebula is not a peer of a ship — it is scenery, with a hit radius
 the size of the scenery. Two passes keep the old rule inside each kind and add
 the one judgement the editor was missing: what the player can touch comes
 before what dresses the scene.
+
+## 2026-09-06 (evening) — The engine learns what the renderer draws
+
+Six of Ryan's in one message. C-42 to C-44.
+
+**A rule that lived only in the renderer had to move down.** The heading lean
+was presentation — the picture turned, the simulation did not care. Then guns
+got mounts, and mounts turned with the picture, and now shots had to leave
+along the front the picture showed. At that point "which way is the ship
+facing" stopped being a drawing question, and the answer had to be computed
+where the shots are: in the world, with the deterministic trig, from the same
+three numbers. The renderer's formula was copied down rather than the other
+way round, and the two agree by construction because they add the same things.
+
+**Bit-for-bit is a boolean check away.** `(-1, 0)` and `(cos 180°, sin 180°)`
+are not the same number, and every saved level's fire would have shifted by
+the difference. Checking the offset for zero before touching trigonometry
+keeps the old literal for the old case; the test asserts `vx` is exactly
+`-300`, not close to it.
+
+**Say the consequence.** A rotated turret used to fire left regardless. It
+now fires where it points, which is what the rule says and what a level
+built on the old accident will notice. Written into the entry rather than
+left to be discovered.
+
+**The first test failure was the spawn frame, not the aim.** The climber
+fired on the frame it appeared, before any velocity had been recorded, so
+its lean was zero and its shot flew left. The velocity had been left at zero
+on that frame because the jump from the origin to the phase-folded first
+position is not motion -- true, but the scroll paths are closed form, so
+the path's own first step is knowable. Reading it from there fixed the stray
+shot and the one-frame level-then-snap the renderer had always shown.
+
+**Measure before blaming the grid.** The overlapping POSITION boxes looked
+like the classic grid-track-will-not-shrink problem, and the first fix was
+that. Measuring the boxes showed each was 220px wide inside a 111px cell:
+ElectricBlazor's numeric input carries its own minimum. The grid rule was
+kept because it is true; the component override is what fixed it.

@@ -1020,3 +1020,59 @@ the player interacts with first, then decorations. Within a pass the
 later-placed item still wins, as it always did, so nothing else about picking
 changed. Draw order is untouched: a decoration on the foreground layer still
 draws in front by design; it just no longer steals the click.
+
+## C-42 — Shots come out of the front, wherever it points
+
+Ryan: a ship that follows its path should shoot straight out of its front,
+wherever that is pointing.
+
+**The engine now knows the facing the renderer draws.** The sprite's picture is
+turned by three numbers — the authored rotation, the spin so far, and the lean
+toward its heading — and `facingOffset` adds them the same way the renderer
+does, with core's deterministic `atan2` in place of `Math`'s for the lean.
+Basic fire flies along that front; a bullet pattern is handed it as its
+rotation; and the muzzle mount turns with it, so the sight and the shot agree.
+Enemy art rests facing left, so the front is 180° plus the offset.
+
+**Zero is checked before any trigonometry runs.** A level that authored none of
+the three fires the literal `(-1, 0)` it always did, bit for bit; the test
+holds a leaning climber against a level-flying twin and reads the climber's
+shots going up the screen while the twin's `vx` is exactly `-300`.
+
+**One consequence, stated:** a sprite rotated under TRANSFORM now fires where
+it points too. It used to fire left regardless, which was the rule's absence
+rather than a rule; "straight out of the front" is the rule now, and a level
+that leaned on the old behaviour for a rotated turret will see its shots turn
+with it. In `@ccllc/arcade` 2.0.24.
+
+## C-43 — Indestructible
+
+A checkbox under DURABILITY. A shot still hits and sparks and is spent — the
+wall is solid — but no shield is touched, no hull, no score, and the object is
+never destroyed. HIT POINTS hides while it is on, since there is nothing for
+them to mean. Only ever `true` or absent, so a level that never set it saves as
+it did; the test fires at a wall and a rock side by side and reads the wall's
+hit points unchanged while the rock's fall.
+
+## C-44 — Inspector and palette polish
+
+Four small ones from the same message.
+
+- **Component cards show the object's real sprite.** An icon looked up by name
+  had nothing to show for an imported image, which is exactly when a picture
+  matters most. The card now draws the object — built-in or asset, with its
+  tint, glow and rotation — through the same `drawSprite` the stage uses.
+- **POSITION X and Y fit their columns.** ElectricBlazor's numeric input pins
+  itself to a 220px minimum, wider than half an Inspector, so the Y box ran off
+  the edge and under its neighbour. Inside a field the column decides the
+  width now: `min-width: 0` and `width: 100%` on the component, and
+  `min-width: 0` on the grid cell so it may shrink to its track.
+- **Movement's ROTATION steps by 5°/s**, not 15.
+- **No glow by default.** The renderer used to give every sprite a halo of its
+  own choosing; now a sprite has none unless CUSTOM GLOW adds one, and the
+  Inspector's note says so. Selection keeps its ring.
+
+Also in C-42, found by its test: a ship now knows its velocity on the frame it
+spawns in the scroll modes, read from the closed-form path's own first step,
+so one that fires the instant it appears fires where its nose points rather
+than dead level for one frame.
