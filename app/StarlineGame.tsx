@@ -341,7 +341,7 @@ function GlowField({ glow, onChange }: { glow?: SpriteGlow; onChange: (next: Spr
         <label className="range-field"><span><b>GLOW STRENGTH</b><em>{live.blur === 0 ? "OFF" : live.blur + "px"}</em></span>
           <input type="range" min="0" max="60" step="1" value={live.blur} onChange={(event) => onChange({ ...live, blur: Number(event.target.value) })} /></label>
       </>}
-      <p className="inspector-note">{glow === undefined ? "Using this renderer's default halo for the sprite." : "Zero strength draws no halo at all."}</p>
+      <p className="inspector-note">{glow === undefined ? "No halo unless you add one." : "Zero strength draws no halo at all."}</p>
     </>
   );
 }
@@ -793,12 +793,13 @@ function paintSprite(context: CanvasRenderingContext2D, sprite: string, size: nu
   if (depth?.blur) filters.push(`blur(${depth.blur}px)`);
   if (filters.length) context.filter = filters.join(" ");
   const isPickup = sprite === "energy" || sprite === "upgrade";
-  // An authored halo wins; without one these are the defaults this renderer
-  // has always used, which is what keeps every level saved before the field
-  // existed looking untouched. Selection still overrides the blur, because a
-  // selected object has to read as selected whatever it was authored with.
+  // No halo unless one was authored. The renderer used to give every sprite a
+  // default glow of its own choosing; Ryan asked for objects to have none at
+  // all by default, so the colour below is only ever used by a selection ring
+  // or by an authored halo. Selection still gets its blur, because a selected
+  // object has to read as selected whatever it was authored with.
   context.shadowColor = glow ? glow.color : sprite === "asteroid" ? "#87939c" : isPickup ? "#eaff62" : "#ff6a4d";
-  context.shadowBlur = selected ? 24 : glow ? glow.blur : 11;
+  context.shadowBlur = selected ? 24 : glow ? glow.blur : 0;
   context.lineWidth = selected ? 3 : 2;
   context.strokeStyle = selected ? "#eaff62" : sprite === "asteroid" ? "#8ca0a8" : isPickup ? "#eaff62" : "#ff947f";
   context.fillStyle = sprite === "asteroid" ? "#29343a" : "rgba(71, 24, 51, .92)";
@@ -1001,6 +1002,24 @@ function drawShip(context: CanvasRenderingContext2D, x: number, y: number, now: 
   context.closePath(); context.fill();
   context.shadowBlur = 0; context.fillStyle = "#163249"; context.beginPath(); context.moveTo(14, 0); context.lineTo(-8, -9); context.lineTo(-1, 0); context.lineTo(-8, 9); context.closePath(); context.fill();
   context.fillStyle = "#eaff62"; context.fillRect(3, -2, 11, 4); context.restore();
+}
+
+/**
+ * A component card's picture: the object's actual sprite -- built-in or asset,
+ * with its tint, glow and rotation -- drawn small through the same routine the
+ * stage uses, rather than a stand-in icon looked up by name. An icon by name
+ * had nothing to show for an imported image, which is when a picture matters
+ * most.
+ */
+function ObjectThumb({ item, assets }: { item: LevelItem; assets: SpriteAsset[] }) {
+  const ref = useRef<HTMLCanvasElement>(null);
+  useEffect(() => {
+    const canvas = ref.current; const context = canvas?.getContext("2d"); if (!canvas || !context) return;
+    const dpr = Math.max(1, window.devicePixelRatio || 1); canvas.width = 34 * dpr; canvas.height = 34 * dpr;
+    context.setTransform(dpr, 0, 0, dpr, 0, 0); context.clearRect(0, 0, 34, 34);
+    drawSprite(context, item.sprite, 17, 17, 12, false, 1, item.rotation, 1, item.type === "enemy" || item.type === "group", assets, item.tint, { glow: item.glow, depth: item.depth });
+  }, [item, assets]);
+  return <canvas className="asset-preview" ref={ref} aria-hidden="true" />;
 }
 
 function SpriteAssetPreview({ asset }: { asset: SpriteAsset }) {
@@ -2790,7 +2809,7 @@ export function StarlineGame() {
   const componentSections = (entries: ComponentDefinition[], prefix: string, categories: string[]) => categories.map((category) => {
     const inCategory = entries.filter((component) => componentCategory(component) === category);
     if (!inCategory.length) return null;
-    return section(`${prefix}-${category}`, category, <div className="palette-category-items">{inCategory.map((component) => <div className="component-card-row" key={component.id}><button className={`palette-card ${tool === `component:${component.id}` ? "active" : ""}`} type="button" onClick={() => { if (component.object) { const value = `component:${component.id}` as Tool; setTool(value); toolRef.current = value; setInspectPlayer(false); } else applyEquipmentComponent(component); }}><span className={`sprite-icon ${component.object && !component.object.sprite.startsWith("asset:") ? component.object.sprite : component.kind === "weapon" ? "turret" : component.kind === "armor" ? "energy" : component.kind === "pattern" ? "blade" : "upgrade"}`} /><span><strong>{component.name}</strong><small>{component.object ? "PLACE COMPONENT" : component.kind === "weapon" ? `${component.weapon?.tag.toUpperCase()} WEAPON` : component.kind === "pattern" ? `${component.pattern?.spawns.length ?? 0} EMITTER PATTERN` : component.kind.toUpperCase()}</small></span><b>{component.object ? "+" : component.kind === "pattern" ? "EDIT / USE" : "USE"}</b></button>{component.id.startsWith("component-") ? <button className="component-delete" type="button" onClick={() => deleteComponent(component.id)} title="Delete Component">×</button> : <button className="component-save" type="button" onClick={() => saveAsComponent(component)} title="Save as Component">+</button>}</div>)}</div>, "palette");
+    return section(`${prefix}-${category}`, category, <div className="palette-category-items">{inCategory.map((component) => <div className="component-card-row" key={component.id}><button className={`palette-card ${tool === `component:${component.id}` ? "active" : ""}`} type="button" onClick={() => { if (component.object) { const value = `component:${component.id}` as Tool; setTool(value); toolRef.current = value; setInspectPlayer(false); } else applyEquipmentComponent(component); }}>{component.object ? <ObjectThumb item={component.object} assets={level.assets} /> : <span className={`sprite-icon ${component.kind === "weapon" ? "turret" : component.kind === "armor" ? "energy" : component.kind === "pattern" ? "blade" : "upgrade"}`} />}<span><strong>{component.name}</strong><small>{component.object ? "PLACE COMPONENT" : component.kind === "weapon" ? `${component.weapon?.tag.toUpperCase()} WEAPON` : component.kind === "pattern" ? `${component.pattern?.spawns.length ?? 0} EMITTER PATTERN` : component.kind.toUpperCase()}</small></span><b>{component.object ? "+" : component.kind === "pattern" ? "EDIT / USE" : "USE"}</b></button>{component.id.startsWith("component-") ? <button className="component-delete" type="button" onClick={() => deleteComponent(component.id)} title="Delete Component">×</button> : <button className="component-save" type="button" onClick={() => saveAsComponent(component)} title="Save as Component">+</button>}</div>)}</div>, "palette");
   });
 
   return (
@@ -3060,7 +3079,7 @@ export function StarlineGame() {
                   spinning mine. TRANSFORM's ROTATION is where the sprite starts;
                   this is how fast it keeps turning. Zero is stored as absent, so a
                   level that never touched it saves as it did. */}
-              <label className="range-field"><span><b>ROTATION</b><em>{selected.movement.spin ? `${selected.movement.spin}°/s` : "NONE"}</em></span><input type="range" min="-360" max="360" step="15" value={selected.movement.spin ?? 0} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, movement: { ...item.movement, spin: Number(event.target.value) === 0 ? undefined : Number(event.target.value) } }))} /></label>
+              <label className="range-field"><span><b>ROTATION</b><em>{selected.movement.spin ? `${selected.movement.spin}°/s` : "NONE"}</em></span><input type="range" min="-360" max="360" step="5" value={selected.movement.spin ?? 0} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, movement: { ...item.movement, spin: Number(event.target.value) === 0 ? undefined : Number(event.target.value) } }))} /></label>
               {/* The curve's three points as numbers, for exactness; the cyan
                   handles on the playfield are the way to shape it by eye. Offsets
                   from the object in the path's own frame, before PATH ANGLE. */}

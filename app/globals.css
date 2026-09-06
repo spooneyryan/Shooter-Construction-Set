@@ -292,6 +292,11 @@ button { cursor: pointer; }
 .field input:focus, .field select:focus { border-color: var(--cyan); }
 .field.wide { margin-bottom: 10px; }
 .field-grid { margin-bottom: 10px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+/* A grid track will not shrink below its content's intrinsic width, and a
+   number input's is wider than half an Inspector -- so POSITION Y ran off the
+   edge. min-width: 0 on the child and the box lets the columns win. */
+.field-grid > .field { min-width: 0; }
+.field input, .field select { min-width: 0; }
 /* EbNumericInput in the Inspector's grid cells wears only its text half — the
    commit-on-Enter box is the point; a slider for a 9000-unit position is not.
    The .field input rule above dresses the box itself. */
