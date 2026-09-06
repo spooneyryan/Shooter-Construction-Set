@@ -2106,6 +2106,13 @@ export function StarlineGame() {
         const to = movementPosition(item.movement, item.x, item.y, 1 / 120, { holds });
         return travelTilt((to.x - from.x) * 120, (to.y - from.y) * 120, follow);
       };
+      // A spinning sprite spins in the editor too, on the wall clock rather
+      // than on a level clock it does not have -- the point is to see that it
+      // turns and how fast, not where it will be at a given instant.
+      const previewSpin = (item: LevelItem) => {
+        const spin = item.movement.spin ?? 0;
+        return spin ? ((now / 1000) * spin) % 360 : 0;
+      };
       const drawPlacedItem = (item: LevelItem) => {
         const selectedItem = editorFor().selection.ids.includes(item.id);
         const offsets = groupOffsets(item.group, item.rotation, item.scale);
@@ -2113,7 +2120,7 @@ export function StarlineGame() {
           const screenX = item.x + offset.x - cameraX;
           if (screenX < -240 || screenX > VIEW_W + 240) return;
           const alpha = item.type === "decoration" ? item.decoration?.opacity ?? .5 : item.type === "group" ? .82 : 1;
-          drawSprite(context, item.sprite, screenX, item.y + offset.y, item.size, selectedItem && index === 0, alpha, item.rotation + previewTilt(item), item.scale, item.type === "enemy" || item.type === "group", current.assets, item.tint, { glow: item.glow, depth: item.depth });
+          drawSprite(context, item.sprite, screenX, item.y + offset.y, item.size, selectedItem && index === 0, alpha, item.rotation + previewSpin(item) + previewTilt(item), item.scale, item.type === "enemy" || item.type === "group", current.assets, item.tint, { glow: item.glow, depth: item.depth });
         });
         if (item.type === "group" && item.x - cameraX > -100 && item.x - cameraX < VIEW_W + 100) {
           context.fillStyle = "#eaff62"; context.font = "10px monospace"; label(`GROUP x${item.group?.count ?? 1}`, item.x - cameraX - 28, item.y - item.size * item.scale - 22);
@@ -2296,7 +2303,7 @@ export function StarlineGame() {
         const parallax = playMode !== "arena" && enemy.type === "decoration" ? enemy.decoration?.parallax ?? 1 : 1;
         const x = enemy.x - renderCam * parallax;
         if (x < -260 || x > VIEW_W + 260) return;
-        drawSprite(context, enemy.sprite, x, enemy.y, enemy.size, false, enemy.type === "decoration" ? enemy.decoration?.opacity ?? .5 : 1, enemy.rotation + travelTilt(enemy.vx, enemy.vy, enemy.heading?.follow ?? 0), enemy.scale, enemy.type === "enemy", levelRef.current.assets, enemy.tint, { glow: enemy.glow, depth: enemy.depth });
+        drawSprite(context, enemy.sprite, x, enemy.y, enemy.size, false, enemy.type === "decoration" ? enemy.decoration?.opacity ?? .5 : 1, enemy.rotation + (enemy.turned ?? 0) + travelTilt(enemy.vx, enemy.vy, enemy.heading?.follow ?? 0), enemy.scale, enemy.type === "enemy", levelRef.current.assets, enemy.tint, { glow: enemy.glow, depth: enemy.depth });
         if (enemy.shield > 0 && enemy.armor?.type === "forcefield") { context.strokeStyle = "rgba(100,227,255,.7)"; context.lineWidth = 2; context.beginPath(); context.arc(x, enemy.y, enemy.size * enemy.scale + 8, 0, Math.PI * 2); context.stroke(); }
       };
       runtime.enemies.filter((item) => item.type === "decoration" && item.decoration?.layer === "background").forEach(drawRuntimeItem);
@@ -3049,6 +3056,11 @@ export function StarlineGame() {
               {/* How fast an arc turns its heading. Radius is speed over this:
                   a slow, gentle curve or a tight dive are both here. */}
               {selected.movement.pattern === "arc" && <label className="range-field"><span><b>CURVE</b><em>{describeAngle(selected.movement.curve ?? 0, "/s")}</em></span><input type="range" min="-180" max="180" step="5" value={selected.movement.curve ?? 0} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, movement: { ...item.movement, curve: Number(event.target.value) } }))} /></label>}
+              {/* A turn while it flies, in degrees per second: a tumbling rock, a
+                  spinning mine. TRANSFORM's ROTATION is where the sprite starts;
+                  this is how fast it keeps turning. Zero is stored as absent, so a
+                  level that never touched it saves as it did. */}
+              <label className="range-field"><span><b>ROTATION</b><em>{selected.movement.spin ? `${selected.movement.spin}°/s` : "NONE"}</em></span><input type="range" min="-360" max="360" step="15" value={selected.movement.spin ?? 0} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, movement: { ...item.movement, spin: Number(event.target.value) === 0 ? undefined : Number(event.target.value) } }))} /></label>
               {/* The curve's three points as numbers, for exactness; the cyan
                   handles on the playfield are the way to shape it by eye. Offsets
                   from the object in the path's own frame, before PATH ANGLE. */}
