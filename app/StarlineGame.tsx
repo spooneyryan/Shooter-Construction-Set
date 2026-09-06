@@ -2470,15 +2470,25 @@ export function StarlineGame() {
     return dx * dx + dy * dy < radius * radius;
   };
 
+  /**
+   * What a click lands on. Two passes: everything the player interacts with
+   * first, then decorations -- so a nebula placed over a ship, with a hit
+   * radius as wide as it is, never takes the click meant for the ship. Within
+   * a pass the later-placed item still wins, as it always did.
+   */
   const findItem = (world: Point) => {
     const items = levelRef.current.items;
-    for (let i = items.length - 1; i >= 0; i -= 1) {
-      const item = items[i]; const radius = item.size * item.scale + 24;
-      const hit = groupOffsets(item.group, item.rotation, item.scale).some((offset) => {
-        const x = world.x - item.x - offset.x; const y = world.y - item.y - offset.y;
-        return x * x + y * y < radius ** 2;
-      });
-      if (hit) return item;
+    for (const decorations of [false, true]) {
+      for (let i = items.length - 1; i >= 0; i -= 1) {
+        const item = items[i];
+        if ((item.type === "decoration") !== decorations) continue;
+        const radius = item.size * item.scale + 24;
+        const hit = groupOffsets(item.group, item.rotation, item.scale).some((offset) => {
+          const x = world.x - item.x - offset.x; const y = world.y - item.y - offset.y;
+          return x * x + y * y < radius ** 2;
+        });
+        if (hit) return item;
+      }
     }
     return null;
   };

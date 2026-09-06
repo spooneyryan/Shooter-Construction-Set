@@ -988,3 +988,35 @@ small sight at each gun — one on an enemy, one per slot on the player —
 computed by the same rule the engine fires by, so the marker is where the shot
 will come from. MOUNT FORWARD and MOUNT ACROSS in the Inspector read NOSE and
 CENTRE until touched, and start from there. In `@ccllc/arcade` 2.0.22.
+
+## C-40 — Rotation under Movement
+
+Ryan asked for a Rotation in the movement parameters that turns an object as
+it moves — a tumbling asteroid, a spinning mine.
+
+**It is `movement.spin`, degrees per second, and it lives in the engine.** It
+could have been render-only, but a spinning turret's gun has to go round with
+it: C-39's mounts turn with the sprite's rotation, so the spin has to reach the
+muzzle too. The world keeps `turned = spin × age` on each runtime enemy — a
+closed form in age, like the position, so a rewind stays a subtraction — and
+both the renderer and `enemyMuzzle` add it to the authored rotation. Absent is
+0, the still sprite every level before this had; the test holds a spinning and
+a still enemy in the same world and reads 90° of turn against exactly none.
+
+**Two ROTATIONs, on purpose.** TRANSFORM's is where the sprite starts; this
+one, under MOVEMENT with its unit in °/s, is how fast it keeps turning. Zero is
+stored as absent. The editor spins the sprite on the wall clock so the slider
+can be seen working without a playtest — the point being that it turns and how
+fast, not where it will be at a given instant. In `@ccllc/arcade` 2.0.23.
+
+## C-41 — The ship under the nebula takes the click
+
+Ryan could not select a ship because a nebula lay over it.
+
+The hit-test walked every item from the last placed to the first, whatever its
+kind, and a decoration's hit radius is as wide as the decoration — a nebula at
+170 units swallows anything inside it. Selection is now two passes: everything
+the player interacts with first, then decorations. Within a pass the
+later-placed item still wins, as it always did, so nothing else about picking
+changed. Draw order is untouched: a decoration on the foreground layer still
+draws in front by design; it just no longer steals the click.

@@ -624,3 +624,22 @@ exactly that hair. So the absent case keeps the verbatim expressions, the
 mounted case is new code, and the test runs both in the same world and asserts
 only the difference between them — which is the one thing the change is
 allowed to be.
+
+## 2026-09-06 (later) — Two passes, and a spin that had to reach the gun
+
+Ryan asked for a rotation-as-it-moves and reported that a nebula was taking
+the click meant for the ship under it. C-40 and C-41.
+
+**Find where a presentation field stops being presentation.** Spin looked like
+a renderer-only number until the mounts from an hour earlier made it not one:
+a gun mounted on a rotating sprite fires from where the sprite is *now*, so
+the simulation has to know the angle. One field on the runtime enemy, closed
+form in age, and both the picture and the muzzle read it. The habit worth
+keeping is to ask what already depends on the thing being changed before
+deciding which side of the engine line it lives on.
+
+**Selection was correct and wrong.** Last-placed-wins is the right rule among
+peers, and a nebula is not a peer of a ship — it is scenery, with a hit radius
+the size of the scenery. Two passes keep the old rule inside each kind and add
+the one judgement the editor was missing: what the player can touch comes
+before what dresses the scene.
