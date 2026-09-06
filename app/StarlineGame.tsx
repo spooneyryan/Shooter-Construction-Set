@@ -41,6 +41,7 @@ import {
   type ItemEffects,
   type ShmupEvent,
   type SpriteDepth,
+  type WeaponSlot,
   type SpriteGlow,
   type DecorationLayer,
   type GroupPattern,
@@ -438,6 +439,26 @@ function describeSaveFailure() {
     if (!quota) return "SAVE FAILED — THIS BROWSER BLOCKED LOCAL SAVES";
   }
   return `SAVE FAILED — LOCAL STORAGE IS FULL (${(localStorageBytes() / 1048576).toFixed(1)} MB IN USE). DELETE A SAVED LEVEL, OR SHRINK ITS IMAGE SPRITES`;
+}
+
+/**
+ * Where an enemy's gun sits in the world: the engine's own rule, so the marker
+ * the editor draws is exactly where the shot will come from. No mount is the
+ * sprite's leading edge; a mount is forward-and-across in the ship's frame,
+ * turned by its rotation. Math.cos is fine here -- this is the editor's picture.
+ */
+function enemyMuzzleWorld(item: LevelItem): Point {
+  const mount = item.weapon.mount;
+  if (!mount) return { x: item.x - item.size * item.scale, y: item.y };
+  const turn = item.rotation * Math.PI / 180;
+  const ox = -mount.x;
+  const oy = mount.y;
+  return { x: item.x + ox * Math.cos(turn) - oy * Math.sin(turn), y: item.y + ox * Math.sin(turn) + oy * Math.cos(turn) };
+}
+
+/** Where a player slot's gun sits, relative to the ship: the nose, fanned nine units apart, unless mounted. */
+function slotMuzzleOffset(slot: WeaponSlot, index: number, count: number): Point {
+  return slot.mount ?? { x: 29, y: (index - (count - 1) / 2) * 9 };
 }
 
 /** The reading beside PATH ANGLE and CURVE: the compass points by name, the rest signed. */
@@ -2159,6 +2180,25 @@ export function StarlineGame() {
         context.fillStyle = "#64e3ff"; context.font = "bold 9px monospace"; label("DRAG TO SHAPE", handles[2].x + 12, handles[2].y + 4);
         context.restore();
       }
+      // Where the guns are: a small sight on each muzzle while its ship is
+      // selected, computed by the same rule the engine fires by. An enemy shows
+      // one; the player shows one per weapon slot.
+      const drawMuzzle = (x: number, y: number) => {
+        context.save(); context.shadowBlur = 0; context.strokeStyle = "#eaff62"; context.lineWidth = 1.5;
+        context.beginPath(); context.arc(x, y, 6, 0, Math.PI * 2); context.stroke();
+        context.beginPath(); context.moveTo(x - 10, y); context.lineTo(x + 10, y); context.moveTo(x, y - 10); context.lineTo(x, y + 10); context.stroke();
+        context.restore();
+      };
+      if (selected && (selected.type === "enemy" || selected.type === "group") && selected.weapon.enabled) {
+        const muzzle = enemyMuzzleWorld(selected);
+        drawMuzzle(muzzle.x - cameraX, muzzle.y);
+      }
+      if (inspectPlayerRef.current) {
+        current.player.weaponSlots.forEach((slot, index) => {
+          const offset = slotMuzzleOffset(slot, index, current.player.weaponSlots.length);
+          drawMuzzle(95 + offset.x, VIEW_H / 2 + offset.y);
+        });
+      }
       const endX = current.length - cameraX;
       if (endX >= -24 && endX <= VIEW_W + 24) {
         context.strokeStyle = "#ff6a4d"; context.lineWidth = 2; context.setLineDash([8, 6]);
@@ -2909,6 +2949,14 @@ export function StarlineGame() {
               <label className="range-field"><span><b>ACTIVE SLOTS</b><em>{level.player.weaponSlots.length}</em></span><input type="range" min="1" max="4" value={level.player.weaponSlots.length} onChange={(event) => updateLevel((current) => { const count = Number(event.target.value); const slots = current.player.weaponSlots.slice(0, count); while (slots.length < count) slots.push({ id: uid(), name: `SLOT ${slots.length + 1}`, accepts: "standard", weaponId: current.player.inventory[0] ?? "weapon-pulse" }); return { ...current, player: { ...current.player, weaponSlots: slots } }; }, true, "player-slot-count")} /></label>
               <label className="range-field"><span><b>INVENTORY LIMIT</b><em>{level.player.inventoryLimit}</em></span><input type="range" min="1" max="12" value={level.player.inventoryLimit} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, inventoryLimit: Number(event.target.value), inventory: current.player.inventory.slice(0, Number(event.target.value)) } }), true, "player-inventory-limit")} /></label>
               {level.player.weaponSlots.map((slot, index) => <div className="equipment-slot" key={slot.id}><strong>{slot.name}</strong><label className="field"><span>ACCEPTS</span><select value={slot.accepts} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, weaponSlots: current.player.weaponSlots.map((entry) => entry.id === slot.id ? { ...entry, accepts: event.target.value } : entry) } }))}><option value="any">ANY</option><option value="standard">STANDARD</option><option value="light">LIGHT</option><option value="heavy">HEAVY</option><option value="satellite">SATELLITE</option></select></label><label className="field"><span>WEAPON</span><select value={slot.weaponId} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, weaponSlots: current.player.weaponSlots.map((entry) => entry.id === slot.id ? { ...entry, weaponId: event.target.value } : entry) } }))}>{level.components.filter((component) => component.kind === "weapon" && weaponFitsSlot(component, slot.accepts)).map((component) => <option value={component.id} key={component.id}>{component.name.toUpperCase()}</option>)}</select></label>{(() => { const weaponComponent = level.components.find((component) => component.id === slot.weaponId); if (!weaponComponent?.weapon) return null; return <>
+              {/* Where each slot's gun sits on the ship, forward and across in world units.
+                  The defaults are where the slots have always fired from -- the nose, fanned
+                  nine units apart -- and the sights on the playfield show the spots while the
+                  ship is selected. */}
+              {level.player.weaponSlots.map((slot, index) => <div className="field-grid" key={`mount-${slot.id}`}>
+                <label className="range-field"><span><b>{slot.name} MOUNT FWD</b><em>{slot.mount ? `${slot.mount.x}u` : "NOSE"}</em></span><input type="range" min="-60" max="120" step="1" value={slot.mount?.x ?? 29} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, weaponSlots: current.player.weaponSlots.map((entry, i) => entry.id === slot.id ? { ...entry, mount: { x: Number(event.target.value), y: entry.mount?.y ?? Math.round((i - (current.player.weaponSlots.length - 1) / 2) * 9) } } : entry) } }), true, "slot-mount")} /></label>
+                <label className="range-field"><span><b>{slot.name} MOUNT ACROSS</b><em>{slot.mount ? `${slot.mount.y}u` : "FANNED"}</em></span><input type="range" min="-80" max="80" step="1" value={slot.mount?.y ?? Math.round((index - (level.player.weaponSlots.length - 1) / 2) * 9)} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, weaponSlots: current.player.weaponSlots.map((entry) => entry.id === slot.id ? { ...entry, mount: { x: entry.mount?.x ?? 29, y: Number(event.target.value) } } : entry) } }), true, "slot-mount")} /></label>
+              </div>)}
                 {/* The pattern belongs to the WEAPON Component, not to the slot,
                     so every slot carrying this weapon changes together. That is
                     the data model rather than a shortcut: a weapon is one saved
@@ -3036,6 +3084,11 @@ export function StarlineGame() {
                 <label className="range-field"><span><b>COOLDOWN</b><em>{selected.weapon.cooldown.toFixed(1)}s</em></span><input type="range" min="0" max="4" step="0.1" value={selected.weapon.cooldown} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, weapon: { ...item.weapon, cooldown: Number(event.target.value) } }))} /></label>
                 <label className="range-field"><span><b>PROJECTILE SPEED</b><em>{selected.weapon.projectileSpeed}u/s</em></span><input type="range" min="100" max="700" step="10" value={selected.weapon.projectileSpeed} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, weapon: { ...item.weapon, projectileSpeed: Number(event.target.value) } }))} /></label>
                 <label className="range-field"><span><b>POWER</b><em>{selected.weapon.power}</em></span><input type="range" min="1" max="3" value={selected.weapon.power} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, weapon: { ...item.weapon, power: Number(event.target.value) } }))} /></label>
+                {/* Where the gun sits on the ship, forward along the way it faces and across it,
+                    in world units. NOSE and CENTRE are where every weapon fired from before there
+                    was a choice; the sight on the playfield shows the spot. */}
+                <label className="range-field"><span><b>MOUNT FORWARD</b><em>{selected.weapon.mount ? `${selected.weapon.mount.x}u` : "NOSE"}</em></span><input type="range" min="-120" max="120" step="2" value={selected.weapon.mount?.x ?? Math.round(selected.size * selected.scale)} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, weapon: { ...item.weapon, mount: { x: Number(event.target.value), y: item.weapon.mount?.y ?? 0 } } }))} /></label>
+                <label className="range-field"><span><b>MOUNT ACROSS</b><em>{selected.weapon.mount ? `${selected.weapon.mount.y}u` : "CENTRE"}</em></span><input type="range" min="-120" max="120" step="2" value={selected.weapon.mount?.y ?? 0} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, weapon: { ...item.weapon, mount: { x: item.weapon.mount?.x ?? Math.round(item.size * item.scale), y: Number(event.target.value) } } }))} /></label>
                 <button className="inspector-action" type="button" onClick={() => saveWeaponComponent(selected.weapon, `${selected.name} Weapon`)}>SAVE WEAPON COMPONENT</button>
                 {/* The dropdown covers removal too, as NONE, so the separate
                     "remove pattern" button it replaced is gone rather than
