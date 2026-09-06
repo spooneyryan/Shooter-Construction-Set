@@ -600,3 +600,27 @@ leaving it in localStorage would have fixed the message and kept the problem:
 the store would still be full for everything else. So the originals are
 removed once their copies have committed, a downgrade would then find them
 gone, and both halves of that are written in the entry rather than discovered.
+
+## 2026-09-06 — A last pass, and a hardpoint
+
+Two of Ryan's in one message: GameBase's scanlines, chosen in settings, and
+guns that sit where you put them. C-38 and C-39.
+
+**Wire a last pass as a last pass.** The presenter wants a frame and gives
+back a treated picture. The temptation was to route Starline's drawing through
+it — a source canvas at sector resolution, the vertical turn re-derived, the
+clip and the pointer mapping taught a new coordinate space. None of that was
+asked for, and all of it was risk. Handing the frame Starline already draws to
+a second canvas layered over the first is a dozen lines, and nothing else in
+the renderer knows the presenter exists. The one honest cost is that
+`source-scanlines` means nothing at 1:1, so it is not offered; the menu says
+what it can do rather than listing what the module can.
+
+**Keep the old expressions, then measure the difference.** The unmounted shot
+had to land where it always had, bit for bit, or every saved level's fire
+would shift by a hair. Rewriting the origin as "mount with a default of the
+nose" would have re-derived that position through new arithmetic and invited
+exactly that hair. So the absent case keeps the verbatim expressions, the
+mounted case is new code, and the test runs both in the same world and asserts
+only the difference between them — which is the one thing the change is
+allowed to be.

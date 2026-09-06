@@ -936,3 +936,55 @@ will. The backend is injectable, which is how five tests run it under Node
 without a browser: synchronous reads and writes, ordered commits, an early
 write surviving the load, migration with the originals let go, a store with
 no backend saying so, and a library seeing its shelf only once ready.
+
+## C-38 — The played picture through GameBase's presenter
+
+Ryan asked for the new scanlines from GameBase, with the pattern and its
+parameters chosen in SETTINGS.
+
+**The presenter is a last pass, and that is how it is wired.** Starline draws
+at display resolution, so the frame it has always drawn is handed to
+`createPixelPresenter` each play tick and put on a second canvas layered over
+the stage with pointer events off. Nothing about drawing, framing, clipping or
+pointer mapping had to learn about it. The presenter is created when play first
+asks for a filter, remade when the stage changes size — its width and height
+are fixed at creation — reconfigured when a setting moves, hidden when the
+editor comes back, and destroyed with the loop.
+
+**Play and presentation only.** The editor stays as drawn: an author placing a
+sprite wants to see the sprite, not the tube. The old CSS `.scanlines` overlay,
+which tinted both, is gone.
+
+**One filter is deliberately left off the menu.** `source-scanlines` follows
+rows of the original framebuffer, and here the framebuffer *is* the display,
+so it is `display-scanlines` under another name; two entries that look the
+same is a bug in the menu. What is offered is NONE, SCANLINES, LCD GRID and CRT
+TUBE, with LINE BRIGHTNESS and BAND ROWS, GRID THICKNESS, and TUBE / GLOW /
+NOISE shown for the filter that reads them. Defaults are the presenter's own,
+so a filter switched on for the first time looks the way its author tuned it.
+Kept in this browser beside Toolbar Behavior and the panel widths, because
+how a person likes the picture is theirs and not the level's.
+
+## C-39 — Weapons sit where you put them
+
+Ryan asked to move the placement of weapons on a ship.
+
+**A mount is an offset in the ship's own frame**: `x` forward, the way it
+faces and fires; `y` across, positive toward the bottom of the screen for an
+unrotated ship. On an enemy it is `weapon.mount`, so it travels with a saved
+weapon Component. On the player it is `slot.mount`, because the slot is the
+hardpoint and the weapon merely the thing in it. The sprite's rotation turns an
+enemy's mount with the ship; the arena's homing turns it toward the player.
+
+**Absent is exactly where everything fired from before.** An enemy's leading
+edge; the player's nose, with the slots fanned nine units apart across. Those
+are kept as the same expressions rather than re-derived, and the tests hold
+the mounted case against the unmounted one in the same world — so the only
+difference measured is the mount, and an old level is placed bit for bit. A
+sine projectile from a mounted gun wobbles about the mount, not the hull.
+
+**The sight is the muzzle.** While a ship is selected the playfield shows a
+small sight at each gun — one on an enemy, one per slot on the player —
+computed by the same rule the engine fires by, so the marker is where the shot
+will come from. MOUNT FORWARD and MOUNT ACROSS in the Inspector read NOSE and
+CENTRE until touched, and start from there. In `@ccllc/arcade` 2.0.22.

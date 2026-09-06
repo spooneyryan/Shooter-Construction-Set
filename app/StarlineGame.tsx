@@ -7,7 +7,7 @@ import { createInput } from "@ccllc/arcade/platform";
 import { createSelection, createEditorCommands, createKeymap } from "@ccllc/arcade/editor";
 import { uniqueId } from "@ccllc/arcade/core";
 import { createTelemetry } from "@ccllc/arcade/telemetry";
-import { createSpriteCache } from "@ccllc/arcade/render";
+import { createPixelPresenter, createSpriteCache, type PixelFilter, type PixelPresenter } from "@ccllc/arcade/render";
 import { BulletPatternStudio, SfxStudio, SpriteStudio, blankImageAsset } from "@ccllc/studio";
 import { advanceBurst, burstFrame, createBurstPreset, createBurstRuntime, drawBurst, normalizeBurst, type BurstDefinition, type BurstRuntime } from "@ccllc/arcade/burst";
 import { createSfxPlayer, createSfxPreset, normalizeSfx, type SfxDefinition } from "@ccllc/arcade/sfx";
@@ -535,7 +535,17 @@ const levelStore = createIndexedDbStorage({
 //
 // The store derives its own key from the namespace, so it does NOT read the key
 // above -- that one is read once, below, to carry a choice already made across.
-const editorSettings = defineSettings<{ sectionMode: SectionMode; paletteWidth: number; inspectorWidth: number }>({
+/**
+ * How the played picture is presented. Starline draws at display resolution,
+ * so the presenter takes that frame each play tick and puts it on a canvas
+ * layered over the stage. `source-scanlines` is deliberately not offered:
+ * at 1:1 it is `display-scanlines` under another name, and a menu with two
+ * entries that look the same is a bug in the menu.
+ */
+type DisplayFilter = Extract<PixelFilter, "none" | "display-scanlines" | "lcd-grid" | "crt">;
+type DisplayPrefs = { pixelFilter: DisplayFilter; lineBrightness: number; bandRows: number; gridThickness: number; crtAmount: number; crtGlow: number; crtNoise: number };
+
+const editorSettings = defineSettings<{ sectionMode: SectionMode; paletteWidth: number; inspectorWidth: number } & DisplayPrefs>({
   namespace: "starline-editor",
   version: 1,
   fields: {
@@ -546,8 +556,30 @@ const editorSettings = defineSettings<{ sectionMode: SectionMode; paletteWidth: 
     // in, so a hand-edited value cannot reopen the editor with no stage left.
     paletteWidth: { type: "integer", default: PANEL_LIMITS.palette.fallback, min: PANEL_LIMITS.palette.min, max: PANEL_LIMITS.palette.max },
     inspectorWidth: { type: "integer", default: PANEL_LIMITS.inspector.fallback, min: PANEL_LIMITS.inspector.min, max: PANEL_LIMITS.inspector.max },
+    // The played picture's treatment, with the presenter's own defaults, so a
+    // filter switched on for the first time looks the way its author tuned it.
+    pixelFilter: { type: "enum", values: ["none", "display-scanlines", "lcd-grid", "crt"], default: "none" },
+    lineBrightness: { type: "number", default: 0.72, min: 0, max: 1 },
+    bandRows: { type: "integer", default: 1, min: 1, max: 6 },
+    gridThickness: { type: "number", default: 1, min: 0, max: 4 },
+    crtAmount: { type: "number", default: 1, min: 0, max: 1 },
+    crtGlow: { type: "number", default: 1, min: 0, max: 1 },
+    crtNoise: { type: "number", default: 0.25, min: 0, max: 1 },
   },
 });
+
+/** The display preferences as one object, read from the store. */
+function readDisplayPrefs(): DisplayPrefs {
+  return {
+    pixelFilter: editorSettings.get("pixelFilter"),
+    lineBrightness: editorSettings.get("lineBrightness"),
+    bandRows: editorSettings.get("bandRows"),
+    gridThickness: editorSettings.get("gridThickness"),
+    crtAmount: editorSettings.get("crtAmount"),
+    crtGlow: editorSettings.get("crtGlow"),
+    crtNoise: editorSettings.get("crtNoise"),
+  };
+}
 
 /**
  * The one-time carry-over from the hand-rolled key. Toolbar Behavior is a
@@ -984,6 +1016,13 @@ export function StarlineGame() {
   const zoomRef = useRef(1);
   const panRef = useRef(0);
   const [viewZoom, setViewZoom] = useState(1);
+  // The played picture's treatment. Stored beside the panel widths -- the
+  // person's, not the level's -- read after mount like them, and mirrored into
+  // a ref because the render loop reads refs.
+  const [displayPrefs, setDisplayPrefs] = useState<DisplayPrefs>(() => readDisplayPrefs());
+  const displayPrefsRef = useRef<DisplayPrefs>(displayPrefs);
+  useEffect(() => { displayPrefsRef.current = displayPrefs; }, [displayPrefs]);
+  const presentCanvasRef = useRef<HTMLCanvasElement>(null);
   const satellitePointerRef = useRef({ x: VIEW_W * .7, y: VIEW_H / 2, active: false });
   const mouseFireRef = useRef(false);
   const dragRef = useRef<CanvasDrag | null>(null);
@@ -1306,6 +1345,7 @@ export function StarlineGame() {
     // suppression of their own -- the directive above covers the effect.
     setPaletteWidth(editorSettings.get("paletteWidth"));
     setInspectorWidth(editorSettings.get("inspectorWidth"));
+    setDisplayPrefs(readDisplayPrefs());
   }, []);
 
   // The designed explosions, on the same two-phase load and for the same
@@ -1319,6 +1359,11 @@ export function StarlineGame() {
   // Written where the choice is made rather than from an effect on the value:
   // one control changes it, and an effect would race the restore above and put
   // the default back over the stored choice on the way in.
+  /** One display preference: into the store, and into the state the dialog and the loop read. */
+  const applyDisplayPref = <K extends keyof DisplayPrefs>(key: K, value: DisplayPrefs[K]) => {
+    editorSettings.set(key, value);
+    setDisplayPrefs((current) => ({ ...current, [key]: value }));
+  };
   const applySectionMode = useCallback((next: SectionMode) => {
     setSectionMode(next);
     editorSettings.set("sectionMode", next);
@@ -1817,6 +1862,64 @@ export function StarlineGame() {
     const context = canvas.getContext("2d");
     const miniContext = mini.getContext("2d");
     if (!context || !miniContext) return;
+
+    // The presenter is the last pass over a played frame: the 2d canvas above
+    // is drawn exactly as before and then handed over as the frame, so nothing
+    // about drawing, framing or pointer mapping had to learn about it. Its own
+    // canvas sits over the stage with pointer events off. It is created when
+    // play first asks for a filter, remade when the stage changes size (its
+    // width and height are fixed at creation), reconfigured when the settings
+    // move, and put away when the editor comes back.
+    let presenter: PixelPresenter | null = null;
+    let presenterSize = "";
+    let presenterPrefs = "";
+    let presenterFailedSize = "";
+    const presentFrame = () => {
+      const target = presentCanvasRef.current;
+      const prefs = displayPrefsRef.current;
+      if (!target) return;
+      const wanted = modeRef.current !== "build" && prefs.pixelFilter !== "none";
+      if (!wanted) {
+        if (!target.hidden) target.hidden = true;
+        return;
+      }
+      // A frame with no size -- a stage not yet laid out, or one collapsed --
+      // has nothing to present, and the presenter refuses a zero dimension,
+      // rightly. Wait for a real frame.
+      if (canvas.width < 1 || canvas.height < 1) { if (!target.hidden) target.hidden = true; return; }
+      const size = `${canvas.width}x${canvas.height}`;
+      // A presenter that could not be made for this size is not retried every
+      // frame: the picture shows plain until the stage changes size.
+      if (presenterFailedSize === size) { if (!target.hidden) target.hidden = true; return; }
+      if (!presenter || presenterSize !== size) {
+        presenter?.destroy();
+        presenter = null;
+        target.width = canvas.width; target.height = canvas.height;
+        try {
+          presenter = createPixelPresenter(target, {
+            width: canvas.width, height: canvas.height, mode: "stretch", scaleMode: "fit", autoResize: false,
+            filter: prefs.pixelFilter, lineBrightness: prefs.lineBrightness, bandRows: prefs.bandRows, gridThickness: prefs.gridThickness,
+            crtAmount: prefs.crtAmount, crtGlow: prefs.crtGlow, crtNoise: prefs.crtNoise,
+            clearColor: [3 / 255, 7 / 255, 11 / 255, 1],
+          });
+        } catch (error) {
+          console.warn("Display filter unavailable for this stage:", error);
+          presenterFailedSize = size;
+          if (!target.hidden) target.hidden = true;
+          return;
+        }
+        presenterSize = size;
+        presenterPrefs = JSON.stringify(prefs);
+      } else {
+        const key = JSON.stringify(prefs);
+        if (key !== presenterPrefs) {
+          presenter.configure({ filter: prefs.pixelFilter, lineBrightness: prefs.lineBrightness, bandRows: prefs.bandRows, gridThickness: prefs.gridThickness, crtAmount: prefs.crtAmount, crtGlow: prefs.crtGlow, crtNoise: prefs.crtNoise });
+          presenterPrefs = key;
+        }
+      }
+      if (target.hidden) target.hidden = false;
+      presenter.present(canvas);
+    };
     // The frame handle and the previous timestamp belong to createLoop now.
     let miniWidth = 800;
     let miniHeight = 86;
@@ -2290,6 +2393,7 @@ export function StarlineGame() {
         context.restore();
         context.clearRect(0, 0, VIEW_W, VIEW_H);
         if (modeRef.current === "build") drawEditor(now); else drawPlay(now, dt);
+        presentFrame();
         drawMini();
         // Last thing in the frame, so the steps the next frame runs all see the
         // input as it was when that frame began.
@@ -2297,7 +2401,7 @@ export function StarlineGame() {
       },
     });
     loop.start();
-    return () => { loop.stop(); observer.disconnect(); };
+    return () => { presenter?.destroy(); presenter = null; loop.stop(); observer.disconnect(); };
   }, [editorFor, enterPlay, equipInventoryWeapon, exitPlay, playEvents, spawnBursts]);
 
   const canvasPoint = (event: React.PointerEvent<HTMLCanvasElement>) => {
@@ -2757,7 +2861,9 @@ export function StarlineGame() {
               onContextMenu={(event) => event.preventDefault()}
               aria-label={mode === "build" ? "Scrollable level editing playfield" : "Playable Starline level"}
             />
-            <div className="scanlines" aria-hidden="true" />
+            {/* The presenter draws here, over the frame above, while a filter is on.
+                Pointer events pass through to the canvas underneath. */}
+            <canvas ref={presentCanvasRef} className="present-canvas" aria-hidden="true" hidden />
             {mode !== "build" && <div className="play-hud">
               <div><span>SCORE</span><strong>{score.toString().padStart(6, "0")}</strong></div>
               <div className="play-progress"><span>SECTOR CLEARANCE</span><i><b style={{ width: `${progress}%` }} /></i></div>
@@ -2954,6 +3060,18 @@ export function StarlineGame() {
       {showSettings && <EbDialog visible title="EDITOR SETTINGS" onVisibleChange={(open) => { if (!open) setShowSettings(false); }} className="settings-dialog" footerContent={<button type="button" onClick={() => setShowSettings(false)}>DONE</button>}>
         <label className="field wide"><span>TOOLBAR BEHAVIOR</span><select value={sectionMode} onChange={(event) => applySectionMode(event.target.value as SectionMode)}><option value="multiple">SEVERAL SECTIONS OPEN</option><option value="single">ONE SECTION AT A TIME</option></select></label>
         <p className="inspector-note">Governs the collapsible sections in the palette and the Inspector alike. Kept in this browser rather than in the level.</p>
+        <label className="field wide"><span>DISPLAY FILTER</span><select value={displayPrefs.pixelFilter} onChange={(event) => applyDisplayPref("pixelFilter", event.target.value as DisplayFilter)}><option value="none">NONE</option><option value="display-scanlines">SCANLINES</option><option value="lcd-grid">LCD GRID</option><option value="crt">CRT TUBE</option></select></label>
+        {displayPrefs.pixelFilter === "display-scanlines" && <>
+          <label className="range-field"><span><b>LINE BRIGHTNESS</b><em>{Math.round(displayPrefs.lineBrightness * 100)}%</em></span><input type="range" min="0" max="1" step="0.02" value={displayPrefs.lineBrightness} onChange={(event) => applyDisplayPref("lineBrightness", Number(event.target.value))} /></label>
+          <label className="range-field"><span><b>BAND ROWS</b><em>{displayPrefs.bandRows}</em></span><input type="range" min="1" max="6" step="1" value={displayPrefs.bandRows} onChange={(event) => applyDisplayPref("bandRows", Number(event.target.value))} /></label>
+        </>}
+        {displayPrefs.pixelFilter === "lcd-grid" && <label className="range-field"><span><b>GRID THICKNESS</b><em>{displayPrefs.gridThickness.toFixed(1)}px</em></span><input type="range" min="0" max="4" step="0.5" value={displayPrefs.gridThickness} onChange={(event) => applyDisplayPref("gridThickness", Number(event.target.value))} /></label>}
+        {displayPrefs.pixelFilter === "crt" && <>
+          <label className="range-field"><span><b>TUBE</b><em>{Math.round(displayPrefs.crtAmount * 100)}%</em></span><input type="range" min="0" max="1" step="0.02" value={displayPrefs.crtAmount} onChange={(event) => applyDisplayPref("crtAmount", Number(event.target.value))} /></label>
+          <label className="range-field"><span><b>GLOW</b><em>{Math.round(displayPrefs.crtGlow * 100)}%</em></span><input type="range" min="0" max="1" step="0.02" value={displayPrefs.crtGlow} onChange={(event) => applyDisplayPref("crtGlow", Number(event.target.value))} /></label>
+          <label className="range-field"><span><b>NOISE</b><em>{Math.round(displayPrefs.crtNoise * 100)}%</em></span><input type="range" min="0" max="1" step="0.02" value={displayPrefs.crtNoise} onChange={(event) => applyDisplayPref("crtNoise", Number(event.target.value))} /></label>
+        </>}
+        <p className="inspector-note">{displayPrefs.pixelFilter === "none" ? "The played picture, as drawn." : "Applied while playing and presenting; the editor stays as drawn. Kept in this browser."}</p>
       </EbDialog>}
       {editingPattern && <BulletPatternStudio pattern={editingPattern.pattern} onApply={applyPatternEditor} onSaveComponent={savePatternComponent} onCancel={() => setEditingPattern(null)} />}
       {editingSound && <SfxStudio sound={editingSound.sound} onApply={saveSoundComponent} onCancel={() => setEditingSound(null)} />}

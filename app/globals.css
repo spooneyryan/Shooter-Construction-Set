@@ -242,7 +242,6 @@ button { cursor: pointer; }
 .zoom-readout { justify-self: end; }
 .stage-canvas-wrap { position: relative; flex: 1 1 auto; min-height: 320px; overflow: hidden; background: #03070b; }
 .stage-canvas-wrap canvas { display: block; width: 100%; height: 100%; min-height: 320px; cursor: crosshair; touch-action: none; }
-.scanlines { position: absolute; inset: 0; pointer-events: none; opacity: .13; background: repeating-linear-gradient(to bottom, transparent 0, transparent 3px, rgba(120,188,210,.12) 4px); }
 .build-badge { position: absolute; left: 12px; bottom: 11px; padding: 7px 9px; display: flex; align-items: center; gap: 8px; border: 1px solid rgba(100,227,255,.24); background: rgba(5,13,20,.82); color: #9bb3bd; font-family: var(--font-mono); font-size: 9px; letter-spacing: .08em; pointer-events: none; }
 .build-badge span { width: 5px; height: 5px; border-radius: 50%; background: var(--cyan); box-shadow: 0 0 8px var(--cyan); }
 .build-badge b { margin-left: 8px; color: #546f7b; font-weight: 500; }
@@ -558,3 +557,9 @@ kbd { min-width: 22px; padding: 3px 5px; display: inline-block; border: 1px soli
 .zoom-controls { display: flex; align-items: center; gap: 6px; }
 .zoom-controls button { min-width: 26px; height: 24px; padding: 0 6px; border: 1px solid #243944; background: #0e1b23; color: #6d8792; font-family: var(--font-mono); font-size: 10px; }
 .zoom-controls span { min-width: 38px; text-align: center; color: #b4c8d0; font-size: 10px; letter-spacing: .07em; }
+
+/* The presenter's canvas: over the stage, exactly its size, and deaf to the
+   pointer so the frame underneath still takes the click. */
+/* No z-index on purpose: positioned elements paint in DOM order, which puts this
+   above the frame canvas and below the HUD and overlays that follow it. */
+.present-canvas { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
