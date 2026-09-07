@@ -703,3 +703,28 @@ prefer drawing into it over asking the browser to decorate it.
 **Check what already works before adding to it.** Escape-to-select existed.
 Testing it from the palette button that had focus, rather than assuming the
 keymap swallowed it, is what made the entry a note rather than a change.
+
+## 2026-09-07 — Four edges, and a gate that was not one
+
+Ryan asked for limits on all four edges of the ship's flight. C-46, in
+arcade 2.0.26.
+
+**A chain of semicolons is not a gate.** The engine change passed the shmup
+suite I ran by hand, so I chained build, the full test run, commit, push and
+release with semicolons and let it go. The full run had one failure in a
+suite I had not run -- the vertical-mode test pinning the old 45-unit
+margin -- and the chain sailed past it into the release. The release script
+ran the tests itself and stopped, which is the only reason nothing shipped
+red. The rule, relearned: sum the failure counts and test them before the
+first side effect, every time, not only when the change feels risky.
+
+**Read the raw input when a default would mask a legacy field.** The
+normalizer spreads defaults over the saved player before it normalizes
+fields, so the default box always existed and the old `forwardLimit` never
+got its say. The migration reads the raw input's box instead, and falls
+back to the legacy field only when that is absent.
+
+**Another session is releasing from the same branch.** Between my push and
+my release someone else's session had already tagged 2.0.25 and started
+2.0.26. Checking whether the tag contained my commit, rather than trusting
+the version number, is what showed the change was still unreleased.

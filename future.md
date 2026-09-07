@@ -1102,3 +1102,29 @@ ghost leaving with it, which it does because the frame loop reads the tool.
 **SHOT SPEED and SHOT POWER** under TIMED POWERUP were the same 220px numeric
 input as POSITION X and Y; C-44's override already covers them, and all four
 boxes measure inside their columns. Ryan's screenshot predates that deploy.
+
+## C-46 — A flight box with four edges
+
+Ryan: limits for all four edges — Left 10%, Right 20%, Top 10%, Bottom 10%,
+each the distance in from its own edge.
+
+**FORWARD LIMIT named one edge and measured it from the other.** It was the
+far edge as a share of the width counted from the left, which is why 58%
+meant "stop 42% short of the right". `player.limits` replaces it in
+`@ccllc/arcade` 2.0.26: `left`, `right`, `top` and `bottom`, each a
+percentage of the screen's width or height measured in from that edge, which
+is how Ryan phrased it and how the sliders read. The engine clamps the ship's
+centre to the box; LEFT, TOP and BOTTOM run to 45 and RIGHT to 80, because a
+FORWARD LIMIT of 20 could already put the far wall that close.
+
+**Old levels migrate, a unit or so off.** A saved `forwardLimit` becomes
+`right` as 100 minus it, so the far wall stays where it was. The other three
+edges used to be fixed margins of 52 and 45 units; they are now 4% and 7%,
+which is 51.2 and 44.8. Stated rather than hidden, and the vertical-mode test
+that pinned 595 now reads 595.2.
+
+**Vertical levels label by the screen, not the sector.** The engine keeps
+the box in the sector's frame and a vertical level is turned a quarter turn,
+so the Inspector maps each slider to the screen edge it guards: TOP is the
+sector's far edge there, LEFT its top. The arena has no nose and keeps its
+rule: it ignores the far edge and mirrors the near one.

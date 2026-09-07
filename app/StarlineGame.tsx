@@ -3004,8 +3004,17 @@ export function StarlineGame() {
             {section("flight", "FLIGHT", <>
               <label className="range-field"><span><b>X SPEED</b><em>{level.player.xSpeed}u/s</em></span><input type="range" min="100" max="800" step="10" value={level.player.xSpeed} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, xSpeed: Number(event.target.value) } }), true, "player-x-speed")} /></label>
               <label className="range-field"><span><b>Y SPEED</b><em>{level.player.ySpeed}u/s</em></span><input type="range" min="100" max="800" step="10" value={level.player.ySpeed} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, ySpeed: Number(event.target.value) } }), true, "player-y-speed")} /></label>
-              <label className="range-field"><span><b>FORWARD LIMIT</b><em>{level.player.forwardLimit}%</em></span><input type="range" min="20" max="92" step="1" value={level.player.forwardLimit} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, forwardLimit: Number(event.target.value) } }), true, "player-forward-limit")} /></label>
-              <p className="inspector-note">Sets the farthest point the ship can travel toward the right edge of the screen.</p>
+              {/* Where the ship may fly: how far in from each edge of the screen it
+                  must stay. The engine keeps the box in the sector's own frame, and a
+                  vertical level is turned a quarter turn, so each slider here sits
+                  under the screen edge it actually guards. */}
+              {(["LEFT", "RIGHT", "TOP", "BOTTOM"] as const).map((edge) => {
+                const key = level.mode === "vertical"
+                  ? ({ LEFT: "top", RIGHT: "bottom", TOP: "right", BOTTOM: "left" } as const)[edge]
+                  : ({ LEFT: "left", RIGHT: "right", TOP: "top", BOTTOM: "bottom" } as const)[edge];
+                return <label className="range-field" key={edge}><span><b>{edge} LIMIT</b><em>{level.player.limits[key]}%</em></span><input type="range" min="0" max={key === "right" ? 80 : 45} step="1" value={level.player.limits[key]} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, limits: { ...current.player.limits, [key]: Number(event.target.value) } } }), true, `player-limit-${key}`)} /></label>;
+              })}
+              <p className="inspector-note">How far in from each edge of the screen the ship must stay, as a share of the screen. The arena has no nose: it ignores the far edge and mirrors the near one.</p>
             </>)}
             {section("fire-mods", "GLOBAL FIRE MODIFIERS", <>
               <label className="range-field"><span><b>SHOT SPEED</b><em>{level.player.shotSpeed}u/s</em></span><input type="range" min="200" max="1600" step="25" value={level.player.shotSpeed} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, shotSpeed: Number(event.target.value) } }), true, "player-shot-speed")} /></label>
