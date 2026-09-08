@@ -728,3 +728,35 @@ back to the legacy field only when that is absent.
 my release someone else's session had already tagged 2.0.25 and started
 2.0.26. Checking whether the tag contained my commit, rather than trusting
 the version number, is what showed the change was still unreleased.
+
+## 2026-09-07 (later) — A debug view has to be true or it is worse than nothing
+
+Ryan asked for hit boxes on screen. C-47, on arcade 2.0.27.
+
+**The feature answered a question the codebase disagreed with itself about.**
+"The hit box" implies one shape per sprite. There were four numbers, in four
+collision loops, none of them named: 0.78, 0.7, 0.65, and a bare
+`size * scale`. Drawing any one of them and calling it *the* hit box would
+have been a plausible-looking lie, and the person trusting it would tune a
+level against a circle the simulation does not use. Drawing the band is
+slightly more ink and completely true.
+
+**Pull the constants down before drawing them.** The alternative was four
+literals copied into the editor, which works exactly until someone tunes
+0.78 in the engine. Exporting `itemHitRadius` made the world's own loops
+read better as a side effect -- four arithmetic expressions became four named
+calls -- which is the tell that the extraction was the right shape rather
+than a favour to the caller.
+
+**A silent toggle is a bug you only notice when you add the third one.**
+FULLSCREEN and FPS both had `aria-pressed` and no pressed styling; FPS gets
+away with it because its readout appears, and FULLSCREEN because the whole
+window changes. DEBUG has neither tell when the stage happens to be empty, so
+the missing state finally had to be drawn -- and the other two got it too.
+
+**Caught by reading, not by running.** The group case would have shipped: the
+overlay drew nothing around a group, silently, and every test passed because
+the world never asks about a group item. What surfaced it was re-reading the
+type check against what `expandLevel` does, before the package was even
+consumed. Worth the paragraph because the failure mode of a debug tool is
+silence, and silence is what it is supposed to be reporting on.

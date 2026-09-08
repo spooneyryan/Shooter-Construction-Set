@@ -1128,3 +1128,49 @@ the box in the sector's frame and a vertical level is turned a quarter turn,
 so the Inspector maps each slider to the screen edge it guards: TOP is the
 sector's far edge there, LEFT its top. The arena has no nose and keeps its
 rule: it ignores the far edge and mirrors the near one.
+
+## C-47 — Debug mode: what the simulation actually collides against
+
+Ryan asked for a debug button that outlines every sprite's hit box in a
+visible, translucent, not-too-distracting colour. The rings are violet,
+because every other ink on the stage is spoken for: navy backdrop, salmon
+enemies, lime selection, cyan player and HUD. Orange was the first try and it
+vanished into the enemy art it was drawn over, which is the sprite whose hit
+box anyone actually wants to see.
+
+**There is no hit box, and there is no single hit radius.** Collision is by
+circle, and the circle's size depends on what is striking: an enemy is a wider
+target to a bullet (0.78 of its size) than to the ship's nose (0.7), and wider
+to the nose than to the satellite (0.65). A pickup is collected within its full
+size and shrugs off shots. A decoration collides with nothing at all. So DEBUG
+draws the *band* those radii span — widest ring stroked, narrowest stroked
+fainter, a wash between — and where a thing has one radius, the band collapses
+to one ring. A decoration draws nothing, which is itself the answer to "why
+does my shot pass through the nebula".
+
+**The numbers come from the engine.** They were four literals in four
+collision loops; `itemHitRadius(item, against)` in `@ccllc/arcade` 2.0.28 is
+now the only place they live, the world calls it at all four sites, and the
+overlay calls the same function. An overlay holding its own copy of a
+collision radius is one that eventually lies, and a debug tool that lies is
+worse than none. The satellite's own radius came along as
+`SATELLITE_HIT_RADIUS`.
+
+**A group had to be taught.** The first cut answered 0 for an authored group,
+because the world never holds one — `expandLevel` turns a group into one enemy
+per offset before the simulation sees it — so the overlay would have drawn
+nothing around the most common formation there is. A group now answers as one
+of its members, pinned by a test that expands one and compares.
+
+**On in the editor and in a playtest.** The editor rings every placed sprite —
+each member of a group separately, because the world expands a group into one
+body per offset — plus the ship in its dock. A playtest rings every live body,
+both bullet streams, the ship and the satellite, drawn after everything else so
+no sprite covers a ring. Both inherit the vertical quarter-turn and the sector
+clip for free by drawing inside them.
+
+**And a toggle that shows it is on.** FULLSCREEN and FPS had carried
+`aria-pressed` since they were written with no styling behind it, so nothing
+on screen said a toggle was engaged. Pressed now reads like an active tool:
+cyan border and label over a tinted ground, the tint being what separates it
+from a hover.

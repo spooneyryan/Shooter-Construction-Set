@@ -29,7 +29,9 @@ import {
   movementPathLength,
   movementPosition,
   normalizeLevel,
+  itemHitRadius,
   playerRadius,
+  SATELLITE_HIT_RADIUS,
   palette,
   VIEW_H,
   VIEW_W,
@@ -1011,6 +1013,56 @@ function drawShip(context: CanvasRenderingContext2D, x: number, y: number, now: 
  * had nothing to show for an imported image, which is when a picture matters
  * most.
  */
+/**
+ * Debug mode's rings: the circles the simulation actually tests against, drawn
+ * where the sprite is.
+ *
+ * A thing is not struck at one radius. An enemy is a wider target to a bullet
+ * than to the ship's nose, and wider to the nose than to the satellite, so
+ * what is drawn is the BAND those radii span: the widest stroked, the
+ * narrowest stroked fainter, and a wash between them. Where a thing has only
+ * one radius -- a pickup, the ship, a bullet -- the band collapses and one
+ * ring is drawn. A decoration collides with nothing and gets no ring, which is
+ * itself the answer to "why does my shot pass through the nebula".
+ *
+ * Every radius comes from the engine's `itemHitRadius`; none is computed here.
+ * An overlay that keeps its own copy of a collision radius is one that
+ * eventually lies about it, and a debug tool that lies is worse than none.
+ */
+// Violet, because every other ink on this stage is spoken for: the backdrop is
+// navy, enemies are salmon, selection is lime, the player and its HUD are cyan.
+// An orange ring was the first try and it disappeared into the enemy art it was
+// drawn over, which is exactly the sprite whose hit box anyone wants to see.
+const HIT_INK = "201,124,255";
+function strokeHitRing(context: CanvasRenderingContext2D, x: number, y: number, radius: number, alpha: number) {
+  if (radius <= 0) return;
+  context.strokeStyle = `rgba(${HIT_INK},${alpha})`;
+  context.beginPath(); context.arc(x, y, radius, 0, Math.PI * 2); context.stroke();
+}
+function drawHitBand(context: CanvasRenderingContext2D, x: number, y: number, outer: number, inner: number) {
+  if (outer <= 0) return;
+  context.save();
+  context.shadowBlur = 0; context.setLineDash([]); context.lineWidth = 1.5;
+  if (inner > 0 && inner < outer) {
+    // The wash is the band, cut out with the even-odd rule rather than drawn as
+    // two filled discs, so the middle is not painted twice.
+    context.fillStyle = `rgba(${HIT_INK},.09)`;
+    context.beginPath();
+    context.arc(x, y, outer, 0, Math.PI * 2);
+    context.arc(x, y, inner, 0, Math.PI * 2);
+    context.fill("evenodd");
+    strokeHitRing(context, x, y, inner, .34);
+  }
+  strokeHitRing(context, x, y, outer, .62);
+  context.restore();
+}
+/** One item's rings, at a given screen position. Decorations draw nothing. */
+function drawItemHits(context: CanvasRenderingContext2D, item: LevelItem, x: number, y: number) {
+  const outer = Math.max(itemHitRadius(item, "bullet"), itemHitRadius(item, "ship"));
+  const inner = itemHitRadius(item, "satellite");
+  drawHitBand(context, x, y, outer, inner);
+}
+
 function ObjectThumb({ item, assets }: { item: LevelItem; assets: SpriteAsset[] }) {
   const ref = useRef<HTMLCanvasElement>(null);
   useEffect(() => {
@@ -1186,6 +1238,12 @@ export function StarlineGame() {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [fpsStats, setFpsStats] = useState<PerfStats | null>(null);
   const [showFps, setShowFps] = useState(false);
+  /**
+   * Debug mode: outline what the simulation actually collides against. Held in
+   * a ref as well, because the frame loop reads it and the loop is started once.
+   */
+  const [showHits, setShowHits] = useState(false);
+  const showHitsRef = useRef(false);
   const [controllerName, setControllerName] = useState("");
   const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>({});
   // Which section each tool panel opened last. Under "single" Toolbar Behavior
@@ -2148,6 +2206,8 @@ export function StarlineGame() {
           if (screenX < -240 || screenX > VIEW_W + 240) return;
           const alpha = item.type === "decoration" ? item.decoration?.opacity ?? .5 : item.type === "group" ? .82 : 1;
           drawSprite(context, item.sprite, screenX, item.y + offset.y, item.size, selectedItem && index === 0, alpha, item.rotation + previewSpin(item) + previewTilt(item), item.scale, item.type === "enemy" || item.type === "group", current.assets, item.tint, { glow: item.glow, depth: item.depth });
+          // A group is expanded into one body per offset, so each gets its own.
+          if (showHitsRef.current) drawItemHits(context, item, screenX, item.y + offset.y);
         });
         if (item.type === "group" && item.x - cameraX > -100 && item.x - cameraX < VIEW_W + 100) {
           context.fillStyle = "#eaff62"; context.font = "10px monospace"; label(`GROUP x${item.group?.count ?? 1}`, item.x - cameraX - 28, item.y - item.size * item.scale - 22);
@@ -2266,6 +2326,7 @@ export function StarlineGame() {
       // Selected the same way an object is, because it is now selected the same
       // way. The ring is drawn at the collision radius, so what reads as picked
       // is exactly what the click tested.
+      if (showHitsRef.current) drawHitBand(context, 95, VIEW_H / 2, playerRadius(current.player, current.assets), 0);
       if (inspectPlayerRef.current) {
         context.save();
         context.strokeStyle = "rgba(234,255,98,.85)"; context.lineWidth = 2; context.setLineDash([5, 5]);
@@ -2394,6 +2455,17 @@ export function StarlineGame() {
         context.restore();
       } else {
         drawShip(context, player.x, player.y, now, levelRef.current.player.sprite, blinking, levelRef.current.assets, levelRef.current.player.tint, { scale: levelRef.current.player.scale, glow: levelRef.current.player.glow });
+      }
+      if (showHitsRef.current) {
+        // Last, so no sprite drawn after covers a ring, and inside the sector
+        // clip and the vertical turn, which the bodies below are already in.
+        for (const item of runtime.enemies) {
+          if (!item.alive || !item.active) continue;
+          drawItemHits(context, item, item.x - renderCam, item.y);
+        }
+        for (const bullet of [...runtime.bullets, ...runtime.enemyBullets]) drawHitBand(context, bullet.x - renderCam, bullet.y, bullet.radius, 0);
+        drawHitBand(context, player.x, player.y, playerRadius(levelRef.current.player, levelRef.current.assets), 0);
+        if (satelliteSettings.enabled && satellite.alive) drawHitBand(context, satellite.x, satellite.y, SATELLITE_HIT_RADIUS, 0);
       }
       if (verticalPlay) {
         context.restore();
@@ -2851,6 +2923,7 @@ export function StarlineGame() {
           <div className="history-actions"><button type="button" onClick={() => applyHistory(-1)} disabled={!canUndo || mode !== "build"} title="Undo (Ctrl+Z)">↶</button><button type="button" onClick={() => applyHistory(1)} disabled={!canRedo || mode !== "build"} title="Redo (Ctrl+Y)">↷</button></div>
           <button className="fullscreen-button" type="button" onClick={() => void toggleFullscreen()} aria-pressed={isFullscreen}><kbd>F</kbd> {isFullscreen ? "EXIT FULL" : "FULLSCREEN"}</button>
           <button className="fullscreen-button" type="button" onClick={() => setShowFps((value) => !value)} aria-pressed={showFps}><kbd>F8</kbd> FPS</button>
+          <button className="fullscreen-button" type="button" onClick={() => { setShowHits((value) => { showHitsRef.current = !value; return !value; }); }} aria-pressed={showHits} title="Outline what the simulation collides against"><b>◎</b> DEBUG</button>
           {showFps && (
             <span className="fps-readout" aria-live="off">
               {(["current", "min", "median"] as const).map((key) => (

@@ -79,6 +79,11 @@ button { cursor: pointer; }
 .history-actions button:disabled { opacity: .28; cursor: default; }
 .fullscreen-button { height: 31px; padding: 0 10px; display: flex; align-items: center; gap: 7px; border: 1px solid #304752; background: #0d1921; color: #8ba1ab; font-family: var(--font-mono); font-size: 9px; letter-spacing: .08em; }
 .fullscreen-button:hover { color: var(--cyan); border-color: var(--cyan); }
+/* A toggle that is ON says so, the way an active tool does: the border and
+   label go cyan like a hover, and the tinted ground is what separates the two.
+   FULLSCREEN and FPS have carried aria-pressed all along with nothing to show
+   for it; DEBUG is the one that made a silent toggle untenable. */
+.fullscreen-button[aria-pressed="true"] { color: var(--cyan); border-color: var(--cyan); background: rgba(100,227,255,.07); }
 .settings-button b { font-size: 13px; font-weight: 400; line-height: 1; }
 
 .levelbar {
