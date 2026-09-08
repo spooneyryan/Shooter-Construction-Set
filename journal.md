@@ -760,3 +760,35 @@ the world never asks about a group item. What surfaced it was re-reading the
 type check against what `expandLevel` does, before the package was even
 consumed. Worth the paragraph because the failure mode of a debug tool is
 silence, and silence is what it is supposed to be reporting on.
+
+## 2026-09-07 (night) — Shapes, and a picture the engine never sees
+
+Ryan asked for real hitboxes — polygons or many small circles hugging the
+art — derived automatically where possible, with a maker to draw them, in
+GameBase. C-48, across arcade 2.0.29 and studio.
+
+**Put the frame before the shapes.** The first decision was not polygon
+versus circle but what 1 means. Sprite units, where 1 is the item's size,
+made SIZE and SCALE free, made rotation the world's business through the
+facing it already computes for shots, and made "as drawn at rotation 0" the
+whole story a renderer has to tell — mirroring included, which the mask
+inherits by being painted with the same routine. Everything after was
+geometry.
+
+**Keep the engine blind and give it the pixels.** The engine cannot touch a
+canvas and the sprites only exist as canvas drawing, so the derivation takes
+an alpha mask — numbers — and the DOM half lives in studio. That split is
+what let the tracing and the disc cover be tested in Node with masks typed
+out by predicate, and what let three of those tests fail usefully: a
+concave corner sprouting a seventh point, a rim tiled with one-pixel discs,
+a "speck" that was three percent of the picture. Two were the algorithm's
+faults and one the test's, and the numbers said which.
+
+**A tight cover leaves corners.** Discs that stay inside a rectangle cannot
+reach its corners; that is the trade the user asked for when he said "not a
+lot of empty space around it", and the test now says so rather than
+demanding a coverage the geometry forbids.
+
+**Draw the circle you are replacing.** The dialog shows the old circle
+dashed under the new shapes. It costs one arc and it is the entire argument
+for the feature, made every time the dialog opens.

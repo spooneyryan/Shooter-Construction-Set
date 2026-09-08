@@ -175,6 +175,24 @@ The best concurrency point is after Phase 0: one stream can build selection/tran
 
 Completed future items are archived here in completion order. The original ten-item Foundry plan was completed on 2026-08-13 and is retained below as the design record.
 
+## F-07 — The player ship's own hitbox
+
+C-48 gave every item a hitbox and left the player a circle. The ship strikes
+enemies as a disc of `playerRadius`, and every collision the world makes is
+disc-against-item; a shaped ship means shape-against-shape, which is a
+different and heavier test. When the ship's silhouette matters enough — a
+long thin fighter, a wide bomber — give the player a `hitbox` in the same
+frame and test polygon-against-polygon by separating axes, with the disc test
+kept for bullets. Until then the ship is round.
+
+## F-08 — Selection by hitbox in the editor
+
+Clicking an item on the stage still tests the old circle, so an item with a
+tight hitbox is selectable in the empty space its art no longer collides in.
+Harmless, since selection is not collision, and the wider target is easier to
+click; noted because someone will expect the two to match once the debug
+rings show them differing.
+
 ## C-00 — On-canvas rotation and resize handles
 
 When a playfield object is selected, add direct-manipulation handles around its selection circle. A rotation handle should let the designer rotate the object by dragging, while one or more resize handles should scale it proportionally. The handles should remain usable across object sizes and canvas zoom levels, provide live visual feedback, and update the same rotation and scale properties exposed in the Inspector. A drag should be recorded as one undoable operation.
@@ -1174,3 +1192,50 @@ clip for free by drawing inside them.
 on screen said a toggle was engaged. Pressed now reads like an active tool:
 cyan border and label over a tinted ground, the tint being what separates it
 from a hover.
+
+## C-48 — Hitboxes: the shape a sprite is struck within
+
+Ryan: arbitrary hitbox shapes, or many small circles covering the actual art
+rather than the space around it; automatic if possible, and a maker to draw
+polygons or circles on a sprite either way; done in GameBase.
+
+**The engine owns the shape and the test.** An item may carry `hitbox`:
+circles and polygons in the sprite's own frame — as drawn at rotation 0, x
+right, y down, 1 unit the item's size — so SIZE and SCALE keep it on the art
+and the world turns it by the very facing the renderer draws, spin and lean
+included. Every collision the world makes is a disc against the item, so the
+disc is carried into the sprite's frame and tested there: concave polygons by
+even-odd plus edge distance, squared distances and core's trig throughout, a
+`reach` for the broad phase. An item without a hitbox is struck exactly as
+before, strict inequality and all. In `@ccllc/arcade` 2.0.29.
+
+**Automatic, from the picture, without the engine seeing a picture.**
+`hitboxFromMask` takes width, height and alpha values — a Node test can type
+one out, a canvas can read one off — and traces each solid patch by Moore
+neighbours, fills holes, drops specks, and simplifies to within a tolerance
+that is never finer than a pixel and a half, because a concave corner traced
+through pixel centres carries a one-pixel diagonal that is the raster's, not
+the picture's. Or it covers the art with discs: an exact distance transform,
+the deepest uncovered pixel each time, each disc as large as fits inside the
+art, stopping at coverage or when the next disc would be a speck. Tight by
+construction: the corners of a boxy sprite go a little uncovered rather than
+the space around it going covered. Both deterministic in the mask.
+
+**Studio draws it** (`@ccllc/studio` 2.0.30). `HitboxEditor` is polygon and circle tools over the
+sprite, select, move, reshape by handle, delete, AUTO OUTLINE and AUTO CIRCLES
+with an alpha threshold and a circle budget, and the circle being replaced
+drawn dashed so the improvement is visible. What it hands back goes through
+the engine's normalizer. `rasterizeHitMask` and `drawHitbox` are exported for
+a host's own canvas, which is how Starline's Inspector reads a hitbox off the
+art in one click and how DEBUG draws the real shape, turned with the sprite,
+in the editor and in a playtest.
+
+**Starline wires it.** HITBOX under the Inspector, for enemies, terrain,
+groups and pickups: AUTO OUTLINE, AUTO CIRCLES, DRAW/EDIT…, USE CIRCLE. The
+sprite is painted into the mask by the same `drawSprite` the stage uses, at
+rotation 0 with no halo and with an enemy's mirroring, so the mask, the
+dialog and the world agree on the frame. A group's members share its hitbox,
+one body per offset, as the world expands them.
+
+**Left open, on purpose:** the player ship stays a circle (F-07); clicking an
+item on the stage still tests the old circle (F-08).

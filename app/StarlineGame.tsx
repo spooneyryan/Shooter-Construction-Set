@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { createDocumentSession, createHistory, createIndexedDbStorage, createLoop, createPerformanceMonitor, defineLibrary, defineSettings, DocumentError, type DocumentFormat, type PerfStats } from "@ccllc/arcade/core";
 import { useSyncExternalStore } from "react";
 import { createInput } from "@ccllc/arcade/platform";
@@ -8,7 +8,7 @@ import { createSelection, createEditorCommands, createKeymap } from "@ccllc/arca
 import { uniqueId } from "@ccllc/arcade/core";
 import { createTelemetry } from "@ccllc/arcade/telemetry";
 import { createPixelPresenter, createSpriteCache, type PixelFilter, type PixelPresenter } from "@ccllc/arcade/render";
-import { BulletPatternStudio, SfxStudio, SpriteStudio, blankImageAsset } from "@ccllc/studio";
+import { BulletPatternStudio, HitboxEditor, SfxStudio, SpriteStudio, blankImageAsset, drawHitbox, rasterizeHitMask, type PaintSprite } from "@ccllc/studio";
 import { advanceBurst, burstFrame, createBurstPreset, createBurstRuntime, drawBurst, normalizeBurst, type BurstDefinition, type BurstRuntime } from "@ccllc/arcade/burst";
 import { createSfxPlayer, createSfxPreset, normalizeSfx, type SfxDefinition } from "@ccllc/arcade/sfx";
 import { EbAccordion, EbAccordionItem, EbDialog, EbNumericInput, EbTabbedCard } from "@electricblazor/react";
@@ -29,6 +29,7 @@ import {
   movementPathLength,
   movementPosition,
   normalizeLevel,
+  hitboxFromMask,
   itemHitRadius,
   playerRadius,
   SATELLITE_HIT_RADIUS,
@@ -36,6 +37,7 @@ import {
   VIEW_H,
   VIEW_W,
   type ArmorSettings,
+  type Hitbox,
   type ArmorType,
   type BulletPatternDefinition,
   type Burst,
@@ -1056,11 +1058,24 @@ function drawHitBand(context: CanvasRenderingContext2D, x: number, y: number, ou
   strokeHitRing(context, x, y, outer, .62);
   context.restore();
 }
-/** One item's rings, at a given screen position. Decorations draw nothing. */
-function drawItemHits(context: CanvasRenderingContext2D, item: LevelItem, x: number, y: number) {
+/**
+ * One item's hit shape, at a given screen position and facing. An authored
+ * hitbox is drawn as it is -- turned as the sprite is, through the engine's
+ * own transform in studio's drawHitbox -- and an item without one gets the
+ * band of circles the world falls back to. Decorations draw nothing.
+ */
+function drawItemHits(context: CanvasRenderingContext2D, item: LevelItem, x: number, y: number, facing: number) {
+  if (item.hitbox) { drawHitbox(context, item.hitbox, x, y, item.size * item.scale, facing, { ink: HIT_INK, fill: .12, stroke: .62, lineWidth: 1.5 }); return; }
   const outer = Math.max(itemHitRadius(item, "bullet"), itemHitRadius(item, "ship"));
   const inner = itemHitRadius(item, "satellite");
   drawHitBand(context, x, y, outer, inner);
+}
+
+/** What the Inspector says a hitbox is made of. */
+function describeHitbox(hitbox: Hitbox) {
+  const polygons = hitbox.shapes.filter((shape) => shape.kind === "polygon").length;
+  const circles = hitbox.shapes.length - polygons;
+  return [polygons ? `${polygons} POLYGON${polygons === 1 ? "" : "S"}` : "", circles ? `${circles} CIRCLE${circles === 1 ? "" : "S"}` : ""].filter(Boolean).join(" · ");
 }
 
 function ObjectThumb({ item, assets }: { item: LevelItem; assets: SpriteAsset[] }) {
@@ -1261,12 +1276,14 @@ export function StarlineGame() {
   const [paletteTab, setPaletteTab] = useState<PaletteTab>("objects");
   const [editingAsset, setEditingAsset] = useState<SpriteAsset | null>(null);
   const [editingPattern, setEditingPattern] = useState<{ pattern: BulletPatternDefinition; target: PatternEditorTarget } | null>(null);
+  /** The id of the item whose hitbox is open in the editor dialog. */
+  const [editingHitbox, setEditingHitbox] = useState<string | null>(null);
   // Editing a saved Component rather than a loose document in both cases: the
   // id is what an item's fx points at, so it has to survive the round trip.
   const [editingSound, setEditingSound] = useState<{ id: string; sound: SfxDefinition } | null>(null);
   const [editingExplosion, setEditingExplosion] = useState<{ id: string; name: string; burst: BurstDefinition } | null>(null);
   const editingOverlayRef = useRef(false);
-  useEffect(() => { editingOverlayRef.current = editingSound !== null || editingExplosion !== null; }, [editingSound, editingExplosion]);
+  useEffect(() => { editingOverlayRef.current = editingSound !== null || editingExplosion !== null || editingHitbox !== null; }, [editingSound, editingExplosion, editingHitbox]);
   const editingPatternRef = useRef(false);
   useEffect(() => { editingPatternRef.current = editingPattern !== null; }, [editingPattern]);
   // The destructive confirms, replacing window.confirm: what to ask, and what
@@ -1490,9 +1507,27 @@ export function StarlineGame() {
     if (record) commitSnapshot(next, coalesceKey);
   }, [commitSnapshot]);
 
+  /**
+   * The sprite as the hitbox frame sees it: rotation 0, scale 1, no halo, and
+   * the mirroring an enemy's art gets -- the same drawSprite the stage uses,
+   * so what the mask reads and what the editor shows is what the world hits.
+   */
+  const paintItem = useCallback((item: LevelItem): PaintSprite => (context, extent) => {
+    drawSprite(context, item.sprite, 0, 0, extent, false, 1, 0, 1, item.type === "enemy" || item.type === "group", levelRef.current.assets, item.tint, {});
+  }, []);
+
   const updateItem = useCallback((id: string, updater: (item: LevelItem) => LevelItem, record = true) => {
     updateLevel((current) => ({ ...current, items: current.items.map((item) => item.id === id ? updater(item) : item) }), record, `item-${id}`);
   }, [updateLevel]);
+
+  /** A hitbox read off the item's own art by the engine, in one click. */
+  const deriveHitbox = useCallback((item: LevelItem, mode: "outline" | "circles") => {
+    const mask = rasterizeHitMask(paintItem(item), 96);
+    const hitbox = mask ? hitboxFromMask(mask, { mode }) : undefined;
+    if (!hitbox) { flash("NOTHING SOLID TO TRACE"); return; }
+    updateItem(item.id, (current) => ({ ...current, hitbox }));
+    flash(mode === "outline" ? "HITBOX TRACED" : "HITBOX COVERED");
+  }, [paintItem, updateItem, flash]);
 
   // The library's default coalesce key is the reason plus the selection, which
   // is what the key built here by hand already was.
@@ -2207,7 +2242,7 @@ export function StarlineGame() {
           const alpha = item.type === "decoration" ? item.decoration?.opacity ?? .5 : item.type === "group" ? .82 : 1;
           drawSprite(context, item.sprite, screenX, item.y + offset.y, item.size, selectedItem && index === 0, alpha, item.rotation + previewSpin(item) + previewTilt(item), item.scale, item.type === "enemy" || item.type === "group", current.assets, item.tint, { glow: item.glow, depth: item.depth });
           // A group is expanded into one body per offset, so each gets its own.
-          if (showHitsRef.current) drawItemHits(context, item, screenX, item.y + offset.y);
+          if (showHitsRef.current) drawItemHits(context, item, screenX, item.y + offset.y, item.rotation + previewSpin(item) + previewTilt(item));
         });
         if (item.type === "group" && item.x - cameraX > -100 && item.x - cameraX < VIEW_W + 100) {
           context.fillStyle = "#eaff62"; context.font = "10px monospace"; label(`GROUP x${item.group?.count ?? 1}`, item.x - cameraX - 28, item.y - item.size * item.scale - 22);
@@ -2461,7 +2496,7 @@ export function StarlineGame() {
         // clip and the vertical turn, which the bodies below are already in.
         for (const item of runtime.enemies) {
           if (!item.alive || !item.active) continue;
-          drawItemHits(context, item, item.x - renderCam, item.y);
+          drawItemHits(context, item, item.x - renderCam, item.y, item.rotation + (item.turned ?? 0) + travelTilt(item.vx, item.vy, item.heading?.follow ?? 0));
         }
         for (const bullet of [...runtime.bullets, ...runtime.enemyBullets]) drawHitBand(context, bullet.x - renderCam, bullet.y, bullet.radius, 0);
         drawHitBand(context, player.x, player.y, playerRadius(levelRef.current.player, levelRef.current.assets), 0);
@@ -2912,6 +2947,9 @@ export function StarlineGame() {
     return section(`${prefix}-${category}`, category, <div className="palette-category-items">{inCategory.map((component) => <div className="component-card-row" key={component.id}><button className={`palette-card ${tool === `component:${component.id}` ? "active" : ""}`} type="button" onClick={() => { if (component.object) { const value = `component:${component.id}` as Tool; setTool(value); toolRef.current = value; setInspectPlayer(false); } else applyEquipmentComponent(component); }}>{component.object ? <ObjectThumb item={component.object} assets={level.assets} /> : <span className={`sprite-icon ${component.kind === "weapon" ? "turret" : component.kind === "armor" ? "energy" : component.kind === "pattern" ? "blade" : "upgrade"}`} />}<span><strong>{component.name}</strong><small>{component.object ? "PLACE COMPONENT" : component.kind === "weapon" ? `${component.weapon?.tag.toUpperCase()} WEAPON` : component.kind === "pattern" ? `${component.pattern?.spawns.length ?? 0} EMITTER PATTERN` : component.kind.toUpperCase()}</small></span><b>{component.object ? "+" : component.kind === "pattern" ? "EDIT / USE" : "USE"}</b></button>{component.id.startsWith("component-") ? <button className="component-delete" type="button" onClick={() => deleteComponent(component.id)} title="Delete Component">×</button> : <button className="component-save" type="button" onClick={() => saveAsComponent(component)} title="Save as Component">+</button>}</div>)}</div>, "palette");
   });
 
+  const editingHitboxItem = editingHitbox ? level.items.find((item) => item.id === editingHitbox) : undefined;
+  const editingHitboxPaint = useMemo(() => (editingHitboxItem ? paintItem(editingHitboxItem) : () => undefined), [editingHitboxItem, paintItem]);
+
   return (
     <main className={"editor-app" + (presenting ? " is-presenting" : "")}>
       <header className="topbar">
@@ -3175,6 +3213,18 @@ export function StarlineGame() {
               {selected.armor && selected.armor.type !== "none" && <button className="inspector-action" type="button" onClick={() => saveArmorComponent(selected.armor!)}>SAVE ARMOR COMPONENT</button>}
             </>)}
 
+            {/* The shape it is struck within. None is the circle the engine has
+                always used; DEBUG on the toolbar shows whichever is in force. */}
+            {(selected.type === "enemy" || selected.type === "terrain" || selected.type === "group" || selected.type === "powerup" || selected.type === "upgrade") && section("hitbox", "HITBOX", <>
+              <p className="inspector-note">{selected.hitbox ? `${describeHitbox(selected.hitbox)}, in the sprite's own frame. Turns with the sprite; SIZE and SCALE keep it on the art.` : "The default circle. Read a shape off the art, or draw one."}</p>
+              <div className="component-actions hitbox-actions">
+                <button type="button" onClick={() => deriveHitbox(selected, "outline")} title="Trace the art's outline as polygons">AUTO OUTLINE</button>
+                <button type="button" onClick={() => deriveHitbox(selected, "circles")} title="Cover the art with circles that stay inside it">AUTO CIRCLES</button>
+                <button type="button" onClick={() => setEditingHitbox(selected.id)}>{selected.hitbox ? "EDIT…" : "DRAW…"}</button>
+                {selected.hitbox && <button type="button" onClick={() => { updateItem(selected.id, (item) => ({ ...item, hitbox: undefined })); flash("HITBOX REMOVED"); }}>USE CIRCLE</button>}
+              </div>
+            </>)}
+
             {selected.type === "group" && section("formation", "FORMATION", <>
               <div className="field-grid"><label className="field"><span>FORMATION</span><select value={selected.group?.pattern} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, group: { ...(item.group ?? { count: 5, spacing: 60, pattern: "line" }), pattern: event.target.value as GroupPattern } }))}><option value="line">LINE</option><option value="vee">VEE</option><option value="ring">RING</option></select></label><div className="field"><EbNumericInput label="COUNT" sliderEnabled={false} min={2} max={16} value={selected.group?.count ?? 5} onValueChange={(count) => updateItem(selected.id, (item) => ({ ...item, group: { ...(item.group ?? { pattern: "line", spacing: 60, count: 5 }), count } }))} /></div></div>
               <label className="range-field"><span><b>SPACING</b><em>{selected.group?.spacing ?? 60}u</em></span><input type="range" min="30" max="140" value={selected.group?.spacing ?? 60} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, group: { ...(item.group ?? { pattern: "line", spacing: 60, count: 5 }), spacing: Number(event.target.value) } }))} /></label>
@@ -3262,6 +3312,14 @@ export function StarlineGame() {
       {presenting && <div className="present-exit-hint">ESC TO RETURN TO THE EDITOR</div>}
       <footer className="shortcut-bar"><span><kbd>T</kbd> PLAYTEST</span><span><kbd>SHIFT T</kbd> PRESENT</span><span><kbd>ESC</kbd> SELECT / BUILD</span><span><kbd>S</kbd> SCROLL</span><span><kbd>D</kbd> DUPLICATE</span><span><kbd>Q / E</kbd> ROTATE</span><span><kbd>CTRL / SHIFT</kbd> MULTI-SELECT</span><span><kbd>1–9</kbd> EQUIP</span><span><kbd>CTRL Z</kbd> UNDO</span><span className="gamepad-shortcut">GAMEPAD: <kbd>LS</kbd> MOVE <kbd>RS</kbd> SATELLITE <kbd>Y</kbd> CYCLE WEAPON <kbd>A / RT</kbd> FIRE</span><strong>THE FATE OF THE GALAXY IS IN YOUR HANDS.</strong></footer>
       {editingAsset && <SpriteStudio asset={editingAsset} onSave={saveSpriteAsset} onCancel={() => setEditingAsset(null)} />}
+      {editingHitboxItem && <HitboxEditor
+        paint={editingHitboxPaint}
+        value={editingHitboxItem.hitbox}
+        name={editingHitboxItem.name}
+        reference={Math.max(itemHitRadius(editingHitboxItem, "bullet"), itemHitRadius(editingHitboxItem, "ship")) / (editingHitboxItem.size * editingHitboxItem.scale) || undefined}
+        onSave={(hitbox) => { updateItem(editingHitboxItem.id, (item) => ({ ...item, hitbox })); setEditingHitbox(null); flash(hitbox ? "HITBOX APPLIED" : "HITBOX REMOVED"); }}
+        onCancel={() => setEditingHitbox(null)}
+      />}
       {pendingConfirm && <EbDialog visible title={pendingConfirm.title} onVisibleChange={(open) => { if (!open) setPendingConfirm(null); }} showCloseButton={false} className="confirm-dialog" footerContent={<>
         <button type="button" onClick={() => setPendingConfirm(null)}>CANCEL</button>
         {pendingConfirm.alternate && <button type="button" onClick={() => { const act = pendingConfirm.alternate!.action; setPendingConfirm(null); act(); }}>{pendingConfirm.alternate.label}</button>}
