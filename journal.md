@@ -872,3 +872,17 @@ the other. They landed exactly on top of each other, and the bug surfaced as
 "my click on play deleted the track" — which it did, in the test, before it
 could do it to Ryan. Measuring both rectangles is what named it; the
 screenshot showed one button and looked fine.
+
+**The sibling genre had already answered the hard question.** Whether the ship
+belongs to the Game or the Level was the one field I had flagged as a judgement
+call. `runnjump`'s `GameDef` owns the hero, the assets, the components and the
+levels — the exact list — so the shmup's Game is that shape rather than a
+second opinion. Reading the neighbour before designing cost ten minutes and
+removed the only real uncertainty.
+
+**Two genres, one word, one scope.** `normalizeGame`, `emptyGame` and
+`defineGameFormat` already existed in `runnjump`. The flat-scope test — which
+exists because Pinball concatenates runtime modules into a single IIFE — caught
+all three. Its own note says adding to the known-clash list should feel
+expensive and removing is free; renaming was free here because nothing depended
+on the names yet, so the shmup's carry the genre.

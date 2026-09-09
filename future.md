@@ -195,6 +195,10 @@ rings show them differing.
 
 ## F-09 — A Game, and Levels that belong to it
 
+**The engine half is done and released** in `@ccllc/arcade` 2.0.32; what is
+left is Starline adopting it. See the shape below, which is now real rather
+than proposed.
+
 Ryan: "I think we need the concept of a Game and then Levels that belong to a
 game. Assets will belong to a game, and can be used on any level."
 
@@ -203,12 +207,23 @@ components, its own ship. Two levels in the same game cannot share a sprite
 without a copy in each, and there is no object that says "these five levels are
 one thing".
 
-**The shape, as designed:** a Game owns a name, the sprite assets, the saved
-components, the music shelf and an ordered list of Levels. A Level keeps what
-is genuinely per-level: mode, length, items, and the piece it plays. The
-player ship is the open question — a ship that changes between levels of one
-game is almost never wanted, so it probably rises to the Game, but that is the
-one field where moving it changes what an existing level means.
+**The shape, as shipped in the engine:** a Game owns a name, the ship, the
+sprite assets, the saved components, `rules.lives` and an ordered list of
+Levels. A Level keeps what is genuinely per-level: mode, length, items, and the
+piece it plays. The ship rose to the Game after all, and not on a hunch —
+`runnjump`'s `GameDef` has owned the hero all along, and following the sibling
+genre beat inventing a second answer.
+
+`gameLevel(game, index)` splices the shared parts into a level on the way out
+and `gameWithLevel` strips them on the way back, so the ship has exactly one
+home and the engine never learns the word "game". `normalizeShmupGame` takes a
+bare Level and returns a one-level game carrying its ship and sprites up,
+which is the migration every level on the shelf needs.
+
+**The names carry the genre** — `normalizeShmupGame`, `emptyShmupGame`,
+`defineShmupGameFormat` — because `runnjump` already exports the plain ones and
+a consumer flattening both Construction Sets into one scope would get a
+redeclaration rather than a game. The flat-scope test caught it.
 
 **What keeps it cheap:** the engine need not learn about Games at all. A Level
 handed to `createWorld` still carries its assets, so the Game is a storage and
@@ -216,9 +231,18 @@ authoring shape whose editor splices the shared assets into a level on the way
 out. That leaves the whole render path, the world and every existing level
 file untouched, and it keeps an exported level self-contained.
 
-**Migration:** every level on the shelf today becomes a one-level Game named
-after it. That is the part to write carefully and the reason this is not
-bolted onto C-51.
+**What Starline still has to do:** open a Game rather than a Level; a level
+list and a way to switch between them; the sprite and component shelves read
+from the game instead of the level; the music shelf owned by the game rather
+than by the browser; and the migration of the existing level shelf, one
+one-level game per saved level, which is the part to write carefully and the
+reason it is not bolted onto C-51.
+
+**The one open question, for Ryan:** what the editor's top bar becomes. Today
+it is one LEVEL name with SAVE, LOAD, NEW, DUPLICATE and DELETE beside it. A
+game with levels in it needs both — a game to open and save, and a level to
+switch to within it — and how much of that belongs in the top bar rather than
+in the palette is a taste call worth making before the surgery, not after.
 
 ## F-10 — Export a playable game
 
