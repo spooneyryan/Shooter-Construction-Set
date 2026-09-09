@@ -792,3 +792,34 @@ demanding a coverage the geometry forbids.
 **Draw the circle you are replacing.** The dialog shows the old circle
 dashed under the new shapes. It costs one arc and it is the entire argument
 for the feature, made every time the dialog opens.
+
+## 2026-09-08 — Fifty-one sliders, one component
+
+Ryan asked for floating-point rotation and typeable number boxes. C-49.
+
+**A survey before an edit.** Fifty-one call sites is too many to rewrite by
+hand and too many to rewrite blindly. Matching them all with one regex first
+-- and printing what it matched, with its label, its display expression and
+whether the readout was a percentage -- turned a risky sweep into a reviewable
+list. The one site that did not match (a flight limit, carrying `key={edge}`
+and a computed `max`) showed up as a hole rather than as silent damage.
+
+**Convert the display, do not re-author it.** Each readout was JSX children
+like `{level.player.xSpeed}u/s`. A brace-matching scan that respects nested
+quotes and template literals turned every one into a template string
+mechanically, so not one of the fifty-one formats had to be retyped or
+reasoned about. The two that already contained nested backticks came through
+because a template inside `${}` is legal.
+
+**The harness cannot press Enter.** Its key events carry an empty `key` and an
+empty `code`, which is why the Enter path could not be tested here and the
+blur path could. Driving the box through the native value setter and a real
+`input` event -- the way React reads it -- tested the commit logic directly
+and showed all four behaviours: a percentage mapping back through `scale`, a
+clamp, an unparseable word left alone, and a negative decimal accepted. Noted
+so the next session does not read an empty keydown as a bug in the code.
+
+**Select-all on focus is undone by the click that focused it.** The caret the
+browser places on mouse-up collapses the selection a moment after `onFocus`
+selects. Swallowing the first mouse-up after a focus fixes it without a timer,
+and leaves later clicks placing the caret normally.

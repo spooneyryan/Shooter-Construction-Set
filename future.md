@@ -1239,3 +1239,44 @@ one body per offset, as the world expands them.
 
 **Left open, on purpose:** the player ship stays a circle (F-07); clicking an
 item on the stage still tests the old circle (F-08).
+
+## C-49 — Type into any slider, and turn by tenths
+
+Ryan: more resolution on Movement > Rotation, floating point; and let numbers
+be typed into the number boxes as well as dragged.
+
+**The readouts were never boxes.** All fifty-one of them were a read-only
+`<em>` beside a slider, so a value could only be dragged, could only land on a
+step, and a number you already knew had to be hunted for. Each is now one
+`RangeField` whose readout is a real text box. Idle it shows exactly the string
+it always showed -- `330u/s`, `OFF`, `NONE`, `LEVEL`, `NOSE` -- and the number
+is parsed out of whatever you leave in it, so units and words come along
+harmlessly. Nothing parseable leaves the value alone rather than guessing at
+zero, and a value out of range clamps rather than being refused.
+
+**Typing is not snapped to the step.** The step is a comfortable stride for
+dragging, not the set of legal values: someone typing 355 into a speed that
+steps by 10 means 355. The slider's thumb still sits on the nearest step,
+because that is what a range input does with an off-step value, and the box
+shows the true number the moment you click into it.
+
+**It commits on Enter or on leaving the box, never per keystroke**, because
+each commit is an undo step -- typing `350` should not be three of them.
+Escape abandons the edit. The first mouse-up after focusing is swallowed so
+the select-all survives the caret the same click would otherwise place, and
+later clicks put the caret where you aim it.
+
+**`scale` is for the seven readouts that show a percentage of a 0-to-1
+number** -- DARKEN, DAMAGE TAKEN, FACE DIRECTION OF TRAVEL, OPACITY, LINE
+BRIGHTNESS, TUBE, GLOW, NOISE. You type what you see and the box divides it
+back; type 85 into DAMAGE TAKEN and 0.85 is stored.
+
+**Movement > ROTATION steps by 0.1°/s**, not 5, and shows the tenth it is set
+to. The engine has always stored it as a plain clamped number, so this is the
+editor catching up with what the level format already allowed. C-44 had taken
+it from 15 to 5; this is the same complaint answered properly.
+
+**One thing left as it was:** a dozen readouts round for legibility --
+`Math.round(rotation)°`, `toFixed(2)`. Type 7.25 into one and it stores 7.25
+and shows 7. Clicking the box always reveals the exact number, which is the
+part that has to be true.
