@@ -847,3 +847,28 @@ already gone, and once a pixel count said a category was still hidden after
 the eye had been turned back on. The DOM read is the one to trust; a canvas
 question needs a fresh frame and a second look. Already in memory from an
 earlier session, and earned again.
+
+## 2026-09-09 — Music, and the shape of the thing it belongs to
+
+Ryan asked three things: build the music option he picked, introduce a Game
+that owns Levels and assets, and export a playable game. C-51 is the first,
+whole; F-09 and F-10 are the other two, designed and not built.
+
+**Build the piece whose answer is already settled.** Music had a decided
+storage question and a module in GameBase waiting to be used; the Game
+concept has a storage migration over the user's own saved work and a field
+(the player ship) whose move changes what an existing level means. Shipping
+the settled one and writing the other one down beats starting both.
+
+**A fixed database version is a real constraint, not a detail.** The obvious
+reading of "keep it in the same IndexedDB store as the levels" is a second
+object store in the same database. The facade opens at version 1 always, so
+that store would never be created and every transaction would throw
+NotFoundError. A separate database is the same idea and actually works.
+
+**Two absolutely-positioned buttons in a row built for one.** LISTEN and
+DELETE both pin to `right: 4px`, because every other card row carries one or
+the other. They landed exactly on top of each other, and the bug surfaced as
+"my click on play deleted the track" — which it did, in the test, before it
+could do it to Ryan. Measuring both rectangles is what named it; the
+screenshot showed one button and looked fine.

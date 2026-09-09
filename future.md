@@ -193,6 +193,47 @@ Harmless, since selection is not collision, and the wider target is easier to
 click; noted because someone will expect the two to match once the debug
 rings show them differing.
 
+## F-09 — A Game, and Levels that belong to it
+
+Ryan: "I think we need the concept of a Game and then Levels that belong to a
+game. Assets will belong to a game, and can be used on any level."
+
+Today a Level is the whole document: it carries its own sprites, its own saved
+components, its own ship. Two levels in the same game cannot share a sprite
+without a copy in each, and there is no object that says "these five levels are
+one thing".
+
+**The shape, as designed:** a Game owns a name, the sprite assets, the saved
+components, the music shelf and an ordered list of Levels. A Level keeps what
+is genuinely per-level: mode, length, items, and the piece it plays. The
+player ship is the open question — a ship that changes between levels of one
+game is almost never wanted, so it probably rises to the Game, but that is the
+one field where moving it changes what an existing level means.
+
+**What keeps it cheap:** the engine need not learn about Games at all. A Level
+handed to `createWorld` still carries its assets, so the Game is a storage and
+authoring shape whose editor splices the shared assets into a level on the way
+out. That leaves the whole render path, the world and every existing level
+file untouched, and it keeps an exported level self-contained.
+
+**Migration:** every level on the shelf today becomes a one-level Game named
+after it. That is the part to write carefully and the reason this is not
+bolted onto C-51.
+
+## F-10 — Export a playable game
+
+Ryan: "the idea will be that the user can export a playable version of their
+game."
+
+A single file the author can host, mail or open: the engine, the editor's
+renderer minus the editor, the Game's levels, its assets inline, and its music.
+Depends on F-09 for what "the game" is. Two decisions to make first — whether
+the export is one HTML file with everything inlined (simple to hand around,
+megabytes large, and the music makes it tens of megabytes) or a folder with
+the audio beside it; and whether the player is a build of Starline's own play
+mode or a smaller purpose-built shell.
+
+
 ## C-00 — On-canvas rotation and resize handles
 
 When a playfield object is selected, add direct-manipulation handles around its selection circle. A rotation handle should let the designer rotate the object by dragging, while one or more resize handles should scale it proportionally. The handles should remain usable across object sizes and canvas zoom levels, provide live visual feedback, and update the same rotation and scale properties exposed in the Inspector. A drag should be recorded as one undoable operation.
@@ -1313,3 +1354,39 @@ The eye rides in the accordion's `headerContent`, which is also the collapse
 control, so the click is stopped from propagating; the section stays open when
 you shut a category off. Lit when the category is hidden rather than when it
 is shown, so a shut-off section reads from across the panel.
+
+## C-51 — Background music
+
+Ryan asked whether GameBase could do background music. It could:
+`createMusic` in `@ccllc/arcade/platform` has been there, unused by this game
+— named tracks, crossfade, loop-seam trimming, an intro that hands off to its
+loop, and a `define` that lets an editor add a track at runtime.
+
+**The file lives beside the level, not inside it**, which was Ryan's call from
+three options. A track is megabytes where a whole level is kilobytes, so the
+level names a piece by id (`level.music`, in `@ccllc/arcade` 2.0.31) and the
+audio sits on its own shelf in this browser. The stated cost: a level you
+export or share arrives silent for anyone without the file. Ryan: "We can
+basically forget about the share link when we're dealing with levels with
+images and music."
+
+**Its own IndexedDB database, not another store beside the levels.** The
+storage facade opens with a fixed version number, so a second object store
+added to a database that already exists would never see `onupgradeneeded` and
+every transaction against it would throw. Separate databases also keep the
+level shelf light, because each store loads all of itself into memory when it
+is ready — and audio is the one thing here big enough for that to matter.
+
+**MUSIC in the ASSETS tab:** import an MP3, OGG, WAV, M4A or FLAC, listen to
+it, point the level at it, or silence the level. A playtest starts the piece
+on the gesture that started the playtest — which is what lets the audio
+context run at all — and leaving one fades it out.
+
+**Deleting a track asks first**, where deleting a component does not: a
+component can be rebuilt in a few clicks and an imported file cannot be got
+back without the file.
+
+**Not delivered here, and recorded as F-09 and F-10:** the Game concept that
+would own this shelf rather than the browser owning it, and the playable
+export. The music shelf is already shaped for the first — it is keyed by id
+and independent of any level — so it moves under a Game without rework.

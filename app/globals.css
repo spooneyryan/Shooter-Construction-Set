@@ -204,6 +204,11 @@ button { cursor: pointer; }
 .component-delete:hover { border-color: var(--coral); color: var(--coral); }
 .component-save { position: absolute; top: 5px; right: 4px; width: 22px; height: 22px; z-index: 2; border: 1px solid transparent; background: transparent; color: #496571; font-family: var(--font-mono); font-size: 15px; }
 .component-save:hover { border-color: var(--lime); color: var(--lime); }
+/* A track row carries LISTEN and DELETE both, where every other row carries one
+   or the other -- and both are pinned to the same corner, so without this they
+   sit exactly on top of each other and the wrong one takes the click. */
+.music-row .palette-card { padding-right: 52px; }
+.music-row .component-save { right: 27px; }
 .asset-glyph { width: 28px; height: 28px; display: grid; place-items: center; border: 1px solid var(--cyan); background: rgba(100,227,255,.08); color: var(--cyan); font-family: var(--font-mono); font-size: 9px; }
 .asset-preview { width: 34px; height: 34px; display: block; image-rendering: pixelated; }
 .palette-card { width: 100%; min-height: 53px; margin-bottom: 5px; padding: 7px 8px; display: grid; grid-template-columns: 34px 1fr auto; align-items: center; gap: 8px; border: 1px solid #1f323c; background: #0c1720; color: #aebfc7; text-align: left; }
@@ -592,3 +597,5 @@ kbd { min-width: 22px; padding: 3px 5px; display: inline-block; border: 1px soli
 .category-eye svg { width: 14px; height: 14px; display: block; }
 .category-eye:hover { color: var(--cyan); }
 .category-eye[aria-pressed="false"] { color: var(--lime); }
+/* A note for a track, in the slot a sprite's picture takes on other cards. */
+.sprite-icon.music-note { display: grid; place-items: center; color: var(--cyan); font-size: 15px; }

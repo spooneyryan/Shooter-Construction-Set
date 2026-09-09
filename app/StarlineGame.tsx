@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { createDocumentSession, createHistory, createIndexedDbStorage, createLoop, createPerformanceMonitor, defineLibrary, defineSettings, DocumentError, type DocumentFormat, type PerfStats } from "@ccllc/arcade/core";
 import { useSyncExternalStore } from "react";
-import { createInput } from "@ccllc/arcade/platform";
+import { createInput, createMusic } from "@ccllc/arcade/platform";
 import { createSelection, createEditorCommands, createKeymap } from "@ccllc/arcade/editor";
 import { uniqueId } from "@ccllc/arcade/core";
 import { createTelemetry } from "@ccllc/arcade/telemetry";
@@ -541,6 +541,38 @@ let storageNotice: (message: string) => void = (message) => console.warn(message
  * A store that could not open, or a write that did not commit, is said out
  * loud: a save that will not survive a reload must not look like one that will.
  */
+/**
+ * The music shelf: the audio files themselves, beside the levels rather than
+ * inside them.
+ *
+ * A track is megabytes where a whole level is kilobytes, so a level names a
+ * track and the bytes live here. That is what keeps a level a document you can
+ * export, mail and diff, and it is why a shared level arrives silent unless
+ * its music travels separately -- a trade taken deliberately.
+ *
+ * Its own database, not another store in the level database: the facade opens
+ * with a fixed version number, so a second object store added to a database
+ * that already exists would never see `onupgradeneeded` and every transaction
+ * against it would throw. Separate databases also keep the level shelf light,
+ * since each store loads all of itself into memory when it is ready.
+ */
+const MUSIC_STORE_KEY = "starline-music-shelf-v1";
+const musicStore = createIndexedDbStorage({
+  database: "starline-music",
+  report: (name: string, data?: unknown) => { if (name === "storage.load-failed" || name === "storage.write-failed") console.warn(name, data); },
+});
+
+/** One imported piece. `data` is a data URL, which is what `fetch` and decodeAudioData take. */
+type MusicPiece = { id: string; name: string; data: string; bytes: number };
+
+const readMusicShelf = (): MusicPiece[] => {
+  try {
+    const raw = musicStore.getItem(MUSIC_STORE_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed.filter((piece) => piece && typeof piece.id === "string" && typeof piece.data === "string") : [];
+  } catch { return []; }
+};
+
 const levelStore = createIndexedDbStorage({
   database: "starline",
   migrateFrom: [STORAGE_KEY, DRAFT_KEY],
@@ -1249,6 +1281,12 @@ export function StarlineGame() {
   // caches the samples, so pointing forty enemies at one death sound costs one
   // render rather than forty.
   const sfxRef = useRef(createSfxPlayer({ masterGain: 0.5 }));
+  // Music is presentation and never simulation: nothing here is inside a step,
+  // and a track is asked for at the moment a playtest starts.
+  const musicRef = useRef(createMusic({ masterGain: 0.45 }));
+  const [musicShelf, setMusicShelf] = useState<MusicPiece[]>([]);
+  const [playingPiece, setPlayingPiece] = useState<string | null>(null);
+  const musicImportRef = useRef<HTMLInputElement>(null);
   const explosionsRef = useRef<ExplosionSet>(defaultExplosions());
   // Frame statistics, and somewhere for them to go. Both are created once and
   // held in refs: the loop reads them every frame and must not be torn down and
@@ -1530,6 +1568,11 @@ export function StarlineGame() {
     // localStorage and memory resolve at once and IndexedDB resolves a few
     // milliseconds after mount. It was always a second render; it still is.
     let stale = false;
+    void musicStore.ready.then(() => {
+      const shelf = readMusicShelf();
+      setMusicShelf(shelf);
+      for (const piece of shelf) musicRef.current.define(piece.id, { src: piece.data });
+    });
     void levelLibrary.ready.then(() => {
       if (stale) return;
       try {
@@ -1879,6 +1922,61 @@ export function StarlineGame() {
     catch (error) { flash(documentMessage(error, "EXPORT FAILED")); }
   }, [flash]);
 
+  /** Everything that changes the shelf goes through here, so the store and the player never disagree. */
+  const writeMusicShelf = useCallback((next: MusicPiece[]) => {
+    setMusicShelf(next);
+    try { musicStore.setItem(MUSIC_STORE_KEY, JSON.stringify(next)); }
+    catch { flash("MUSIC SHELF FULL"); }
+  }, [flash]);
+
+  const importMusic = useCallback(async (file: File) => {
+    // 24 MB of base64 is about a 17 MB file: longer than any loop a level needs
+    // and short of the point where holding it in memory is the problem.
+    const data = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result));
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(file);
+    }).catch(() => null);
+    if (!data) { flash("COULD NOT READ THAT FILE"); return; }
+    if (data.length > 24 * 1024 * 1024) { flash("TRACK TOO LARGE"); return; }
+    const piece: MusicPiece = { id: `music-${uid()}`, name: file.name.replace(/\.[^.]+$/, "").slice(0, 60) || "Untitled Track", data, bytes: file.size };
+    musicRef.current.define(piece.id, { src: piece.data });
+    writeMusicShelf([...readMusicShelf(), piece]);
+    flash("MUSIC IMPORTED");
+  }, [flash, writeMusicShelf]);
+
+  /**
+   * Deleting a track asks first, where deleting a component does not: a
+   * component can be rebuilt from the editor in a few clicks, and an imported
+   * file cannot be got back without the file. The button sits beside LISTEN,
+   * which makes a slip cheap to make and expensive to have made.
+   */
+  const deleteMusic = useCallback((id: string) => {
+    const piece = readMusicShelf().find((entry) => entry.id === id);
+    if (!piece) return;
+    setPendingConfirm({
+      title: "DELETE TRACK",
+      message: `Delete “${piece.name}”? The file is only in this browser, so it will have to be imported again. Levels that play it fall silent.`,
+      confirmLabel: "DELETE",
+      action: () => {
+        writeMusicShelf(readMusicShelf().filter((entry) => entry.id !== id));
+        if (levelRef.current.music === id) updateLevel((current) => ({ ...current, music: undefined }));
+        if (playingPiece === id) { musicRef.current.stop({ fadeSeconds: 0.15 }); setPlayingPiece(null); }
+        flash("TRACK REMOVED");
+      },
+    });
+  }, [flash, playingPiece, updateLevel, writeMusicShelf]);
+
+  /** Listening to a piece in the editor, which is not the same as a level playing it. */
+  const previewMusic = useCallback((id: string) => {
+    const music = musicRef.current;
+    if (playingPiece === id) { music.stop({ fadeSeconds: 0.2 }); setPlayingPiece(null); return; }
+    void music.resume().then(() => music.play(id, { restart: true })).then((started) => {
+      if (started) setPlayingPiece(id); else flash("COULD NOT PLAY THAT TRACK");
+    });
+  }, [flash, playingPiece]);
+
   const importLevel = useCallback(async (file: File) => {
     let parsed: Level;
     try { parsed = await levelDocument.readFile(file); }
@@ -1998,10 +2096,18 @@ export function StarlineGame() {
     setShield(Math.round(world.state.player.shield)); setProgress(0);
     setPresenting(presented);
     setMode("playing"); modeRef.current = "playing";
+    // The gesture that started the playtest is what lets the audio context
+    // run, so the resume rides on it.
+    const track = levelRef.current.music;
+    const music = musicRef.current;
+    if (track) void music.resume().then(() => music.play(track, { restart: true })).then((started) => { if (started) setPlayingPiece(track); });
+    else { music.stop({ fadeSeconds: 0.3 }); setPlayingPiece(null); }
     flash(presented ? "PRESENTING — ESC TO RETURN" : "PLAYTEST ACTIVE");
   }, [flash]);
 
   const exitPlay = useCallback(() => {
+    musicRef.current.stop({ fadeSeconds: 0.4 });
+    setPlayingPiece(null);
     inputRef.current?.releaseAll();
     worldRef.current = null;
     setPresenting(false);
@@ -3164,6 +3270,7 @@ export function StarlineGame() {
           <button type="button" onClick={() => importRef.current?.click()}>IMPORT…</button>
           <button type="button" onClick={exportLevel}>EXPORT</button>
           <button type="button" onClick={() => void shareLevel()}>SHARE LINK</button>
+          <input ref={musicImportRef} className="hidden-input" type="file" accept="audio/*,.mp3,.ogg,.wav,.m4a,.flac" onChange={(event) => { const file = event.target.files?.[0]; if (file) void importMusic(file); event.target.value = ""; }} />
           <input ref={importRef} className="hidden-input" type="file" accept="application/json,.json" onChange={(event) => { const file = event.target.files?.[0]; if (file) void importLevel(file); event.target.value = ""; }} />
         </div>
       </section>
@@ -3222,6 +3329,32 @@ export function StarlineGame() {
                   blankImageAsset exists for, and what normalizeAssets would drop. */}<button type="button" onClick={() => setEditingAsset(blankImageAsset(uid(), "New Image", 256, 256))}>+ IMAGE</button><button type="button" onClick={() => setEditingExplosion({ id: `component-${uid()}`, name: "New Explosion", burst: { ...createBurstPreset("Blast"), name: "New Explosion" } })}>+ EXPLOSION</button><button type="button" onClick={() => setEditingSound({ id: `component-${uid()}`, sound: { ...createSfxPreset("Explosion"), name: "New Sound" } })}>+ SOUND</button></div>
               {level.assets.length > 0 && section("SPRITES", "SPRITES", <div className="palette-category-items">{level.assets.map((asset) => <div className="component-card-row" key={asset.id}><button className="palette-card" type="button" onClick={() => setEditingAsset(structuredClone(asset))}><SpriteAssetPreview asset={asset} /><span><strong>{asset.name}</strong><small>{asset.kind.toUpperCase()} / {asset.width}×{asset.height}</small></span><b>EDIT</b></button><button className="component-delete" type="button" onClick={() => deleteSpriteAsset(asset.id)} title="Delete sprite">×</button></div>)}</div>, "palette")}
               {componentSections(shelf, "ASSET", assetCategories)}
+              {/* The audio lives beside the levels rather than in one, so this
+                  shelf is the game's and every level names a piece from it. */}
+              {section("MUSIC", "MUSIC", <div className="palette-category-items">
+                {musicShelf.map((piece) => {
+                  const inUse = level.music === piece.id;
+                  return <div className="component-card-row music-row" key={piece.id}>
+                    <button
+                      className={`palette-card ${inUse ? "active" : ""}`}
+                      type="button"
+                      title={inUse ? "Playing over this level" : "Play this over this level"}
+                      onClick={() => updateLevel((current) => ({ ...current, music: inUse ? undefined : piece.id }))}
+                    >
+                      <span className="sprite-icon music-note">♪</span>
+                      <span><strong>{piece.name}</strong><small>{(piece.bytes / 1048576).toFixed(1)} MB{inUse ? " / THIS LEVEL" : ""}</small></span>
+                      <b>{inUse ? "IN USE" : "USE"}</b>
+                    </button>
+                    <button className="component-save" type="button" onClick={() => previewMusic(piece.id)} title={playingPiece === piece.id ? "Stop" : "Listen"}>{playingPiece === piece.id ? "■" : "▶"}</button>
+                    <button className="component-delete" type="button" onClick={() => deleteMusic(piece.id)} title="Delete track">×</button>
+                  </div>;
+                })}
+                <div className="asset-actions">
+                  <button type="button" onClick={() => musicImportRef.current?.click()}>+ MUSIC…</button>
+                  {level.music && <button type="button" onClick={() => updateLevel((current) => ({ ...current, music: undefined }))}>SILENCE THIS LEVEL</button>}
+                </div>
+                {!musicShelf.length && <p className="palette-empty">No music yet. Import an MP3, OGG, WAV, M4A or FLAC; it is kept in this browser beside your levels, not inside them.</p>}
+              </div>, "palette")}
             </>}
           </EbAccordion>}
           />
