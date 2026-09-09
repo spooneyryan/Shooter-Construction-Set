@@ -584,3 +584,11 @@ kbd { min-width: 22px; padding: 3px 5px; display: inline-block; border: 1px soli
 /* No z-index on purpose: positioned elements paint in DOM order, which puts this
    above the frame canvas and below the HUD and overlays that follow it. */
 .present-canvas { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+/* The eye beside a palette category, and the name it belongs to. Dim until the
+   category is hidden, when it goes bright so a shut-off section is obvious
+   from across the panel rather than only when you read the icon. */
+.palette-head { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.category-eye { width: 18px; height: 18px; flex: 0 0 auto; padding: 0; display: grid; place-items: center; border: 0; background: transparent; color: #4a626e; }
+.category-eye svg { width: 14px; height: 14px; display: block; }
+.category-eye:hover { color: var(--cyan); }
+.category-eye[aria-pressed="false"] { color: var(--lime); }

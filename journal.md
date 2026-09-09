@@ -823,3 +823,27 @@ so the next session does not read an empty keydown as a bug in the code.
 browser places on mouse-up collapses the selection a moment after `onFocus`
 selects. Swallowing the first mouse-up after a focus fixes it without a timer,
 and leaves later clicks placing the caret normally.
+
+## 2026-09-08 (later) — Two ways at the same problem
+
+Ryan asked for box selection and for per-category visibility, and asked
+whether GameBase could do background music. C-50, and an answer.
+
+**They are the same complaint.** A stage with a nebula over a ship is hard to
+select on, and the two requests are the two halves of the fix: take a region
+rather than a point, and take a category out of the way. That is why the box
+does not inherit C-41's decoration-last rule — the rule exists because a
+click must choose one thing, and a box has been told exactly what to take.
+Building both at once is what made that argument available; either alone
+would have tempted a cleverer box.
+
+**Hidden has to mean unselectable.** Drawing is the obvious half. The half
+that matters is the hit test and the box, because an invisible thing you can
+still grab is worse than a visible one in the way.
+
+**The harness's screenshots and canvas readbacks lag its DOM reads.** Three
+times this session a screenshot showed a selection box that the DOM said was
+already gone, and once a pixel count said a category was still hidden after
+the eye had been turned back on. The DOM read is the one to trust; a canvas
+question needs a fresh frame and a second look. Already in memory from an
+earlier session, and earned again.

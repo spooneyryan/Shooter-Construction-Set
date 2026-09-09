@@ -514,6 +514,7 @@ type TransformOrigin = { id: string; x: number; y: number; rotation: number; sca
 type CanvasDrag =
   | { kind: "items"; ids: string[]; startWorld: Point; origins: TransformOrigin[]; startSnapshot: string }
   | { kind: "transform"; mode: "rotate" | "scale"; ids: string[]; center: Point; startAngle: number; startDistance: number; origins: TransformOrigin[]; startSnapshot: string }
+  | { kind: "marquee"; from: Point; base: string[] }
   | { kind: "scroll"; startX: number; startCamera: number }
   | { kind: "bezier"; id: string; index: number; startSnapshot: string }
   | { kind: "end"; startSnapshot: string };
@@ -1148,6 +1149,28 @@ function RangeField({ name, label, display, min, max, step, value, onChange, sca
   </div>;
 }
 
+/**
+ * The palette category a placed item belongs to. The same six the OBJECTS tab
+ * lists, so hiding a category hides exactly what that section offers.
+ */
+function itemCategory(item: { type: string }) {
+  return item.type === "enemy" ? "ENEMIES"
+    : item.type === "terrain" ? "TERRAIN"
+    : item.type === "group" ? "GROUPS"
+    : item.type === "powerup" ? "POWERUPS"
+    : item.type === "upgrade" ? "UPGRADES"
+    : "DECORATIONS";
+}
+
+/** Open and shut, for the visibility toggle beside a category's name. */
+function EyeIcon({ open }: { open: boolean }) {
+  return <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+    <path d="M1 8s2.6-4.2 7-4.2S15 8 15 8s-2.6 4.2-7 4.2S1 8 1 8Z" fill="none" stroke="currentColor" strokeWidth="1.3" />
+    <circle cx="8" cy="8" r="1.9" fill="currentColor" />
+    {!open && <path d="M2.5 13.5 13.5 2.5" fill="none" stroke="currentColor" strokeWidth="1.3" />}
+  </svg>;
+}
+
 function ObjectThumb({ item, assets }: { item: LevelItem; assets: SpriteAsset[] }) {
   const ref = useRef<HTMLCanvasElement>(null);
   useEffect(() => {
@@ -1329,6 +1352,17 @@ export function StarlineGame() {
    */
   const [showHits, setShowHits] = useState(false);
   const showHitsRef = useRef(false);
+  /**
+   * Categories hidden while editing. An editing aid and nothing more: it never
+   * reaches the level, and a playtest shows everything. Hidden also means
+   * unselectable -- clicking or boxing what you cannot see is how you move a
+   * nebula you thought was not there.
+   */
+  const [hiddenCategories, setHiddenCategories] = useState<Record<string, boolean>>({});
+  const hiddenRef = useRef<Record<string, boolean>>({});
+  useEffect(() => { hiddenRef.current = hiddenCategories; }, [hiddenCategories]);
+  /** The box being dragged out on empty space, in world units, while it is being dragged. */
+  const marqueeRef = useRef<{ from: Point; to: Point } | null>(null);
   const [controllerName, setControllerName] = useState("");
   const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>({});
   // Which section each tool panel opened last. Under "single" Toolbar Behavior
@@ -2304,6 +2338,7 @@ export function StarlineGame() {
         return spin ? ((now / 1000) * spin) % 360 : 0;
       };
       const drawPlacedItem = (item: LevelItem) => {
+        if (hiddenRef.current[itemCategory(item)]) return;
         const selectedItem = editorFor().selection.ids.includes(item.id);
         const offsets = groupOffsets(item.group, item.rotation, item.scale);
         offsets.forEach((offset, index) => {
@@ -2372,6 +2407,22 @@ export function StarlineGame() {
             drawSprite(context, shape.sprite, hover.x + offset.x, hover.y + offset.y, shape.size, false, .6, shape.rotation + previewSpin(shape), shape.scale, shape.type === "enemy" || shape.type === "group", current.assets, shape.tint, { glow: shape.glow, depth: shape.depth });
           });
         }
+      }
+      const marquee = marqueeRef.current;
+      if (marquee) {
+        const x = Math.min(marquee.from.x, marquee.to.x) - cameraX;
+        const y = Math.min(marquee.from.y, marquee.to.y);
+        const w = Math.abs(marquee.to.x - marquee.from.x);
+        const h = Math.abs(marquee.to.y - marquee.from.y);
+        context.save();
+        context.shadowBlur = 0;
+        context.fillStyle = "rgba(234,255,98,.07)";
+        context.strokeStyle = "rgba(234,255,98,.85)";
+        context.lineWidth = 1;
+        context.setLineDash([4, 4]);
+        context.fillRect(x, y, w, h);
+        context.strokeRect(x + .5, y + .5, w, h);
+        context.restore();
       }
       const selectedItems = current.items.filter((item) => editorFor().selection.ids.includes(item.id)); const geometry = selectionGeometry(selectedItems);
       if (geometry) {
@@ -2706,12 +2757,33 @@ export function StarlineGame() {
    * radius as wide as it is, never takes the click meant for the ship. Within
    * a pass the later-placed item still wins, as it always did.
    */
+  /**
+   * Everything a dragged box encloses: any part of a sprite inside it counts,
+   * and a formation counts if any one of its members does. Unlike a click,
+   * which picks one thing and therefore prefers what the player interacts with
+   * over the scenery behind it, a box means "what is in here" -- and a
+   * category in the way can be shut off with its eye.
+   */
+  const itemsWithin = (from: Point, to: Point) => {
+    const left = Math.min(from.x, to.x); const right = Math.max(from.x, to.x);
+    const top = Math.min(from.y, to.y); const bottom = Math.max(from.y, to.y);
+    return levelRef.current.items.filter((item) => {
+      if (hiddenRef.current[itemCategory(item)]) return false;
+      const reach = item.size * item.scale;
+      return groupOffsets(item.group, item.rotation, item.scale).some((offset) => {
+        const x = item.x + offset.x; const y = item.y + offset.y;
+        return x + reach >= left && x - reach <= right && y + reach >= top && y - reach <= bottom;
+      });
+    });
+  };
+
   const findItem = (world: Point) => {
     const items = levelRef.current.items;
     for (const decorations of [false, true]) {
       for (let i = items.length - 1; i >= 0; i -= 1) {
         const item = items[i];
         if ((item.type === "decoration") !== decorations) continue;
+        if (hiddenRef.current[itemCategory(item)]) continue;
         const radius = item.size * item.scale + 24;
         const hit = groupOffsets(item.group, item.rotation, item.scale).some((offset) => {
           const x = world.x - item.x - offset.x; const y = world.y - item.y - offset.y;
@@ -2761,7 +2833,17 @@ export function StarlineGame() {
       return;
     }
     if (currentTool === "select") {
-      if (!hit) { if (!event.ctrlKey && !event.metaKey && !event.shiftKey) setSelection([]); return; }
+      if (!hit) {
+        // Empty space starts a box rather than only clearing: what it encloses
+        // is selected as it is dragged, and holding Ctrl or Shift adds to what
+        // was already picked instead of replacing it.
+        const additive = event.ctrlKey || event.metaKey || event.shiftKey;
+        const base = additive ? editorFor().selection.ids.slice() : [];
+        if (!additive) setSelection([]);
+        marqueeRef.current = { from: world, to: world };
+        dragRef.current = { kind: "marquee", from: world, base };
+        return;
+      }
       let ids = editorFor().selection.ids.slice();
       if (event.ctrlKey || event.metaKey) ids = ids.includes(hit.id) ? ids.filter((id) => id !== hit.id) : [...ids, hit.id];
       else if (event.shiftKey) { if (!ids.includes(hit.id)) ids.push(hit.id); }
@@ -2786,7 +2868,13 @@ export function StarlineGame() {
     hoverRef.current = screen;
     if (!event.currentTarget.hasPointerCapture(event.pointerId) || !dragRef.current) return;
     const drag = dragRef.current;
-    if (drag.kind === "scroll") {
+    if (drag.kind === "marquee") {
+      const world = { x: screen.x + editorCameraRef.current, y: screen.y };
+      marqueeRef.current = { from: drag.from, to: world };
+      // Live, so the box says what it has as it is drawn rather than after.
+      // Selection is not level state and records no history, so this is free.
+      setSelection([...new Set([...drag.base, ...itemsWithin(drag.from, world).map((item) => item.id)])]);
+    } else if (drag.kind === "scroll") {
       setCameraSafe(drag.startCamera - (screen.x - drag.startX));
     } else if (drag.kind === "end") {
       const farthestItem = levelRef.current.items.reduce((max, item) => {
@@ -2823,6 +2911,7 @@ export function StarlineGame() {
   };
 
   const finishCanvasDrag = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    marqueeRef.current = null;
     if (modeRef.current !== "build") { mouseFireRef.current = false; if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); return; }
     const drag = dragRef.current;
     if (drag && "startSnapshot" in drag && drag.startSnapshot !== JSON.stringify(levelRef.current)) commitSnapshot(levelRef.current);
@@ -3001,8 +3090,8 @@ export function StarlineGame() {
     </span>
   );
 
-  const section = (key: string, title: string, children: ReactNode, group = "inspector") => (
-    <EbAccordionItem key={key} title={title} expanded={sectionMode === "single" ? openSections[group] === key : !collapsedSections[key]} onExpandedChange={(expanded) => {
+  const section = (key: string, title: string, children: ReactNode, group = "inspector", header?: ReactNode) => (
+    <EbAccordionItem key={key} {...(header ? { headerContent: header } : { title })} expanded={sectionMode === "single" ? openSections[group] === key : !collapsedSections[key]} onExpandedChange={(expanded) => {
       setOpenSections((current) => expanded ? { ...current, [group]: key } : current[group] === key ? { ...current, [group]: "" } : current);
       setCollapsedSections((current) => ({ ...current, [key]: !expanded }));
     }}>{children}</EbAccordionItem>
@@ -3108,7 +3197,21 @@ export function StarlineGame() {
                 {palette.filter((entry) => entry.category === category).map((entry) => <button type="button" className={`palette-card ${tool === entry.key ? "active" : ""}`} onClick={() => { setTool(entry.key); toolRef.current = entry.key; setInspectPlayer(false); }} key={entry.key}>
                   <span className={`sprite-icon ${entry.sprite}`} /><span><strong>{entry.label}</strong><small>{entry.meta}</small></span><b>+</b>
                 </button>)}
-              </div>, "palette")) : tab === "components" ? <>
+              </div>, "palette",
+              // The eye rides in the header rather than beside the section,
+              // because the thing it hides is the thing the section places.
+              // stopPropagation: the header is also the collapse control.
+              <span className="palette-head">
+                <button
+                  type="button"
+                  className="category-eye"
+                  aria-pressed={!hiddenCategories[category]}
+                  title={hiddenCategories[category] ? `Show ${category.toLowerCase()}` : `Hide ${category.toLowerCase()} while editing`}
+                  onClick={(event) => { event.stopPropagation(); event.preventDefault(); setHiddenCategories((current) => ({ ...current, [category]: !current[category] })); }}
+                  onPointerDown={(event) => event.stopPropagation()}
+                ><EyeIcon open={!hiddenCategories[category]} /></button>
+                <span>{category}</span>
+              </span>)) : tab === "components" ? <>
               {componentSections(shelf, "COMP", componentCategories)}
               {!shelf.some((component) => componentCategories.includes(componentCategory(component))) && <p className="palette-empty">Nothing here yet. Select an Object and choose SAVE AS COMPONENT to keep it.</p>}
             </> : <>

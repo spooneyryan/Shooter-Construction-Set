@@ -1280,3 +1280,36 @@ it from 15 to 5; this is the same complaint answered properly.
 `Math.round(rotation)°`, `toFixed(2)`. Type 7.25 into one and it stores 7.25
 and shows 7. Clicking the box always reveals the exact number, which is the
 part that has to be true.
+
+## C-50 — A box to select with, and an eye per category
+
+Two of Ryan's, which turned out to be one idea from two directions: getting at
+the thing you mean on a crowded stage.
+
+**Dragging on empty space draws a box.** Everything it encloses is selected,
+live as it is dragged rather than on release, because selection is not level
+state and records no history — the box can afford to say what it has while you
+are still drawing it. Any part of a sprite inside counts, and a formation
+counts if any one of its members does. Holding Ctrl or Shift adds to what was
+already picked instead of replacing it. Empty space still clears the selection
+when you click without dragging, as it always did.
+
+**Unlike a click, a box takes everything.** C-41 taught the hit test to prefer
+what the player interacts with over the scenery behind it, because a click
+picks one thing and a nebula's radius was swallowing the ship under it. A box
+means "what is in here", so it takes the nebula and the ship both — and the
+answer to a category that is in the way is the eye beside it, not a rule the
+box applies on your behalf.
+
+**An eye beside each palette category** — ENEMIES, TERRAIN, GROUPS, POWERUPS,
+UPGRADES, DECORATIONS — hides that category while editing. Hidden means
+unselectable as well as invisible, by click and by box alike: being able to
+drag a nebula you cannot see is how you move one you thought was not there.
+It is an editing aid and nothing more. It never reaches the level, a playtest
+shows everything, and it is not persisted, because it describes what you are
+doing this minute rather than what the level is.
+
+The eye rides in the accordion's `headerContent`, which is also the collapse
+control, so the click is stopped from propagating; the section stays open when
+you shut a category off. Lit when the category is hidden rather than when it
+is shown, so a shut-off section reads from across the panel.
