@@ -886,3 +886,31 @@ exists because Pinball concatenates runtime modules into a single IIFE — caugh
 all three. Its own note says adding to the known-clash list should feel
 expensive and removing is free; renaming was free here because nothing depended
 on the names yet, so the shmup's carry the genre.
+
+## 2026-09-09 (later) — The game is the shelf's shape, not the editor's
+
+C-52. Ryan left the level-switcher placement to me.
+
+**Find the seam that makes a big change small.** A Game owning the ship, the
+sprites and the components could have meant touching the whole editor: every
+`level.assets` read, every Inspector field, the render path. It did not,
+because two functions in the engine — one splicing the shared parts in, one
+stripping them back out — let the editor go on holding a plain Level. The
+game is the shape the shelf holds; the level is the shape the work happens in.
+Everything below the write-back effect is unchanged.
+
+**Lifting is what makes sharing work.** `gameWithLevel` strips the ship, the
+sprites and the components, so writing a level back would have quietly thrown
+away an edit to any of them. The write-back lifts those three onto the game
+first and then stores the rest. That one line is the difference between
+"assets belong to a game" and "assets vanish when you edit them".
+
+**A migration that copies is a migration you can be wrong about.** The levels
+saved before Games are copied to the game shelf and left where they were. If
+the conversion is bad, nothing is lost and the marker can be cleared.
+
+**The stale Vite dep cache bit twice in one session.** Bumping `@ccllc/arcade`
+while the dev server is running leaves the pre-bundled copy without the new
+exports, and the page dies with "does not provide an export named X". Clearing
+`node_modules/.vite` only works with the server stopped — doing it underneath a
+running server just gets it rewritten from the old copy.

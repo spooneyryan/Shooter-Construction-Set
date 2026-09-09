@@ -599,3 +599,23 @@ kbd { min-width: 22px; padding: 3px 5px; display: inline-block; border: 1px soli
 .category-eye[aria-pressed="false"] { color: var(--lime); }
 /* A note for a track, in the slot a sprite's picture takes on other cards. */
 .sprite-icon.music-note { display: grid; place-items: center; color: var(--cyan); font-size: 15px; }
+/* --- the game's levels ------------------------------------------------------- */
+/* Above the palette tabs: which level you are editing is a different axis from
+   what you are placing into it, and it belongs to the game either way. */
+.level-list { margin-bottom: 10px; padding-bottom: 10px; border-bottom: 1px solid #1c2f39; }
+.level-list-head { margin-bottom: 6px; display: flex; align-items: center; gap: 7px; }
+.level-list-head > span { flex: 0 0 auto; color: #607985; font-family: var(--font-mono); font-size: 9px; letter-spacing: .09em; }
+.level-name-field { min-width: 0; flex: 1 1 auto; height: 24px; padding: 0 6px; border: 1px solid #263944; background: #0d1921; color: #c2d3d9; font-family: var(--font-mono); font-size: 10px; }
+.level-name-field:focus { border-color: var(--cyan); outline: 0; }
+.level-list-items { max-height: 132px; margin-bottom: 6px; display: flex; flex-direction: column; gap: 3px; overflow-y: auto; }
+.level-list-items button { min-height: 26px; padding: 0 7px; display: flex; align-items: center; gap: 7px; border: 1px solid #22343e; background: #0b1720; color: #8ba1ab; font-family: var(--font-mono); font-size: 9px; text-align: left; }
+.level-list-items button b { flex: 0 0 auto; color: #4a626e; font-weight: 500; }
+.level-list-items button span { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.level-list-items button em { flex: 0 0 auto; color: #4a626e; font-style: normal; }
+.level-list-items button:hover { border-color: var(--cyan); color: var(--cyan); }
+.level-list-items button.active { border-color: rgba(234,255,98,.7); background: rgba(234,255,98,.045); color: var(--lime); }
+.level-list-items button.active b, .level-list-items button.active em { color: var(--lime); }
+.level-list-actions { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 4px; }
+.level-list-actions button { min-height: 26px; border: 1px solid #34505d; background: #0e1c24; color: var(--cyan); font-family: var(--font-mono); font-size: 8px; letter-spacing: .06em; }
+.level-list-actions button:disabled { opacity: .35; }
+.level-list-actions button:hover:not(:disabled) { border-color: var(--cyan); }

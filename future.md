@@ -193,57 +193,6 @@ Harmless, since selection is not collision, and the wider target is easier to
 click; noted because someone will expect the two to match once the debug
 rings show them differing.
 
-## F-09 — A Game, and Levels that belong to it
-
-**The engine half is done and released** in `@ccllc/arcade` 2.0.32; what is
-left is Starline adopting it. See the shape below, which is now real rather
-than proposed.
-
-Ryan: "I think we need the concept of a Game and then Levels that belong to a
-game. Assets will belong to a game, and can be used on any level."
-
-Today a Level is the whole document: it carries its own sprites, its own saved
-components, its own ship. Two levels in the same game cannot share a sprite
-without a copy in each, and there is no object that says "these five levels are
-one thing".
-
-**The shape, as shipped in the engine:** a Game owns a name, the ship, the
-sprite assets, the saved components, `rules.lives` and an ordered list of
-Levels. A Level keeps what is genuinely per-level: mode, length, items, and the
-piece it plays. The ship rose to the Game after all, and not on a hunch —
-`runnjump`'s `GameDef` has owned the hero all along, and following the sibling
-genre beat inventing a second answer.
-
-`gameLevel(game, index)` splices the shared parts into a level on the way out
-and `gameWithLevel` strips them on the way back, so the ship has exactly one
-home and the engine never learns the word "game". `normalizeShmupGame` takes a
-bare Level and returns a one-level game carrying its ship and sprites up,
-which is the migration every level on the shelf needs.
-
-**The names carry the genre** — `normalizeShmupGame`, `emptyShmupGame`,
-`defineShmupGameFormat` — because `runnjump` already exports the plain ones and
-a consumer flattening both Construction Sets into one scope would get a
-redeclaration rather than a game. The flat-scope test caught it.
-
-**What keeps it cheap:** the engine need not learn about Games at all. A Level
-handed to `createWorld` still carries its assets, so the Game is a storage and
-authoring shape whose editor splices the shared assets into a level on the way
-out. That leaves the whole render path, the world and every existing level
-file untouched, and it keeps an exported level self-contained.
-
-**What Starline still has to do:** open a Game rather than a Level; a level
-list and a way to switch between them; the sprite and component shelves read
-from the game instead of the level; the music shelf owned by the game rather
-than by the browser; and the migration of the existing level shelf, one
-one-level game per saved level, which is the part to write carefully and the
-reason it is not bolted onto C-51.
-
-**The one open question, for Ryan:** what the editor's top bar becomes. Today
-it is one LEVEL name with SAVE, LOAD, NEW, DUPLICATE and DELETE beside it. A
-game with levels in it needs both — a game to open and save, and a level to
-switch to within it — and how much of that belongs in the top bar rather than
-in the palette is a taste call worth making before the surgery, not after.
-
 ## F-10 — Export a playable game
 
 Ryan: "the idea will be that the user can export a playable version of their
@@ -1414,3 +1363,39 @@ back without the file.
 would own this shelf rather than the browser owning it, and the playable
 export. The music shelf is already shaped for the first — it is keyed by id
 and independent of any level — so it moves under a Game without rework.
+
+## C-52 — Games, and the Levels that belong to them
+
+Ryan: "I think we need the concept of a Game and then Levels that belong to a
+game. Assets will belong to a game, and can be used on any level."
+
+**The shelf holds Games now.** GAME names the open one in the top bar; NEW,
+LOAD, SAVE, DUPLICATE, DELETE, IMPORT and EXPORT all deal in games. LEVELS
+sits above the palette tabs — Ryan left the placement to me and it goes there
+because which level you are editing is a different axis from what you are
+placing into it, and it has to be reachable from every tab. It lists the
+game's levels with their item counts, names the one being edited, and adds,
+copies and deletes.
+
+**The editor still edits a Level and nothing below that line knows
+otherwise.** `gameLevel` splices the game's ship, sprites and components into a
+level on the way in; the effect that carries edits back lifts those three out
+again and `gameWithLevel` stores what remains. So the render path, the
+Inspector, the world and every level file are untouched — a change to the ship
+or a sprite on one level is a change on all of them, which is the whole point,
+and a change to items or length stays where it was made.
+
+**Old work opens without ceremony.** `normalizeShmupGame` takes a bare Level as
+readily as a Game, so samples, shared links, exported level files and the draft
+from before all open as one-level games. Every saved level is copied onto the
+game shelf once, keeping its name, behind a marker so it happens exactly once —
+a copy, not a move, so the old shelf is still there if the migration was wrong.
+
+**Undo is the level's, and is reset when you switch.** Undoing across a level
+switch would be undoing into a level you are no longer looking at.
+
+**Left as it is, deliberately:** the music shelf stays the browser's rather
+than the game's. Tracks are keyed by id and any level of any game can name one,
+which is a superset of what was asked for; moving the list into the game
+document would only narrow it. Recorded here so the next person knows it was a
+decision.

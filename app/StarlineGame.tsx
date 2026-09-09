@@ -20,6 +20,13 @@ import {
   weaponFitsSlot,
   defaultArmor,
   defineLevelFormat,
+  defineShmupGameFormat,
+  GAME_MAX_LEVELS,
+  emptyLevel,
+  emptyShmupGame,
+  gameLevel,
+  gameWithLevel,
+  normalizeShmupGame,
   groupOffsets,
   idleInput,
   makeItem,
@@ -37,6 +44,7 @@ import {
   VIEW_H,
   VIEW_W,
   type ArmorSettings,
+  type Game,
   type Hitbox,
   type ArmorType,
   type BulletPatternDefinition,
@@ -689,6 +697,59 @@ const levelLibrary = defineLibrary<Level>({
   migrate: (raw) => (raw && typeof raw === "object" && !Array.isArray(raw)
     ? Object.entries(raw as Record<string, Level>).map(([name, document]) => ({ name, document }))
     : []),
+});
+
+const GAME_STORAGE_KEY = "starline-game-library-v1";
+const GAME_DRAFT_KEY = "starline-game-draft-v1";
+const GAMES_MIGRATED_KEY = "starline-games-migrated-v1";
+
+/**
+ * A whole Game as a document: the ship, the shared sprites and components, and
+ * every level. What SAVE, LOAD, IMPORT and EXPORT now deal in.
+ *
+ * `normalizeShmupGame` takes a bare Level as readily as a Game and returns a
+ * one-level game, which is what makes every sample, every level file anyone
+ * exported and every level already on the shelf open without ceremony.
+ */
+const gameDocument = defineShmupGameFormat({ format: "starline-game" });
+
+const gameLibrary = defineLibrary<Game>({
+  format: gameDocument as unknown as DocumentFormat<Game>,
+  key: GAME_STORAGE_KEY,
+  draftKey: GAME_DRAFT_KEY,
+  storage: levelStore,
+  limit: 60,
+});
+
+/**
+ * Every level saved before Games becomes a one-level game, once, keeping its
+ * name. The old shelf is left exactly as it was: this is a copy, not a move,
+ * so a bad migration costs nothing and the levels are still there to look at.
+ *
+ * A shelf that will not read is not a reason to refuse to start, so the whole
+ * thing is inside a try and the marker is written either way -- a migration
+ * that failed once will fail the same way every time, and retrying it on every
+ * load would only re-import whatever half of it did work.
+ */
+const migrateLevelsToGames = () => {
+  if (levelStore.getItem(GAMES_MIGRATED_KEY)) return 0;
+  let moved = 0;
+  try {
+    for (const entry of levelLibrary.entries()) {
+      if (gameLibrary.readByName(entry.name)) continue;
+      if (gameLibrary.save(normalizeShmupGame(entry.document), { name: entry.name })) moved += 1;
+    }
+  } catch { /* leave the marker set below; the levels remain on the old shelf */ }
+  try { levelStore.setItem(GAMES_MIGRATED_KEY, "1"); } catch { /* nothing to do */ }
+  return moved;
+};
+
+const gameSession = createDocumentSession<Game>({
+  format: gameDocument as unknown as DocumentFormat<Game>,
+  library: gameLibrary,
+  blank: () => emptyShmupGame("Untitled Game"),
+  nameOf: (candidate) => candidate.name,
+  withName: (candidate, name) => ({ ...candidate, name }),
 });
 
 /**
@@ -1375,7 +1436,21 @@ export function StarlineGame() {
   const [loadName, setLoadName] = useState("");
   // The third argument is the server snapshot: this page is prerendered, and
   // without it React refuses to render the store on the server at all.
-  const levelDoc = useSyncExternalStore(levelSession.subscribe, () => levelSession.state, () => levelSession.state);
+  const gameDoc = useSyncExternalStore(gameSession.subscribe, () => gameSession.state, () => gameSession.state);
+  /**
+   * The open Game, and which of its levels the editor is on.
+   *
+   * The editor still edits a Level and nothing below this line knows
+   * otherwise: `gameLevel` splices the game's ship, sprites and components in
+   * on the way to `installLevel`, and the effect that carries edits back lifts
+   * those three out again. So the whole render path, the Inspector, the world
+   * and every level file are untouched by Games -- the game is the shape the
+   * shelf holds, not the shape the editor works in.
+   */
+  const [game, setGame] = useState<Game>(() => emptyShmupGame("Untitled Game"));
+  const gameRef = useRef(game);
+  const [levelIndex, setLevelIndex] = useState(0);
+  const levelIndexRef = useRef(0);
   /** The level a load just installed -- the one change that is not an edit. */
   const loadedRef = useRef<Level | null>(null);
   const [notice, setNotice] = useState("READY");
@@ -1495,6 +1570,16 @@ export function StarlineGame() {
     setSelection([]); setInspectPlayer(false);
   }, [setSelection]);
 
+  /** Open a game, on one of its levels. The level goes through installLevel, so the undo stack is the level's. */
+  const installGame = useCallback((next: Game, index = 0, reset = true) => {
+    const normalized = normalizeShmupGame(next);
+    const safe = Math.max(0, Math.min(index, normalized.levels.length - 1));
+    gameRef.current = normalized; setGame(normalized);
+    levelIndexRef.current = safe; setLevelIndex(safe);
+    const level = gameLevel(normalized, safe);
+    if (level) installLevel(level, reset);
+  }, [installLevel]);
+
   const applyHistory = useCallback((direction: -1 | 1) => {
     const restored = direction < 0 ? historyRef.current.undo() : historyRef.current.redo();
     if (!restored) return;
@@ -1576,6 +1661,9 @@ export function StarlineGame() {
     void levelLibrary.ready.then(() => {
       if (stale) return;
       try {
+        // Before anything is restored or listed: every level saved before Games
+        // becomes a one-level game, so the shelf read below is already the new one.
+        const moved = migrateLevelsToGames();
         // A shared link wins over the local draft: the player followed it to see
         // somebody else's sector, not to resume their own. Reading it also clears
         // the fragment, so a reload does not reopen it over the later edits.
@@ -1583,17 +1671,23 @@ export function StarlineGame() {
         // A shared link opens as unsaved work; failing that, the draft from last
         // time; the session owns both, so what it holds is what is on screen.
         let opened = false;
-        if (shared.document) opened = levelSession.openDocument(shared.document, { force: true });
-        if (!opened && levelSession.hasDraft()) opened = levelSession.restoreDraft();
+        if (shared.document) opened = gameSession.openDocument(normalizeShmupGame(shared.document), { force: true });
+        if (!opened && gameSession.hasDraft()) opened = gameSession.restoreDraft();
+        // The work in progress from before Games was a Level; it opens as a
+        // one-level game so nobody loses what they had open.
+        if (!opened && levelSession.hasDraft() && levelSession.restoreDraft()) {
+          opened = gameSession.openDocument(normalizeShmupGame(levelSession.state.doc), { force: true });
+        }
         // A deliberate second render: the exported HTML is built with the
         // starter level, so the first client render has to match it, and
         // localStorage only gets a say after mount. The rule is right that
         // this cascades; here the cascade is the feature.
-        if (opened) installLevel(levelSession.state.doc, true);
+        if (opened) installGame(gameSession.state.doc, 0, true);
         // Same two-phase load and the same reason: a link that will not decode
         // has to say so, and there is nowhere earlier to say it from.
         if (shared.error) flash("SHARED LINK UNREADABLE");
-        setSavedEntries(levelLibrary.list().map(({ id, name }) => ({ id, name, bytes: (JSON.stringify(levelLibrary.read(id)) ?? "").length * 2 })));
+        else if (moved) flash(`${moved} SAVED LEVEL${moved === 1 ? "" : "S"} ARE NOW GAMES`);
+        setSavedEntries(gameLibrary.list().map(({ id, name }) => ({ id, name, bytes: (JSON.stringify(gameLibrary.read(id)) ?? "").length * 2 })));
       } catch { /* use the starter level */ }
     });
     return () => { stale = true; };
@@ -1643,10 +1737,68 @@ export function StarlineGame() {
   // debounce and owns dirty; a load is the one change that is not an edit.
   useEffect(() => {
     if (level === loadedRef.current) return;
-    if (level.name !== levelSession.state.name) levelSession.rename(level.name);
-    levelSession.update(level);
+    // The ship, the sprites and the saved components are the game's, so an
+    // edit to any of them is an edit to every level at once -- which is the
+    // whole point of assets belonging to a game. Everything else stays with
+    // the level `gameWithLevel` puts back, stripped of those three.
+    const lifted = normalizeShmupGame({ ...gameRef.current, player: level.player, assets: level.assets, components: level.components });
+    const next = gameWithLevel(lifted, levelIndexRef.current, level);
+    gameRef.current = next; setGame(next);
+    gameSession.update(next);
   }, [level]);
-  useEffect(() => levelSession.guardUnload(window), []);
+  useEffect(() => gameSession.guardUnload(window), []);
+
+  /**
+   * Switch to another level of the open game.
+   *
+   * The level being left is already in the game -- the write-back effect put
+   * it there on its last edit -- so this only has to splice the next one out.
+   * The undo stack is the level's and is reset with it: undoing across a
+   * level switch would be undoing into a level you are no longer looking at.
+   */
+  const openLevelAt = useCallback((index: number) => {
+    const target = gameLevel(gameRef.current, index);
+    if (!target) return;
+    levelIndexRef.current = index; setLevelIndex(index);
+    installLevel(target, true);
+    setCamera(0); editorCameraRef.current = 0;
+    flash(`LEVEL ${index + 1} — ${target.name.toUpperCase()}`);
+  }, [flash, installLevel]);
+
+  const addLevel = useCallback((from?: Level) => {
+    const current = gameRef.current;
+    if (current.levels.length >= GAME_MAX_LEVELS) { flash("THAT IS ENOUGH LEVELS FOR ONE GAME"); return; }
+    const source = from ?? emptyLevel(`Sector ${current.levels.length + 1}`);
+    const name = from ? `${from.name} (copy)` : source.name;
+    const next = gameWithLevel(current, current.levels.length, { ...source, name });
+    gameRef.current = next; setGame(next); gameSession.update(next);
+    openLevelAt(next.levels.length - 1);
+  }, [flash, openLevelAt]);
+
+  const removeLevelAt = useCallback((index: number) => {
+    const current = gameRef.current;
+    if (current.levels.length <= 1) { flash("A GAME KEEPS AT LEAST ONE LEVEL"); return; }
+    const doomed = current.levels[index];
+    setPendingConfirm({
+      title: "DELETE LEVEL",
+      message: `Delete “${doomed?.name ?? "this level"}” from ${current.name}? The game's sprites, components and ship are not touched.`,
+      confirmLabel: "DELETE",
+      action: () => {
+        const next = normalizeShmupGame({ ...current, levels: current.levels.filter((_level, i) => i !== index) });
+        gameRef.current = next; setGame(next); gameSession.update(next);
+        openLevelAt(Math.min(index, next.levels.length - 1));
+        flash("LEVEL DELETED");
+      },
+    });
+  }, [flash, openLevelAt]);
+
+  /** The game's own name, which is not a level edit and not on the level's undo stack. */
+  const renameGame = useCallback((name: string) => {
+    const next = { ...gameRef.current, name };
+    gameRef.current = next; setGame(next);
+    gameSession.rename(name);
+    gameSession.update(next);
+  }, []);
 
   const updateLevel = useCallback((updater: (current: Level) => Level, record = true, coalesceKey = "") => {
     const next = normalizeLevel(updater(levelRef.current));
@@ -1830,11 +1982,11 @@ export function StarlineGame() {
   }, [flash, updateLevel]);
 
   const refreshSaved = useCallback(() => {
-    setSavedEntries(levelLibrary.list().map(({ id, name }) => ({ id, name, bytes: (JSON.stringify(levelLibrary.read(id)) ?? "").length * 2 })));
+    setSavedEntries(gameLibrary.list().map(({ id, name }) => ({ id, name, bytes: (JSON.stringify(gameLibrary.read(id)) ?? "").length * 2 })));
   }, []);
 
   const commitSave = useCallback(() => {
-    const entry = levelSession.save();
+    const entry = gameSession.save();
     if (!entry) { flash(describeSaveFailure()); return false; }
     refreshSaved();
     setLoadName(entry.id); flash("LEVEL SAVED TO THIS DEVICE");
@@ -1842,15 +1994,15 @@ export function StarlineGame() {
   }, [flash, refreshSaved]);
 
   const duplicateLevel = useCallback(() => {
-    const entry = levelSession.duplicate();
+    const entry = gameSession.duplicate();
     if (!entry) { flash(describeSaveFailure()); return; }
-    installLevel(levelSession.state.doc, true);
+    installGame(gameSession.state.doc, 0, true);
     refreshSaved();
     setLoadName(entry.id); flash(`DUPLICATED AS ${entry.name.toUpperCase()} — EDITING THE COPY`);
   }, [flash, installLevel, refreshSaved]);
 
   const saveLevel = useCallback(() => {
-    const { id, renamed, savedName, name } = levelSession.state;
+    const { id, renamed, savedName, name } = gameSession.state;
     if (id !== null && renamed && savedName !== null) {
       // A saved level under a changed name: rename it, or keep the old one
       // and save this as a new level? The one question the contract asks.
@@ -1868,10 +2020,10 @@ export function StarlineGame() {
 
   /** Unsaved work is never thrown away in silence: save it, discard it, or stay. */
   const withSettledDirty = useCallback((before: string, proceed: () => void) => {
-    if (!levelSession.state.dirty) { proceed(); return; }
+    if (!gameSession.state.dirty) { proceed(); return; }
     setPendingConfirm({
       title: "UNSAVED CHANGES",
-      message: `"${levelSession.state.name}" has unsaved changes. Save them before ${before}?`,
+      message: `"${gameSession.state.name}" has unsaved changes. Save them before ${before}?`,
       confirmLabel: "SAVE AND CONTINUE",
       action: () => { if (commitSave()) proceed(); },
       alternate: { label: "DISCARD", action: proceed },
@@ -1885,8 +2037,9 @@ export function StarlineGame() {
       if (!sample) return;
       withSettledDirty(`loading ${sample.name}`, () => {
         // A sample opens as a clean starting point; saving it makes it yours.
-        levelSession.openDocument(sample.build(), { force: true, dirty: false });
-        installLevel(levelSession.state.doc, true); setCamera(0); editorCameraRef.current = 0;
+        // A sample is a Level; it opens as a one-level game.
+        gameSession.openDocument(normalizeShmupGame(sample.build()), { force: true, dirty: false });
+        installGame(gameSession.state.doc, 0, true); setCamera(0); editorCameraRef.current = 0;
         flash(`LOADED ${sample.name.toUpperCase()}`);
       });
       return;
@@ -1894,21 +2047,21 @@ export function StarlineGame() {
     const entry = savedEntries.find((saved) => saved.id === loadName);
     if (!entry) { flash("THAT SAVED LEVEL IS NO LONGER AVAILABLE"); return; }
     withSettledDirty(`loading ${entry.name}`, () => {
-      if (!levelSession.open(entry.id, { force: true })) { flash("THAT SAVED LEVEL IS NO LONGER AVAILABLE"); refreshSaved(); return; }
-      installLevel(levelSession.state.doc, true); setCamera(0); editorCameraRef.current = 0; flash(`LOADED ${entry.name.toUpperCase()}`);
+      if (!gameSession.open(entry.id, { force: true })) { flash("THAT SAVED GAME IS NO LONGER AVAILABLE"); refreshSaved(); return; }
+      installGame(gameSession.state.doc, 0, true); setCamera(0); editorCameraRef.current = 0; flash(`LOADED ${entry.name.toUpperCase()}`);
     });
   }, [flash, installLevel, loadName, refreshSaved, savedEntries, withSettledDirty]);
 
   const deleteSavedLevel = useCallback(() => {
     const entry = savedEntries.find((saved) => saved.id === loadName);
     if (!entry) return;
-    if (!levelSession.remove(entry.id)) return;
+    if (!gameSession.remove(entry.id)) return;
     refreshSaved(); setLoadName("");
     flash(`DELETED ${entry.name.toUpperCase()} — UNDO IS BESIDE LOAD FOR A FEW SECONDS`);
   }, [flash, loadName, refreshSaved, savedEntries]);
 
   const undoDelete = useCallback(() => {
-    if (levelSession.undoRemove()) { refreshSaved(); flash("RESTORED"); }
+    if (gameSession.undoRemove()) { refreshSaved(); flash("RESTORED"); }
   }, [flash, refreshSaved]);
 
   // `parse` before handing a level to the format, in both places below. The
@@ -1918,7 +2071,7 @@ export function StarlineGame() {
   // given anyway -- so this makes the call sites state the conversion that was
   // always happening one layer down.
   const exportLevel = useCallback(() => {
-    try { levelDocument.download(levelDocument.parse(levelRef.current)); flash("JSON EXPORTED"); }
+    try { gameDocument.download(gameDocument.parse(gameRef.current)); flash("GAME EXPORTED"); }
     catch (error) { flash(documentMessage(error, "EXPORT FAILED")); }
   }, [flash]);
 
@@ -1978,13 +2131,15 @@ export function StarlineGame() {
   }, [flash, playingPiece]);
 
   const importLevel = useCallback(async (file: File) => {
-    let parsed: Level;
-    try { parsed = await levelDocument.readFile(file); }
-    catch (error) { flash(documentMessage(error, "INVALID LEVEL FILE")); return; }
+    // A game file or a level file, told apart by normalizeShmupGame: a level
+    // arrives as the one-level game it always was.
+    let parsed: Game;
+    try { parsed = normalizeShmupGame(JSON.parse(await file.text())); }
+    catch (error) { flash(documentMessage(error, "INVALID GAME OR LEVEL FILE")); return; }
     withSettledDirty("importing a file", () => {
       // A file opens as unsaved work: it is not on the shelf until saved.
-      levelSession.openDocument(parsed, { force: true });
-      installLevel(levelSession.state.doc, true); setCamera(0); editorCameraRef.current = 0; flash("LEVEL IMPORTED — SAVE IT TO KEEP IT");
+      gameSession.openDocument(parsed, { force: true });
+      installGame(gameSession.state.doc, 0, true); setCamera(0); editorCameraRef.current = 0; flash("IMPORTED — SAVE IT TO KEEP IT");
     });
   }, [flash, installLevel, withSettledDirty]);
 
@@ -1994,7 +2149,7 @@ export function StarlineGame() {
   // what the "too large to share" refusal is for.
   const shareLevel = useCallback(async () => {
     try {
-      await navigator.clipboard.writeText(levelDocument.shareLink(levelDocument.parse(levelRef.current)));
+      await navigator.clipboard.writeText(gameDocument.shareLink(gameDocument.parse(gameRef.current)));
       flash("SHARE LINK COPIED");
     } catch (error) { flash(documentMessage(error, "SHARE FAILED")); }
   }, [flash]);
@@ -3151,8 +3306,8 @@ export function StarlineGame() {
   // render; the level bar below is the only caller.
   const newLevel = () => {
     withSettledDirty("starting a new level", () => {
-      levelSession.new({ force: true });
-      installLevel(levelSession.state.doc, true); setCameraSafe(0); flash("NEW LEVEL CREATED");
+      gameSession.new({ force: true });
+      installGame(gameSession.state.doc, 0, true); setCameraSafe(0); flash("NEW GAME CREATED");
     });
   };
 
@@ -3249,7 +3404,7 @@ export function StarlineGame() {
       </header>
 
       <section className="levelbar" aria-label="Level controls">
-        <label className="level-name"><span>LEVEL{levelDoc.dirty ? <i className="dirty-dot" title="Unsaved changes" aria-label="Unsaved changes" /> : null}</span><input value={level.name} onChange={(event) => updateLevel((current) => ({ ...current, name: event.target.value }), true, "level-name")} /></label>
+        <label className="level-name"><span>GAME{gameDoc.dirty ? <i className="dirty-dot" title="Unsaved changes" aria-label="Unsaved changes" /> : null}</span><input value={game.name} onChange={(event) => renameGame(event.target.value)} aria-label="Game name" /></label>
         <label className="length-control"><span>END LEVEL</span><input type="number" min="1600" step="250" value={level.length} onChange={(event) => {
           const length = Math.max(1600, Number(event.target.value) || 1600);
           updateLevel((current) => ({ ...current, length }), true, "level-length"); setCameraSafe(Math.min(editorCameraRef.current, length - VIEW_W));
@@ -3261,12 +3416,12 @@ export function StarlineGame() {
         </select></label>
         <div className="file-actions">
           <button type="button" onClick={newLevel}>NEW</button>
-          <select value={loadName} onChange={(event) => setLoadName(event.target.value)} aria-label="Saved levels"><option value="">LOAD LEVEL...</option><optgroup label="SAMPLES">{starterLevels.map((sample) => <option value={`sample:${sample.key}`} key={sample.key}>{sample.name}</option>)}</optgroup>{savedEntries.map((entry) => <option value={entry.id} key={entry.id}>{entry.name}{entry.bytes > 200000 ? ` · ${(entry.bytes / 1048576).toFixed(1)} MB` : ""}</option>)}</select>
+          <select value={loadName} onChange={(event) => setLoadName(event.target.value)} aria-label="Saved games"><option value="">LOAD GAME...</option><optgroup label="SAMPLES">{starterLevels.map((sample) => <option value={`sample:${sample.key}`} key={sample.key}>{sample.name}</option>)}</optgroup>{savedEntries.map((entry) => <option value={entry.id} key={entry.id}>{entry.name}{entry.bytes > 200000 ? ` · ${(entry.bytes / 1048576).toFixed(1)} MB` : ""}</option>)}</select>
           <button type="button" onClick={loadLevel} disabled={!loadName}>LOAD</button>
           <button type="button" onClick={deleteSavedLevel} disabled={!loadName || loadName.startsWith("sample:")} title="Delete the selected saved level (undo for a few seconds)">DELETE</button>
-          {levelDoc.canUndoRemove && <button type="button" onClick={undoDelete}>UNDO DELETE</button>}
+          {gameDoc.canUndoRemove && <button type="button" onClick={undoDelete}>UNDO DELETE</button>}
           <button type="button" onClick={duplicateLevel} title="Copy this level to (copy) and edit the copy (Ctrl+Shift+S)">DUPLICATE</button>
-          <button type="button" className="primary" onClick={saveLevel} disabled={!levelDoc.dirty} title="Save (Ctrl+S)">SAVE</button>
+          <button type="button" className="primary" onClick={saveLevel} disabled={!gameDoc.dirty} title="Save (Ctrl+S)">SAVE</button>
           <button type="button" onClick={() => importRef.current?.click()}>IMPORT…</button>
           <button type="button" onClick={exportLevel}>EXPORT</button>
           <button type="button" onClick={() => void shareLevel()}>SHARE LINK</button>
@@ -3280,6 +3435,34 @@ export function StarlineGame() {
         <PanelResizer side="inspector" width={inspectorWidth} other={paletteWidth} onResize={setInspectorWidth} onCommit={(next) => { setInspectorWidth(next); editorSettings.set("inspectorWidth", next); }} />
         <aside className="palette-panel">
           <div className="panel-heading"><span>FOUNDRY PALETTE</span><small>{level.items.length} PLACED</small>{sectionControls("palette")}</div>
+          {/* LEVELS above the tabs rather than inside one: which level you are
+              editing is a different axis from what you are placing into it, and
+              it has to be reachable from every tab. */}
+          <div className="level-list">
+            <div className="level-list-head">
+              <span>LEVELS</span>
+              <input
+                className="level-name-field"
+                value={level.name}
+                onChange={(event) => updateLevel((current) => ({ ...current, name: event.target.value }), true, "level-name")}
+                aria-label="Name of the level being edited"
+              />
+            </div>
+            <div className="level-list-items">
+              {game.levels.map((entry, index) => <button
+                type="button"
+                key={index}
+                className={index === levelIndex ? "active" : ""}
+                onClick={() => { if (index !== levelIndex) openLevelAt(index); }}
+                title={`${entry.name} — ${entry.items.length} placed`}
+              ><b>{index + 1}</b><span>{index === levelIndex ? level.name : entry.name}</span><em>{(index === levelIndex ? level.items : entry.items).length}</em></button>)}
+            </div>
+            <div className="level-list-actions">
+              <button type="button" onClick={() => addLevel()} title="Add an empty level to this game">+ LEVEL</button>
+              <button type="button" onClick={() => addLevel(levelRef.current)} title="Copy the level being edited">COPY</button>
+              <button type="button" onClick={() => removeLevelAt(levelIndex)} disabled={game.levels.length <= 1} title="Delete the level being edited">DELETE</button>
+            </div>
+          </div>
           <div className="tool-strip">
             {(["select", "scroll", "erase"] as Tool[]).map((value) => <button type="button" className={tool === value ? "active" : ""} onClick={() => { setTool(value); toolRef.current = value; }} key={value}><b>{value === "select" ? "↖" : value === "scroll" ? "↔" : "⌫"}</b>{value.toUpperCase()}</button>)}
           </div>
