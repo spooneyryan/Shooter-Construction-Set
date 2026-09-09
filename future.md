@@ -193,20 +193,6 @@ Harmless, since selection is not collision, and the wider target is easier to
 click; noted because someone will expect the two to match once the debug
 rings show them differing.
 
-## F-10 — Export a playable game
-
-Ryan: "the idea will be that the user can export a playable version of their
-game."
-
-A single file the author can host, mail or open: the engine, the editor's
-renderer minus the editor, the Game's levels, its assets inline, and its music.
-Depends on F-09 for what "the game" is. Two decisions to make first — whether
-the export is one HTML file with everything inlined (simple to hand around,
-megabytes large, and the music makes it tens of megabytes) or a folder with
-the audio beside it; and whether the player is a build of Starline's own play
-mode or a smaller purpose-built shell.
-
-
 ## C-00 — On-canvas rotation and resize handles
 
 When a playfield object is selected, add direct-manipulation handles around its selection circle. A rotation handle should let the designer rotate the object by dragging, while one or more resize handles should scale it proportionally. The handles should remain usable across object sizes and canvas zoom levels, provide live visual feedback, and update the same rotation and scale properties exposed in the Inspector. A drag should be recorded as one undoable operation.
@@ -1399,3 +1385,47 @@ than the game's. Tracks are keyed by id and any level of any game can name one,
 which is a superset of what was asked for; moving the list into the game
 document would only narrow it. Recorded here so the next person knows it was a
 decision.
+
+## C-53 — Export a playable game
+
+Ryan asked for a playable export and left the shape to me: a folder rather
+than one file, with a single-file variant only where music makes it painless.
+
+**PLAYABLE… writes a zip that plays.** Inside it: `index.html`, a player, the
+sprite renderer, the engine, `game.json`, the music the game's levels actually
+name, and a README saying to serve it over http. Serve the folder anywhere
+static and it runs.
+
+**It works at all because the engine has no build step.** `@ccllc/arcade`
+ships as plain ES modules — the property its README calls out for the
+import-map games — so the package's own source runs in a browser behind an
+import map, unbundled and unminified. The export carries the source and the
+player imports it exactly as the editor does.
+
+**The picture is the same picture.** C-53's other half was moving every sprite
+Starline draws out of the editor and into `app/scene.ts`: the built-in art, the
+assets, the tint, the halo, the depth wash and the atlas. The Foundry imports
+it and the player imports a compiled copy, so an exported game looks like the
+playtest it came from rather than resembling it.
+
+**The runtime is staged, not bundled.** `build/stage-player.mjs` copies the
+engine, studio's renderer and a compiled `scene.js` into `public/player-runtime`
+before dev and before build; EXPORT fetches them back from this origin. A
+megabyte and a half of engine that only an export needs has no business in the
+editor's bundle. The staged folder is ignored by git and by eslint — it is
+derived, and it is somebody else's source.
+
+**Its own zip writer**, in `app/zip.ts`: stored entries and a CRC, about a
+hundred lines, because a compression library the whole app would carry to
+shrink files that are already compressed is a bad trade. A game with images
+and music is around a megabyte and a half.
+
+**No single-file variant, and the reason.** Inlining would mean flattening the
+engine's ES modules into one scope — which is exactly what GameBase's
+flat-scope test exists to protect, and what caught the Game name clash a day
+ago. Doing it at export time means shipping a module flattener; a zip that
+unpacks to a folder is the honest trade. Recorded rather than quietly dropped.
+
+**Verified** by staging a two-level game, playing it in the player (enemies
+arriving, bullets, score climbing, the same sprite art), then exporting First
+Contact and reading `game.json` back out of the archive's central directory.

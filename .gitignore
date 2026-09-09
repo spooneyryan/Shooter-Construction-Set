@@ -38,3 +38,6 @@ yarn-error.log*
 /.wrangler/
 /outputs/
 /work/
+
+# staged by build/stage-player.mjs: the standalone player an export ships with
+/public/player-runtime

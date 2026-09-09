@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Starline Game</title>
+<!--
+  A game exported from the Starline Foundry.
+
+  Everything it needs is in this folder. The engine is @ccllc/arcade's own
+  source, which ships as plain ES modules with no build step, so it runs here
+  behind the import map below exactly as it runs in the editor. The sprites are
+  drawn by the same scene.js the Foundry draws with, so what you played in the
+  editor is what plays here.
+
+  Open index.html over http (any static host, or `npx serve .`). Opening the
+  file directly from disk will not work: modules and fetch need an origin.
+-->
+<script type="importmap">
+{
+  "imports": {
+    "@ccllc/arcade/core": "./vendor/arcade/core/index.js",
+    "@ccllc/arcade/shmup": "./vendor/arcade/shmup/index.js",
+    "@ccllc/arcade/render": "./vendor/arcade/render/index.js",
+    "@ccllc/arcade/platform": "./vendor/arcade/platform/index.js",
+    "@ccllc/arcade/sprite": "./vendor/arcade/sprite/index.js",
+    "@ccllc/arcade/sfx": "./vendor/arcade/sfx/index.js",
+    "@ccllc/studio/render": "./vendor/studio/render.js"
+  }
+}
+</script>
+<style>
+  :root { color-scheme: dark; --lime: #eaff62; --cyan: #64e3ff; --ink: #eaf7fb; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; background: #05090d; color: var(--ink);
+    font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; overflow: hidden; }
+  #stage { position: fixed; inset: 0; display: grid; place-items: center; }
+  canvas { max-width: 100%; max-height: 100%; image-rendering: auto; touch-action: none; }
+  #overlay { position: fixed; inset: 0; display: grid; place-items: center; text-align: center;
+    background: rgba(3, 7, 11, .84); backdrop-filter: blur(6px); padding: 24px; }
+  #overlay[hidden] { display: none; }
+  #overlay h1 { margin: 0 0 6px; color: var(--lime); font-size: clamp(20px, 4vw, 34px); letter-spacing: .14em; }
+  #overlay p { margin: 4px 0; color: #8ba1ab; font-size: 11px; letter-spacing: .1em; line-height: 1.7; }
+  #overlay b { color: var(--cyan); font-weight: 500; }
+  #overlay button { margin-top: 18px; min-height: 40px; padding: 0 22px; border: 1px solid var(--lime);
+    background: rgba(234,255,98,.1); color: var(--lime); font: inherit; font-size: 12px; letter-spacing: .12em; cursor: pointer; }
+  #overlay button:hover { background: rgba(234,255,98,.2); }
+  #hud { position: fixed; top: 0; left: 0; right: 0; display: flex; justify-content: space-between;
+    padding: 10px 14px; font-size: 10px; letter-spacing: .12em; color: #8ba1ab; pointer-events: none; }
+  #hud b { color: var(--ink); font-weight: 500; }
+</style>
+</head>
+<body>
+  <div id="stage"><canvas id="screen"></canvas></div>
+  <div id="hud" hidden><span>SCORE <b id="score">000000</b></span><span id="stage-name"></span><span>HULL <b id="hull">3</b></span></div>
+  <div id="overlay"><div>
+    <h1 id="title">STARLINE</h1>
+    <p id="subtitle">Loading…</p>
+    <p id="controls" hidden><b>ARROWS</b> or <b>WASD</b> to fly &nbsp; <b>SPACE</b> to fire &nbsp; <b>P</b> to pause</p>
+    <button id="start" hidden>START</button>
+  </div></div>
+  <script type="module" src="./player.js"></script>
+</body>
+</html>

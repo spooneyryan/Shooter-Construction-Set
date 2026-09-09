@@ -914,3 +914,33 @@ while the dev server is running leaves the pre-bundled copy without the new
 exports, and the page dies with "does not provide an export named X". Clearing
 `node_modules/.vite` only works with the server stopped — doing it underneath a
 running server just gets it rewritten from the old copy.
+
+## 2026-09-09 (night) — A game you can hand to someone
+
+C-53, and the renderer extraction that made it possible.
+
+**The enabling fact was in a README.** An exported game needs an engine, and
+bundling one at export time from inside a browser is not a thing. `arcade`
+ships as plain ES modules with no build step — written down in its README for
+a different reason entirely — so the export just carries the source and an
+import map. Reading the neighbour's documentation beat inventing a build.
+
+**Extract before duplicating.** The alternative to moving Starline's sprite
+drawing into its own module was writing a second renderer for the player, and
+a player whose sprites are nearly the editor's is worse than no player. The
+move was mechanical because the drawing was already module-scope; what it cost
+was an afternoon of care, and what it bought is that the two cannot drift.
+
+**The harness cannot animate.** `requestAnimationFrame` returns zero ticks
+while the Browser pane is hidden, even with `visibilityState` reporting
+"visible", so the player froze after one frame and looked broken. Screenshots
+force a paint, so the sim advanced three frames per screenshot; driving the
+world directly through a temporary global proved the rest. Half an hour went
+into suspecting the player before measuring the harness. Already in memory as
+"rAF freezes when the pane is hidden"; the tell to remember is a canvas that
+renders once and then never changes.
+
+**Filters read the path you give them.** `cp` with a filter rejecting anything
+containing `node_modules` copied nothing at all, because the source is *inside*
+node_modules. The filter has to look at the path below the root, not the whole
+of it.

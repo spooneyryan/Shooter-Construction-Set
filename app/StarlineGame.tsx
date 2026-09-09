@@ -13,6 +13,7 @@ import { advanceBurst, burstFrame, createBurstPreset, createBurstRuntime, drawBu
 import { createSfxPlayer, createSfxPreset, normalizeSfx, type SfxDefinition } from "@ccllc/arcade/sfx";
 import { EbAccordion, EbAccordionItem, EbDialog, EbNumericInput, EbTabbedCard } from "@electricblazor/react";
 import { drawShip, drawSprite, travelTilt } from "./scene.js";
+import { zipFiles, type ZipEntry } from "./zip.js";
 import {
   clamp,
   createPatternPreset,
@@ -1783,6 +1784,78 @@ export function StarlineGame() {
   // say so. Nothing changes at runtime -- `serialize` parses whatever it is
   // given anyway -- so this makes the call sites state the conversion that was
   // always happening one layer down.
+  /**
+   * The game as a folder somebody can host, mail or open: the engine, the
+   * renderer, a player, the game itself and its music.
+   *
+   * The runtime is staged into /player-runtime at build time and fetched back
+   * from this origin here, rather than bundled into the editor -- it is a
+   * megabyte and a half of engine that only an export needs, and the editor
+   * should not carry it on every load. Music is copied under its own folder
+   * with a map from the ids the levels name, because the level format holds a
+   * name and never the bytes.
+   */
+  const exportPlayable = useCallback(async () => {
+    flash("BUILDING…");
+    try {
+      const manifest = await fetch("/player-runtime/manifest.json", { cache: "no-store" }).then((response) => {
+        if (!response.ok) throw new Error("the player runtime is not on this server");
+        return response.json() as Promise<{ files: string[] }>;
+      });
+      const entries: ZipEntry[] = [];
+      for (const name of manifest.files) {
+        const response = await fetch(`/player-runtime/${name}`, { cache: "no-store" });
+        if (!response.ok) throw new Error(`missing ${name}`);
+        entries.push({ path: name, data: new Uint8Array(await response.arrayBuffer()) });
+      }
+      const encoder = new TextEncoder();
+      entries.push({ path: "game.json", data: encoder.encode(JSON.stringify(gameDocument.parse(gameRef.current))) });
+      // Only the tracks this game's levels actually name.
+      const wanted = new Set(gameRef.current.levels.map((entry) => entry.music).filter(Boolean) as string[]);
+      const shelf = readMusicShelf().filter((piece) => wanted.has(piece.id));
+      const tracks: Record<string, string> = {};
+      for (const piece of shelf) {
+        const comma = piece.data.indexOf(",");
+        const mime = piece.data.slice(5, piece.data.indexOf(";"));
+        const extension = mime.split("/")[1]?.replace("mpeg", "mp3").replace(/[^a-z0-9]/g, "") || "audio";
+        const binary = atob(piece.data.slice(comma + 1));
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+        const file = `${piece.id}.${extension}`;
+        tracks[piece.id] = file;
+        entries.push({ path: `music/${file}`, data: bytes });
+      }
+      if (shelf.length) entries.push({ path: "music/tracks.json", data: encoder.encode(JSON.stringify(tracks)) });
+      entries.push({ path: "README.txt", data: encoder.encode(
+        `${gameRef.current.name}
+
+A game exported from the Starline Foundry.
+
+`
+        + `Serve this folder over http and open index.html -- any static host will do,
+`
+        + `or run "npx serve ." from inside it. Opening index.html straight off disk
+`
+        + `will not work: the player is made of ES modules, and a browser refuses to
+`
+        + `load those from a file:// page.
+
+`
+        + `${gameRef.current.levels.length} level(s), ${shelf.length} music track(s).
+`) });
+      const blob = zipFiles(entries);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `${gameRef.current.name.replace(/[^\w -]+/g, "").trim() || "starline-game"}.zip`;
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+      flash(`PLAYABLE GAME EXPORTED — ${(blob.size / 1048576).toFixed(1)} MB`);
+    } catch (error) {
+      flash(`EXPORT FAILED — ${error instanceof Error ? error.message.toUpperCase() : "UNKNOWN"}`);
+    }
+  }, [flash]);
+
   const exportLevel = useCallback(() => {
     try { gameDocument.download(gameDocument.parse(gameRef.current)); flash("GAME EXPORTED"); }
     catch (error) { flash(documentMessage(error, "EXPORT FAILED")); }
@@ -3136,7 +3209,8 @@ export function StarlineGame() {
           <button type="button" onClick={duplicateLevel} title="Copy this level to (copy) and edit the copy (Ctrl+Shift+S)">DUPLICATE</button>
           <button type="button" className="primary" onClick={saveLevel} disabled={!gameDoc.dirty} title="Save (Ctrl+S)">SAVE</button>
           <button type="button" onClick={() => importRef.current?.click()}>IMPORT…</button>
-          <button type="button" onClick={exportLevel}>EXPORT</button>
+          <button type="button" onClick={exportLevel} title="The game as a .json document">EXPORT</button>
+          <button type="button" onClick={() => void exportPlayable()} title="The game as a folder that plays: engine, player, levels and music">PLAYABLE…</button>
           <button type="button" onClick={() => void shareLevel()}>SHARE LINK</button>
           <input ref={musicImportRef} className="hidden-input" type="file" accept="audio/*,.mp3,.ogg,.wav,.m4a,.flac" onChange={(event) => { const file = event.target.files?.[0]; if (file) void importMusic(file); event.target.value = ""; }} />
           <input ref={importRef} className="hidden-input" type="file" accept="application/json,.json" onChange={(event) => { const file = event.target.files?.[0]; if (file) void importLevel(file); event.target.value = ""; }} />
