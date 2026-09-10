@@ -1343,7 +1343,14 @@ export function StarlineGame() {
       flash("CONTROLLER CONNECTED");
     };
     const disconnected = (event: GamepadEvent) => {
-      if (input.gamepadName === event.gamepad.id || !input.connected) setControllerName("");
+      if (input.gamepadName !== event.gamepad.id && input.connected) return;
+      // The ref exists so the poll can skip a setState every frame; clearing
+      // the state without it left the two disagreeing, and the poll compares
+      // against the REF -- so a pad that woke up and reconnected under the
+      // same name was judged "no change" and the readout stayed on NO
+      // GAMEPAD for the rest of the session while the pad happily played.
+      controllerNameRef.current = "";
+      setControllerName("");
     };
     window.addEventListener("gamepadconnected", connected);
     window.addEventListener("gamepaddisconnected", disconnected);
