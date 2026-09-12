@@ -1429,3 +1429,57 @@ unpacks to a folder is the honest trade. Recorded rather than quietly dropped.
 **Verified** by staging a two-level game, playing it in the player (enemies
 arriving, bullets, score climbing, the same sprite art), then exporting First
 Contact and reading `game.json` back out of the archive's central directory.
+
+## C-54 — Six more formations, seven more paths, and a formation you can crew
+
+Three of Ryan's in one message. (The list of flight patterns he meant to paste
+did not come through; the repertoire below is the standard one.)
+
+**Formations, in `@ccllc/arcade` 2.0.33.** COLUMN is single file along the
+level; BLOCK a phalanx whose width grows as the square root of the count where
+a line grows as the count — sixteen in a line is fifteen spacings and hangs off
+the screen, sixteen in a block is four by four. WEDGE is a filled delta to the
+vee's hollow one, packed hexagonally so it does not read as a grid with a bite
+out of it. LADDER is two rails with a lane left open at every count, odd ones
+included. CRESCENT is a bow with its wings thrown forward. CLUSTER is a filled
+disc by phyllotaxis, turning each member by the golden angle so three never
+line up into a spoke. Column, Block and Wedge get palette cards; all nine are
+in the FORMATION dropdown.
+
+**Flight paths.** LANE HOLD steps between two lanes and dwells there, where a
+sine sweeps through. FIGURE EIGHT is a lemniscate across the path. ARC WEAVE
+turns and wobbles at once, which arc and sine could not do together because one
+computed the turn and the other the wobble. SURGE pulses its speed. CHARGE
+accelerates along its path. DART lunges, freezes and lunges. BALLISTIC falls,
+accelerating in world down — the first path whose acceleration is not along or
+across its own frame.
+
+**Every one is a closed form in age**, which is the property the scroll modes
+have always kept: position is derived from the clock, never integrated, so a
+rewind is a subtraction. The test asserts it directly — asking the positions
+out of order gives the same answers as asking in order — and covers the seam
+every rate pattern has, a frequency of zero, which is a division by zero in
+three of them and which nothing clamps on the way in.
+
+**Crewing a formation.** With a group selected, a saved object component's card
+reads CREW and makes every member that object. What comes across is what the
+member IS: sprite, size, durability, gun, armor, hitbox, halo. What the
+formation keeps is where and how it flies — position, shape, count and
+movement. Movement deliberately does not transfer: the formation's path is what
+the author was composing when they reached for the component.
+
+**Two things found on the way, neither asked for.** `normalizeItem` never
+validated `group`: a pasted level could reach `groupOffsets` with a count of
+-3, a spacing of "wide" or a pattern nobody implemented. It is checked now, and
+an unrecognised pattern still becomes the vee, which is the branch such levels
+have always fallen into. And the arena kept its own copy of the wobble that
+named sine and zigzag literally, so every pattern added since was silently flat
+there; both sides call one exported `crossWobble` now.
+
+**How it was designed.** A workflow of 41 agents: three surveying the movement,
+formation and component systems, four proposing candidates from different
+angles, then one adversarial verifier per candidate told to refute it. It
+dropped 20 of 34, almost all as redundant with an existing pattern plus its
+modifiers — a loop is a bezier, a boomerang is an arc, a wheel is a ring. The
+survey is what found the six scattered copies of the pattern enum and the
+silent `MOVE_PATTERNS` gate.

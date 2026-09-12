@@ -960,6 +960,14 @@ function RangeField({ name, label, display, min, max, step, value, onChange, sca
  * The palette category a placed item belongs to. The same six the OBJECTS tab
  * lists, so hiding a category hides exactly what that section offers.
  */
+/**
+ * Which flight patterns have a wobble to size, and which have a rate to set.
+ * A surge and a dart have no width but their frequency is their whole rhythm,
+ * so FREQUENCY shows for them where AMPLITUDE does not.
+ */
+const WAVING = new Set(["sine", "zigzag", "lane", "figureEight", "arcWeave", "surge"]);
+const TIMED = new Set(["sine", "zigzag", "lane", "figureEight", "arcWeave", "surge", "charge", "dart"]);
+
 function itemCategory(item: { type: string }) {
   return item.type === "enemy" ? "ENEMIES"
     : item.type === "terrain" ? "TERRAIN"
@@ -1675,6 +1683,45 @@ export function StarlineGame() {
     }
     setSelection([]); setInspectPlayer(true);
   }, [editorFor, flash, setSelection, updateItem, updateLevel]);
+
+  /**
+   * Make every member of the selected formation this saved object.
+   *
+   * What the component brings is what the member IS -- its sprite, size,
+   * durability, gun, armor, hitbox, halo. What the formation keeps is where
+   * and how it flies: its position, its shape, its count and its movement.
+   * A group is one item that `expandLevel` clones per offset, so applying the
+   * object to the group item is applying it to every member at once.
+   *
+   * Movement deliberately does not come across. The formation's path is the
+   * thing the author was composing when they reached for this, and a saved
+   * scout's own sine would silently replace it.
+   */
+  const applyObjectToGroup = useCallback((component: ComponentDefinition) => {
+    const object = component.object;
+    const target = levelRef.current.items.find((item) => item.id === editorFor().selection.primary);
+    if (!object || !target || target.type !== "group") return false;
+    updateItem(target.id, (item) => ({
+      ...item,
+      componentId: component.id,
+      sprite: object.sprite,
+      size: object.size,
+      scale: object.scale,
+      rotation: object.rotation,
+      tint: object.tint,
+      hitPoints: object.hitPoints,
+      indestructible: object.indestructible,
+      armor: object.armor ? structuredClone(object.armor) : undefined,
+      weapon: structuredClone(object.weapon),
+      heading: object.heading ? structuredClone(object.heading) : undefined,
+      glow: object.glow ? structuredClone(object.glow) : undefined,
+      depth: object.depth ? structuredClone(object.depth) : undefined,
+      hitbox: object.hitbox ? structuredClone(object.hitbox) : undefined,
+      fx: object.fx ? structuredClone(object.fx) : undefined,
+    }));
+    flash(`FORMATION IS NOW ${component.name.toUpperCase()}`);
+    return true;
+  }, [editorFor, flash, updateItem]);
 
   const deleteComponent = useCallback((id: string) => {
     if (!id.startsWith("component-")) return;
@@ -3034,6 +3081,10 @@ A game exported from the Starline Foundry.
   // The final branch is a FALLBACK, not a synonym for satellite: a kind with
   // no case here lands in it silently, which is how the first explosion and
   // sound Components turned up filed under SATELLITES.
+  // With a formation selected, an object component crews it rather than
+  // arming the placement tool -- so the cards have to say so.
+  const groupSelected = selected?.type === "group";
+
   const componentCategory = (component: ComponentDefinition) => component.kind === "enemy" ? "ENEMIES" : component.kind === "terrain" ? "TERRAIN" : component.kind === "group" ? "GROUPS" : component.kind === "powerup" ? "POWERUPS" : component.kind === "upgrade" ? "UPGRADES" : component.kind === "decoration" ? "DECORATIONS" : component.kind === "weapon" ? "WEAPONS" : component.kind === "pattern" ? "PATTERNS" : component.kind === "armor" ? "ARMOR" : component.kind === "explosion" ? "EXPLOSIONS" : component.kind === "sound" ? "SOUNDS" : "SATELLITES";
   const setCameraSafe = (next: number) => {
     if (next + VIEW_W > levelRef.current.length) {
@@ -3157,7 +3208,7 @@ A game exported from the Starline Foundry.
   const componentSections = (entries: ComponentDefinition[], prefix: string, categories: string[]) => categories.map((category) => {
     const inCategory = entries.filter((component) => componentCategory(component) === category);
     if (!inCategory.length) return null;
-    return section(`${prefix}-${category}`, category, <div className="palette-category-items">{inCategory.map((component) => <div className="component-card-row" key={component.id}><button className={`palette-card ${tool === `component:${component.id}` ? "active" : ""}`} type="button" onClick={() => { if (component.object) { const value = `component:${component.id}` as Tool; setTool(value); toolRef.current = value; setInspectPlayer(false); } else applyEquipmentComponent(component); }}>{component.object ? <ObjectThumb item={component.object} assets={level.assets} /> : <span className={`sprite-icon ${component.kind === "weapon" ? "turret" : component.kind === "armor" ? "energy" : component.kind === "pattern" ? "blade" : "upgrade"}`} />}<span><strong>{component.name}</strong><small>{component.object ? "PLACE COMPONENT" : component.kind === "weapon" ? `${component.weapon?.tag.toUpperCase()} WEAPON` : component.kind === "pattern" ? `${component.pattern?.spawns.length ?? 0} EMITTER PATTERN` : component.kind.toUpperCase()}</small></span><b>{component.object ? "+" : component.kind === "pattern" ? "EDIT / USE" : "USE"}</b></button>{component.id.startsWith("component-") ? <button className="component-delete" type="button" onClick={() => deleteComponent(component.id)} title="Delete Component">×</button> : <button className="component-save" type="button" onClick={() => saveAsComponent(component)} title="Save as Component">+</button>}</div>)}</div>, "palette");
+    return section(`${prefix}-${category}`, category, <div className="palette-category-items">{inCategory.map((component) => <div className="component-card-row" key={component.id}><button className={`palette-card ${tool === `component:${component.id}` ? "active" : ""}`} type="button" onClick={() => { if (component.object) { if (applyObjectToGroup(component)) return; const value = `component:${component.id}` as Tool; setTool(value); toolRef.current = value; setInspectPlayer(false); } else applyEquipmentComponent(component); }}>{component.object ? <ObjectThumb item={component.object} assets={level.assets} /> : <span className={`sprite-icon ${component.kind === "weapon" ? "turret" : component.kind === "armor" ? "energy" : component.kind === "pattern" ? "blade" : "upgrade"}`} />}<span><strong>{component.name}</strong><small>{component.object ? (groupSelected ? "MAKE THE FORMATION THIS" : "PLACE COMPONENT") : component.kind === "weapon" ? `${component.weapon?.tag.toUpperCase()} WEAPON` : component.kind === "pattern" ? `${component.pattern?.spawns.length ?? 0} EMITTER PATTERN` : component.kind.toUpperCase()}</small></span><b>{component.object ? (groupSelected ? "CREW" : "+") : component.kind === "pattern" ? "EDIT / USE" : "USE"}</b></button>{component.id.startsWith("component-") ? <button className="component-delete" type="button" onClick={() => deleteComponent(component.id)} title="Delete Component">×</button> : <button className="component-save" type="button" onClick={() => saveAsComponent(component)} title="Save as Component">+</button>}</div>)}</div>, "palette");
   });
 
   const editingHitboxItem = editingHitbox ? level.items.find((item) => item.id === editingHitbox) : undefined;
@@ -3509,12 +3560,12 @@ A game exported from the Starline Foundry.
             </>)}
 
             {selected.type === "group" && section("formation", "FORMATION", <>
-              <div className="field-grid"><label className="field"><span>FORMATION</span><select value={selected.group?.pattern} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, group: { ...(item.group ?? { count: 5, spacing: 60, pattern: "line" }), pattern: event.target.value as GroupPattern } }))}><option value="line">LINE</option><option value="vee">VEE</option><option value="ring">RING</option></select></label><div className="field"><EbNumericInput label="COUNT" sliderEnabled={false} min={2} max={16} value={selected.group?.count ?? 5} onValueChange={(count) => updateItem(selected.id, (item) => ({ ...item, group: { ...(item.group ?? { pattern: "line", spacing: 60, count: 5 }), count } }))} /></div></div>
+              <div className="field-grid"><label className="field"><span>FORMATION</span><select value={selected.group?.pattern} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, group: { ...(item.group ?? { count: 5, spacing: 60, pattern: "line" }), pattern: event.target.value as GroupPattern } }))}><option value="line">LINE</option><option value="column">COLUMN</option><option value="vee">VEE</option><option value="wedge">WEDGE</option><option value="crescent">CRESCENT</option><option value="ring">RING</option><option value="cluster">CLUSTER</option><option value="block">BLOCK</option><option value="ladder">LADDER</option></select></label><div className="field"><EbNumericInput label="COUNT" sliderEnabled={false} min={2} max={16} value={selected.group?.count ?? 5} onValueChange={(count) => updateItem(selected.id, (item) => ({ ...item, group: { ...(item.group ?? { pattern: "line", spacing: 60, count: 5 }), count } }))} /></div></div>
               <RangeField name="SPACING" label={<>SPACING</>} display={`${selected.group?.spacing ?? 60}u`} min="30" max="140" value={selected.group?.spacing ?? 60} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, group: { ...(item.group ?? { pattern: "line", spacing: 60, count: 5 }), spacing: Number(event.target.value) } }))} />
             </>)}
 
             {section("movement", selected.type === "decoration" ? "DECORATION MOTION" : "MOVEMENT", <>
-              <label className="field wide"><span>MOVEMENT</span><select value={selected.movement.pattern} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, movement: { ...item.movement, pattern: event.target.value as MovePattern } }))}><option value="straight">STRAIGHT</option><option value="sine">SINE WAVE</option><option value="zigzag">ZIGZAG</option><option value="arc">ARC</option><option value="bezier">BEZIER</option><option value="stationary">STATIONARY</option></select></label>
+              <label className="field wide"><span>MOVEMENT</span><select value={selected.movement.pattern} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, movement: { ...item.movement, pattern: event.target.value as MovePattern } }))}><optgroup label="LINES AND WAVES"><option value="straight">STRAIGHT</option><option value="sine">SINE WAVE</option><option value="zigzag">ZIGZAG</option><option value="lane">LANE HOLD</option><option value="figureEight">FIGURE EIGHT</option></optgroup><optgroup label="TURNS"><option value="arc">ARC</option><option value="arcWeave">ARC WEAVE</option><option value="bezier">BEZIER</option></optgroup><optgroup label="CHANGES OF SPEED"><option value="surge">SURGE</option><option value="charge">CHARGE</option><option value="dart">DART</option><option value="plunge">BALLISTIC</option></optgroup><option value="stationary">STATIONARY</option></select></label>
               <RangeField name="SPEED" label={<>SPEED</>} display={`${selected.movement.speed}u/s`} min="0" max="720" step="5" value={selected.movement.speed} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, movement: { ...item.movement, speed: Number(event.target.value) } }))} />
               {/* Which way the whole path points. LEFT is the flight every level
                   already had; positive turns toward the top of the screen. The
@@ -3523,7 +3574,7 @@ A game exported from the Starline Foundry.
               {selected.movement.pattern !== "stationary" && <RangeField name="PATH ANGLE" label={<>PATH ANGLE</>} display={`${describeAngle(selected.movement.angle ?? 0)}`} min="-180" max="180" step="5" value={selected.movement.angle ?? 0} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, movement: { ...item.movement, angle: Number(event.target.value) } }))} />}
               {/* How fast an arc turns its heading. Radius is speed over this:
                   a slow, gentle curve or a tight dive are both here. */}
-              {selected.movement.pattern === "arc" && <RangeField name="CURVE" label={<>CURVE</>} display={`${describeAngle(selected.movement.curve ?? 0, "/s")}`} min="-180" max="180" step="5" value={selected.movement.curve ?? 0} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, movement: { ...item.movement, curve: Number(event.target.value) } }))} />}
+              {(selected.movement.pattern === "arc" || selected.movement.pattern === "arcWeave") && <RangeField name="CURVE" label={<>CURVE</>} display={`${describeAngle(selected.movement.curve ?? 0, "/s")}`} min="-180" max="180" step="5" value={selected.movement.curve ?? 0} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, movement: { ...item.movement, curve: Number(event.target.value) } }))} />}
               {/* A turn while it flies, in degrees per second: a tumbling rock, a
                   spinning mine. TRANSFORM's ROTATION is where the sprite starts;
                   this is how fast it keeps turning. Zero is stored as absent, so a
@@ -3541,7 +3592,13 @@ A game exported from the Starline Foundry.
                 </label>)}
                 <p className="inspector-note">Drag the cyan handles on the playfield to shape the curve. Past the end point it flies straight on.</p>
               </>}
-              {(selected.movement.pattern === "sine" || selected.movement.pattern === "zigzag") && <><RangeField name="AMPLITUDE" label={<>AMPLITUDE</>} display={`${selected.movement.amplitude}u`} min="10" max="200" value={selected.movement.amplitude} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, movement: { ...item.movement, amplitude: Number(event.target.value) } }))} /><RangeField name="FREQUENCY" label={<>FREQUENCY</>} display={`${selected.movement.frequency.toFixed(2)}Hz`} min="0.1" max="1.5" step="0.05" value={selected.movement.frequency} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, movement: { ...item.movement, frequency: Number(event.target.value) } }))} /></>}
+              {WAVING.has(selected.movement.pattern) && <><RangeField name="AMPLITUDE" label={<>AMPLITUDE</>} display={`${selected.movement.amplitude}u`} min="10" max="200" value={selected.movement.amplitude} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, movement: { ...item.movement, amplitude: Number(event.target.value) } }))} /></>}
+              {/* Its own gate: a surge, a charge and a dart have no width to
+                  set, but frequency is their whole rhythm -- pulses, gain and
+                  lunges per second. */}
+              {TIMED.has(selected.movement.pattern) && <RangeField name="FREQUENCY" label={<>FREQUENCY</>} display={`${selected.movement.frequency.toFixed(2)}Hz`} min="0.1" max="1.5" step="0.05" value={selected.movement.frequency} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, movement: { ...item.movement, frequency: Number(event.target.value) } }))} />}
+              {/* A plunge is the one path with a fall rate rather than a width. */}
+              {selected.movement.pattern === "plunge" && <RangeField name="FALL" label={<>FALL</>} display={`${selected.movement.gravity ?? 240}u/s²`} min="0" max="1200" step="20" value={selected.movement.gravity ?? 240} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, movement: { ...item.movement, gravity: Number(event.target.value) } }))} />}
             </>)}
 
             {selected.type === "decoration" && section("decoration", "DECORATION", <>

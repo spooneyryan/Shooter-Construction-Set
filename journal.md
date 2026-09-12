@@ -944,3 +944,35 @@ renders once and then never changes.
 containing `node_modules` copied nothing at all, because the source is *inside*
 node_modules. The filter has to look at the path below the root, not the whole
 of it.
+
+## 2026-09-11 — Thirteen patterns, and the twenty that did not survive
+
+C-54. Ryan asked for more formations, more flight patterns, and components on
+formations.
+
+**The adversary earned its keep.** Four designers proposed 34 patterns and a
+verifier told to refute each one dropped 20. Almost every drop was redundancy
+rather than error: a loop is a bezier with points, a boomerang is an arc, a
+wheel is a ring with its own spacing, a lob is a sine. Left to the designers
+this would have shipped twice the enum values for the same set of motions.
+The lesson is that "is this new?" is a different question from "is this
+correct?", and only the second one is obvious from the math.
+
+**A survey before an edit, again.** The pattern enum lives in six hand-kept
+copies and two were already stale — the JSDoc typedef never learned arc or
+bezier. The gate is silent: a pattern implemented but missing from
+MOVE_PATTERNS is rewritten to "straight" on every save. Finding that first is
+what made the change boring instead of a debugging session.
+
+**The second copy is where the rot is.** The arena had its own two lines of
+wobble naming sine and zigzag, so every pattern added since had been silently
+flat there. Nobody would have noticed until someone built an arena level with
+a lane-holding enemy that flew dead straight. Extracting the shared function
+fixed a bug that had not been reported yet.
+
+**Validate at the boundary, once.** `normalizeItem` normalized eleven fields
+and passed `group` through untouched, which meant a count of -3 reached the
+formation code and placed nothing at all. Clamping it to one rather than
+defaulting to five was the deliberate choice: the file described fewer than one
+enemy, so it gets one, and inventing four the level never mentioned would be
+the worse lie.
