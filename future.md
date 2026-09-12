@@ -1072,6 +1072,16 @@ them to mean. Only ever `true` or absent, so a level that never set it saves as
 it did; the test fires at a wall and a rock side by side and reads the wall's
 hit points unchanged while the rock's fall.
 
+**Flying into one does not clear it either**, as of `@ccllc/arcade` 2.0.38.
+The engine honoured the flag in the loop that resolves shots and in neither of
+the two that resolve contact, so a wall no shot could touch could be flown away
+with the nose or swept away with the satellite -- which read as a bug about
+ramming and was really the checkbox not meaning what this entry says it means.
+Contact now sparks off it and leaves it standing, and the striker still pays
+what a ram has always cost: the ship takes the hit, the satellite takes its
+hundred. The satellite pays it once per touch rather than once per frame, since
+a body that survives is still there on the next one.
+
 ## C-44 — Inspector and palette polish
 
 Four small ones from the same message.
@@ -1558,8 +1568,11 @@ because that is the line the camera is parked at, so `movementPosition` gained
 **Three ways to make a run unendable, all closed in the normalizer.** Only
 `enemy` and `terrain` may hold: nothing else in the world ever has its `alive`
 cleared, so a decoration given a blocker would stop the run for good. An
-`indestructible` body may not either — shots spark off it and never reach its
-hit points, and a boss you can only kill by ramming is not a boss. And a body
+`indestructible` body may not either — nothing clears its `alive` at all, as of
+`@ccllc/arcade` 2.0.38: shots spark off it and never reach its hit points, and
+contact sparks too and leaves it standing (C-43). That guard was written when
+ramming was still a way out of it, and is now the only thing between an
+indestructible blocker and a run that cannot be finished. And a body
 the parked camera could never bring on screen is ignored rather than honoured,
 since bullets are culled past the far edge and it could never be shot; that one
 fires only where the sector's own end clamped the line, so a boss *at* the end
@@ -1567,8 +1580,9 @@ is fine and one dragged past it is not.
 
 **Contact destroys outright, which the editor now says out loud.** Both the
 ship's nose and its satellite set `alive = false` on touch, whatever the hit
-points say, so a blocker parked inside the ship's reach turns a 400-point fight
-into a nudge. The Inspector computes both reaches against the real hit
+points say — the one exception is an indestructible body, which cannot hold a
+blocker anyway — so a blocker parked inside the ship's reach turns a 400-point
+fight into a nudge. The Inspector computes both reaches against the real hit
 functions — the hitbox where there is one, `itemHitRadius` where there is not,
 the satellite held off the far edge by 26 — and warns when either arrives.
 

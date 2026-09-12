@@ -1064,3 +1064,30 @@ limit and satellite range, the default station of 72% is within about four units
 of the satellite's maximum reach. Guessing at that arithmetic would have got it
 wrong in both directions; reading `itemHitRadius`, `hitboxReach`, the flight
 limits and the satellite's own clamp is what makes the warning worth trusting.
+
+## 2026-09-12 — The checkbox that three loops had to agree on
+
+No editor change, and the whole slice was in the other repository: on
+`@ccllc/arcade` 2.0.38, and C-43 now says what INDESTRUCTIBLE has always
+claimed to say.
+
+**The engine cleared `alive` in three places and checked the flag in one.**
+Shots sparked off an indestructible body properly; both contact loops — the
+ship's nose and the satellite — destroyed it outright with no check at all. So
+the checkbox meant "cannot be shot away" rather than "cannot be destroyed", and
+a wall the author had made permanent could be cleared by flying into it. Found
+while reading the screen-blocker's guard, not by playing.
+
+**Where a flag lives is not where it is enforced.** Reading the feature finds
+the loop that implements it. The list that mattered was every write of
+`alive = false`, which is a grep, and the two that contradicted the flag had
+been there since the flag shipped.
+
+**Making something survive changes the arithmetic of every cost charged
+against it.** The satellite's 100 damage on contact was a one-off by
+construction — the thing it hit died. Against a body that is still there next
+frame it is the whole force field and all three hull pips in six frames, so the
+fix as first stated would have turned a brush against a wall into an instant
+loss. The arcade side now charges it once per touch. Nothing here had to
+change, but it is the kind of consequence this editor's records exist to
+carry.
