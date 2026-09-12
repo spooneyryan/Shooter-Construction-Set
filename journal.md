@@ -1006,3 +1006,61 @@ sorted on offsets, and a rotated formation's offsets carry 1e-15 of trig dust;
 a line at rotation 180 and the same line at rotation 0 are the same picture and
 sorted to opposite orders. Rounding before comparing is what makes the queue a
 property of the shape rather than of the rotation slider.
+
+## 2026-09-12 — The scroll waits
+
+C-56. F-11, the last of Ryan's archetypes: the mid-boss that dictates the pace
+of the scroll until it dies.
+
+**The feature was two lines of camera arithmetic and five ways to break the
+run.** The advance itself is `Math.min(cameraEnd, cameraCeiling())`, and every
+interesting decision was about what the ceiling must refuse. Only a body that
+can die may hold, because nothing in the world ever clears a decoration's
+`alive`. An `indestructible` body may not, because shots spark off it and never
+reach its hit points. A body the parked camera could never bring on screen may
+not, because bullets are culled past the far edge and it could never be shot.
+Victory had to stop meaning "the camera arrived", or a blocker at the end of the
+sector would be skipped entirely. Each of those is one line and each is the
+difference between a feature and a level you cannot finish.
+
+**I shipped the engine with the flag missing from its own type declarations.**
+`pinAlong` went into the JS, the tests passed, 2.0.35 released — and the first
+thing the editor did with it was fail to compile, because `index.d.ts` still
+described the old options object. The engine half of a feature is not done when
+the tests are green; it is done when the consumer can reach it. Worth writing
+down because the gate cannot catch this: the declarations are hand-kept, the
+engine's own tests are JS, and nothing in that repository type-checks against
+them.
+
+**The guard I was most confident about was the one I had not written.** I had
+justified hiding the blocker toggle for an indestructible item as a UI nicety.
+It was not: the engine happily normalized both onto one item, and nothing ever
+cleared that body's `alive`, so the camera waited on a kill that could not
+happen. The test failed on the first assertion before it ever reached the
+end-to-end one. Hiding a control in the editor is not a guard — the data can
+still say it, and something else will load that data.
+
+**Then the reason it was *only* almost unwinnable turned out to be another
+bug.** Ramming does clear an indestructible body's `alive`, because both contact
+loops set it without checking the flag while the bullet loop checks it properly.
+So the run was escapable, by the one route that makes the whole feature
+pointless: a boss you can only kill by ramming is not a boss. That is filed
+separately rather than fixed here, and the normalizer's guard is now the thing
+standing between the two bugs.
+
+**The minimap had been measuring the wrong view for as long as vertical levels
+have existed.** Its brackets mapped the camera against `length - VIEW_W`, 1280
+units, where a vertical level's scroll window is its 640-unit height. I only
+found it because the blocker's stop line had to be drawn on the same strip and
+the two disagreed; a tick that lands somewhere the camera never goes is obvious
+in a way that a bracket nobody was comparing against anything was not. Adding a
+second thing that reads a number is how you discover the first one was wrong.
+
+**The warning is computed against the real hit functions, because the honest
+answer was surprising.** Contact destroys outright — both the nose and the
+satellite set `alive = false` whatever the hit points say — so a blocker inside
+the ship's reach turns a 400-point fight into a nudge. With the default forward
+limit and satellite range, the default station of 72% is within about four units
+of the satellite's maximum reach. Guessing at that arithmetic would have got it
+wrong in both directions; reading `itemHitRadius`, `hitboxReach`, the flight
+limits and the satellite's own clamp is what makes the warning worth trusting.

@@ -38,7 +38,10 @@ import {
   normalizeLevel,
   hitboxFromMask,
   itemHitRadius,
+  hitboxReach,
   playerRadius,
+  SCROLL_SPEED,
+  viewSpans,
   SATELLITE_HIT_RADIUS,
   palette,
   VIEW_H,
@@ -967,6 +970,49 @@ function RangeField({ name, label, display, min, max, step, value, onChange, sca
  */
 const WAVING = new Set(["sine", "zigzag", "lane", "figureEight", "arcWeave", "surge"]);
 const TIMED = new Set(["sine", "zigzag", "lane", "figureEight", "arcWeave", "surge", "charge", "dart"]);
+
+/**
+ * What a screen-blocker will actually do in this level: where the scroll parks,
+ * whether it parks at all, and whether contact can end the fight early.
+ *
+ * A function of the level rather than arithmetic inside the Inspector's markup,
+ * because every number in it belongs to the world and is checked there -- the
+ * clamp on the stop line, the reachability floor, the two hit radii and the
+ * satellite's own bound. One place to read them, and one place to correct them
+ * when the world moves.
+ */
+function blockerAdvice(level: Level, item: LevelItem) {
+  const alongSpan = viewSpans(level.mode).along;
+  const sectorEnd = Math.max(0, level.length - alongSpan);
+  const park = clamp(item.x - alongSpan * (item.blocker?.station ?? 0) / 100, 0, sectorEnd);
+  // Where it stands on screen once the camera has parked. Measured from the
+  // CLAMPED line rather than from the station, because the sector's own ends
+  // move it: a station the level is too short to honour puts the body somewhere
+  // else entirely.
+  const onScreen = item.x - park;
+  // How far it can be touched from its centre. A hitbox answers the same shape
+  // to every striker -- the world stops asking `against` the moment there is
+  // one -- so this does too.
+  const reachOf = (against: "ship" | "satellite") => item.hitbox
+    ? hitboxReach(item.hitbox) * item.size * item.scale
+    : itemHitRadius(item, against);
+  // The furthest forward the ship may fly: `right` is an inset from the far
+  // edge, as a percentage of the along span.
+  const nose = alongSpan * (100 - level.player.limits.right) / 100;
+  const sat = level.player.satellite;
+  return {
+    alongSpan, sectorEnd, park,
+    // The world's own floor: a body the parked camera could never bring on
+    // screen could never be shot, so it does not hold at all.
+    unreachable: onScreen >= alongSpan,
+    // Contact does not damage -- it destroys, whatever the hit points say -- so
+    // either of these reaching turns the fight into a nudge. The satellite is
+    // held off the far edge by 26, which is what stops a long range from
+    // reaching everything.
+    rammed: nose + playerRadius(level.player, level.assets) >= onScreen - reachOf("ship"),
+    grazed: sat.enabled && Math.min(alongSpan - 26, nose + sat.range) + SATELLITE_HIT_RADIUS >= onScreen - reachOf("satellite"),
+  };
+}
 
 function itemCategory(item: { type: string }) {
   return item.type === "enemy" ? "ENEMIES"
@@ -2426,9 +2472,10 @@ A game exported from the Starline Foundry.
       const previewTilt = (item: LevelItem) => {
         const follow = item.heading?.follow ?? 0;
         if (!follow || item.movement.pattern === "stationary") return 0;
-        const holds = item.type === "terrain";
-        const from = movementPosition(item.movement, item.x, item.y, 0, { holds });
-        const to = movementPosition(item.movement, item.x, item.y, 1 / 120, { holds });
+        const holds = item.type === "terrain" || Boolean(item.blocker);
+        const pinAlong = Boolean(item.blocker);
+        const from = movementPosition(item.movement, item.x, item.y, 0, { holds, pinAlong });
+        const to = movementPosition(item.movement, item.x, item.y, 1 / 120, { holds, pinAlong });
         return travelTilt((to.x - from.x) * 120, (to.y - from.y) * 120, follow);
       };
       // A spinning sprite spins in the editor too, on the wall clock rather
@@ -2483,7 +2530,7 @@ A game exported from the Starline Foundry.
         const ahead = (bezier ? movementPathLength(selected.movement) + 160 : 260) / speed;
         const behind = (bezier ? 60 : 260) / speed;
         for (let i = -40; i <= 40; i += 1) {
-          const spot = movementPosition(selected.movement, selected.x, selected.y, (i / 40) * (i < 0 ? behind : ahead), { holds: selected.type === "terrain" });
+          const spot = movementPosition(selected.movement, selected.x, selected.y, (i / 40) * (i < 0 ? behind : ahead), { pinAlong: Boolean(selected.blocker), holds: selected.type === "terrain" || Boolean(selected.blocker) });
           if (i === -40) context.moveTo(spot.x, spot.y); else context.lineTo(spot.x, spot.y);
         }
         context.stroke(); context.restore();
@@ -2568,6 +2615,35 @@ A game exported from the Starline Foundry.
           const offset = slotMuzzleOffset(slot, index, current.player.weaponSlots.length);
           drawMuzzle(95 + offset.x, VIEW_H / 2 + offset.y);
         });
+      }
+      // Where the scroll stops and waits, by the world's own arithmetic. Every
+      // blocker, not only the selected one: it paces the whole sector, and the
+      // wash is the frame the fight happens in, which is how an author sees who
+      // else will be awake for it. Not in the arena, whose camera is a wave
+      // clock. Deliberately absent: time. How long the hold lasts is the
+      // player's kill, so nothing here counts or estimates.
+      if (current.mode !== "arena") {
+        const alongSpan = viewSpans(current.mode).along;
+        const sectorEnd = Math.max(0, current.length - alongSpan);
+        for (const item of current.items) {
+          if (!item.blocker) continue;
+          const park = Math.max(0, Math.min(sectorEnd, item.x - alongSpan * item.blocker.station / 100));
+          // The world's own floor, drawn as the absence of a line: a body the
+          // parked camera never brings on screen could never be shot, so it
+          // does not hold. The Inspector says why.
+          if (item.x >= park + alongSpan) continue;
+          const screen = park - cameraX;
+          if (screen < -alongSpan - 40 || screen > alongSpan + 40) continue;
+          context.save(); context.shadowBlur = 0;
+          context.fillStyle = "rgba(255,179,71,.05)";
+          context.fillRect(screen, 0, alongSpan, VIEW_H);
+          context.strokeStyle = "#ffb347"; context.lineWidth = 2; context.setLineDash([2, 6]);
+          context.beginPath(); context.moveTo(screen, 0); context.lineTo(screen, VIEW_H); context.stroke();
+          context.setLineDash([]);
+          context.fillStyle = "#ffb347"; context.font = "bold 11px monospace";
+          label("SCROLL HOLDS HERE UNTIL DESTROYED", screen + 9, VIEW_H - 16);
+          context.restore();
+        }
       }
       const endX = current.length - cameraX;
       if (endX >= -24 && endX <= VIEW_W + 24) {
@@ -2656,7 +2732,14 @@ A game exported from the Starline Foundry.
       context.beginPath();
       if (verticalPlay) context.rect((VIEW_W - VIEW_H) / 2, 0, VIEW_H, VIEW_H); else context.rect(0, 0, VIEW_W, VIEW_H);
       context.clip();
-      drawBackground(renderCam, modeRef.current === "playing", dt);
+      // The starfield drifts with the camera rather than by a flat delta, so
+      // when a screen-blocker halts the scroll the backdrop eases to a stop
+      // with it instead of the whole sky carrying on behind a parked camera.
+      // The arena is exempt: its camera is a wave clock that runs unconditionally
+      // and reaches the sector's end partway through a run, so its `cameraSpeed`
+      // would fall to zero mid-wave and freeze a backdrop nothing is holding.
+      const drift = playMode === "arena" ? dt : dt * (runtime.cameraSpeed / SCROLL_SPEED);
+      drawBackground(renderCam, modeRef.current === "playing", drift);
       // Vertical is drawn through a quarter turn: the whole scene renders in
       // (along, across) exactly as the scroll modes do, and this transform is
       // the only place the screen finds out. Later content enters from the
@@ -2763,9 +2846,33 @@ A game exported from the Starline Foundry.
         miniContext.fillStyle = item.type === "terrain" ? "#72838b" : item.type === "group" ? "#eaff62" : item.type === "powerup" ? "#eaff62" : item.type === "upgrade" ? "#64e3ff" : item.type === "decoration" ? "#744f93" : "#ff6a4d";
         const size = item.type === "group" ? 4 : 3; miniContext.fillRect(x - size / 2, y - size / 2, size, size);
       }
-      const bracketW = Math.max(14, Math.min(miniWidth, VIEW_W / current.length * miniWidth));
+      // The scroll window is the view's ALONG span, which is 640 in a vertical
+      // level and not the 1280 this used to assume -- a whole view's worth of
+      // error, which put the brackets somewhere the camera never was. The world
+      // parks at `length - along`, so that is what the travel maps against.
+      const alongSpan = viewSpans(current.mode).along;
+      const bracketW = Math.max(14, Math.min(miniWidth, alongSpan / current.length * miniWidth));
       const bracketTravel = Math.max(1, miniWidth - bracketW);
-      const bracketX = clamp(cameraX / Math.max(1, current.length - VIEW_W) * bracketTravel, 0, bracketTravel);
+      const bracketX = clamp(cameraX / Math.max(1, current.length - alongSpan) * bracketTravel, 0, bracketTravel);
+      // Where the scroll will stop and wait. Drawn under the brackets so the
+      // camera reads on top of it, and only where there is a scroll to stop:
+      // the arena's camera is a wave clock that no blocker holds.
+      if (current.mode !== "arena") {
+        const sectorEnd = Math.max(0, current.length - alongSpan);
+        for (const item of current.items) {
+          if (!item.blocker) continue;
+          const park = clamp(item.x - alongSpan * item.blocker.station / 100, 0, sectorEnd);
+          // Past this the parked camera could never bring the body on screen,
+          // so the world ignores it -- and so does this, rather than drawing a
+          // hold that will not happen.
+          if (item.x >= park + alongSpan) continue;
+          const x = park / current.length * miniWidth;
+          miniContext.strokeStyle = "rgba(234,255,98,.5)"; miniContext.lineWidth = 1;
+          miniContext.beginPath(); miniContext.moveTo(x, 0); miniContext.lineTo(x, miniHeight); miniContext.stroke();
+          miniContext.fillStyle = "#eaff62";
+          miniContext.beginPath(); miniContext.moveTo(x, 7); miniContext.lineTo(x - 4, 0); miniContext.lineTo(x + 4, 0); miniContext.closePath(); miniContext.fill();
+        }
+      }
       miniContext.fillStyle = "rgba(100,227,255,.07)"; miniContext.fillRect(bracketX, 0, bracketW, miniHeight);
       miniContext.strokeStyle = activeMode === "build" ? "#64e3ff" : "#eaff62"; miniContext.lineWidth = 2; miniContext.strokeRect(bracketX + 1, 1, Math.max(2, bracketW - 2), miniHeight - 2);
       const corner = Math.min(10, bracketW / 3); miniContext.lineWidth = 3;
@@ -3045,6 +3152,9 @@ A game exported from the Starline Foundry.
   };
 
   const selected = level.items.find((item) => item.id === selectedId) ?? null;
+  // Null unless the selection actually holds the scroll, so the Inspector below
+  // reads it without arithmetic of its own.
+  const blocker = selected?.blocker ? blockerAdvice(level, selected) : null;
   // The split between the two tabs, and the only place that decides it.
   //
   // COMPONENTS is a thing you place or equip: the six object kinds, plus the
@@ -3537,9 +3647,30 @@ A game exported from the Starline Foundry.
             </>)}
 
             {(selected.type === "enemy" || selected.type === "terrain" || selected.type === "group") && section("durability", "DURABILITY", <>
+              {/* The scroll waits for this one. Only a body that can die may
+                  hold, so it is offered beside the hit points and hidden for a
+                  formation, which would be `count` hold lines rather than one.
+                  Hidden for an indestructible body too, and cleared the moment
+                  that is ticked: hiding a control is not a guard, because the
+                  field would stay in the file where nobody could see or reach
+                  it, and a camera waiting on a body that cannot die is a level
+                  that cannot be finished. The normalizer refuses the pair as
+                  well; this is what stops the editor from ever offering it. */}
+              {(selected.type === "enemy" || selected.type === "terrain") && !selected.indestructible && <>
+                <label className="toggle-row"><span>SCREEN BLOCKER</span><input type="checkbox" checked={Boolean(selected.blocker)} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, blocker: event.target.checked ? { station: 72 } : undefined }))} /><i /></label>
+                {selected.blocker && blocker && <>
+                  <RangeField name="STATION" label={<>STATION</>} display={`${Math.round(selected.blocker.station)}% IN`} min="25" max="90" step="1" value={selected.blocker.station} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, blocker: { station: Number(event.target.value) } }))} />
+                  <p className={`inspector-note${level.mode !== "arena" && blocker.unreachable ? " warn" : ""}`}>{level.mode === "arena"
+                    ? "The arena has no scroll to hold: its camera is the wave clock, so this is ignored there."
+                    : blocker.unreachable
+                      ? `Never holds: the scroll can only reach ${Math.round(blocker.sectorEnd)}, and from there this sits off the far edge of the view where nothing could shoot it. Move it back toward the start, or push END LEVEL out.`
+                      : `The scroll stops at ${Math.round(blocker.park)} and waits until this is destroyed. Pinned where you placed it, so its flight becomes a bob on the spot.`}</p>
+                  {level.mode !== "arena" && !blocker.unreachable && (blocker.rammed || blocker.grazed) && <p className="inspector-note warn">{blocker.rammed && blocker.grazed ? "Both the ship and its satellite can touch it" : blocker.rammed ? "The ship can touch it" : "The satellite can reach it"} where it parks, and contact destroys outright — its {selected.hitPoints} hit points would never be spent. Raise STATION, or pull the FORWARD flight limit{blocker.grazed && !blocker.rammed ? " or the satellite RANGE" : ""} back.</p>}
+                </>}
+              </>}
               {/* Takes no damage and is never destroyed; shots still spark and stop on it.
                   Only ever true or absent, so a level that never set it saves as it did. */}
-              <label className="toggle-row"><span>INDESTRUCTIBLE</span><input type="checkbox" checked={Boolean(selected.indestructible)} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, indestructible: event.target.checked ? true : undefined }))} /><i /></label>
+              <label className="toggle-row"><span>INDESTRUCTIBLE</span><input type="checkbox" checked={Boolean(selected.indestructible)} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, indestructible: event.target.checked ? true : undefined, blocker: event.target.checked ? undefined : item.blocker }))} /><i /></label>
               {!selected.indestructible && <RangeField name="HIT POINTS" label={<>HIT POINTS</>} display={`${selected.hitPoints} HP`} min="50" max="2000" step="50" value={selected.hitPoints} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, hitPoints: Number(event.target.value) }))} />}
               <label className="field wide"><span>ARMOR TYPE</span><select value={selected.armor?.type ?? "none"} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, armor: defaultArmor(event.target.value as ArmorType) }))}>{["none", "standard", "heavy", "ablative", "forcefield"].map((type) => <option value={type} key={type}>{type.toUpperCase()}</option>)}</select></label>
               {(selected.armor?.type === "forcefield") && <><RangeField name="SHIELD CAPACITY" label={<>SHIELD CAPACITY</>} display={`${selected.armor.capacity}`} min="25" max="1000" step="25" value={selected.armor.capacity} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, armor: { ...(item.armor ?? defaultArmor("forcefield")), capacity: Number(event.target.value) } }))} /><RangeField name="RECHARGE RATE" label={<>RECHARGE RATE</>} display={`${selected.armor.rechargeRate}/s`} min="0" max="250" step="5" value={selected.armor.rechargeRate} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, armor: { ...(item.armor ?? defaultArmor("forcefield")), rechargeRate: Number(event.target.value) } }))} /></>}

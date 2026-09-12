@@ -297,6 +297,9 @@ button { cursor: pointer; }
 .inspector-action { width: 100%; margin-top: 7px; color: var(--lime); border-color: rgba(234,255,98,.35); }
 .mini-reset { min-height: 25px; padding: 0 8px; color: #718b96; }
 .inspector-note { margin: 5px 0 0; color: #58737e; font-family: var(--font-mono); font-size: 9px; line-height: 1.5; }
+/* The same note where it is telling the author something is off, rather than
+   just telling them how a field reads. Amber, the colour play already uses. */
+.inspector-note.warn { color: #eaff62; }
 .player-settings .type-tag .player-icon { justify-self: end; transform: scale(.82); }
 .field { display: flex; flex-direction: column; gap: 5px; }
 .field > span, .range-field b, .type-tag > span { color: #607985; font-family: var(--font-mono); font-size: 9px; font-weight: 500; letter-spacing: .09em; }

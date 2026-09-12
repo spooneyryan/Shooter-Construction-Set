@@ -69,6 +69,24 @@ Two things bound the sweep. **The suite has no select and no toggle** — there 
 
 Adopt per component rather than in one pass, with the test being whether the result survives the cockpit's density: Starline runs 8–10px mono type and roughly 31px controls, tighter than the suite's defaults, and the palette's tab strip already needed overrides to fit two tabs and more to fit three. Keep the swaps that hold up and revert the ones that fight it. The mechanics are settled and should not change: `styles.css` is imported once in `layout.tsx` and already carries every component's stylesheet, including the subpath ones, so a new component needs no new stylesheet; `theme.css` is never loaded, because the `--eb-*` bridge in `globals.css` maps the suite's tokens onto Starline's palette; and appearance overrides go through the suite's stable public class names scoped under `.workspace`. The package is a committed tarball, so a component that needs a newer release means re-packing `vendor/` first.
 
+## F-07 — The player ship's own hitbox
+
+C-48 gave every item a hitbox and left the player a circle. The ship strikes
+enemies as a disc of `playerRadius`, and every collision the world makes is
+disc-against-item; a shaped ship means shape-against-shape, which is a
+different and heavier test. When the ship's silhouette matters enough — a
+long thin fighter, a wide bomber — give the player a `hitbox` in the same
+frame and test polygon-against-polygon by separating axes, with the disc test
+kept for bullets. Until then the ship is round.
+
+## F-08 — Selection by hitbox in the editor
+
+Clicking an item on the stage still tests the old circle, so an item with a
+tight hitbox is selectable in the empty space its art no longer collides in.
+Harmless, since selection is not collision, and the wider target is easier to
+click; noted because someone will expect the two to match once the debug
+rings show them differing.
+
 # Completed Implementation Plan
 
 The ten features should be delivered as a series of compatible foundations rather than ten isolated additions. The key is to establish stable data models and generic editor operations first, then let the editor, asset, and combat workstreams progress in parallel.
@@ -174,40 +192,6 @@ The best concurrency point is after Phase 0: one stream can build selection/tran
 # Completed Features
 
 Completed future items are archived here in completion order. The original ten-item Foundry plan was completed on 2026-08-13 and is retained below as the design record.
-
-## F-07 — The player ship's own hitbox
-
-C-48 gave every item a hitbox and left the player a circle. The ship strikes
-enemies as a disc of `playerRadius`, and every collision the world makes is
-disc-against-item; a shaped ship means shape-against-shape, which is a
-different and heavier test. When the ship's silhouette matters enough — a
-long thin fighter, a wide bomber — give the player a `hitbox` in the same
-frame and test polygon-against-polygon by separating axes, with the disc test
-kept for bullets. Until then the ship is round.
-
-## F-08 — Selection by hitbox in the editor
-
-Clicking an item on the stage still tests the old circle, so an item with a
-tight hitbox is selectable in the empty space its art no longer collides in.
-Harmless, since selection is not collision, and the wider target is easier to
-click; noted because someone will expect the two to match once the debug
-rings show them differing.
-
-## F-11 — The screen-blocker
-
-Ryan's last archetype, designed and not built: "A large, durable mid-boss that
-slowly occupies the right half of the screen, acts as a bullet sponge, and
-dictates the entire pace of the screen scroll until defeated."
-
-Nothing gates the scroll on an enemy's death today. The design is an optional
-`blocker` on an item that halts the camera while it lives, but the reason this
-is its own slice rather than a fourth field on C-55 is what halting the camera
-means to everything around it: a level's authored length is a distance the
-camera covers, so victory is reached by scrolling and a stalled camera stalls
-the run; every enemy further along the sector waits with it; and the editor's
-sector ruler measures a distance that no longer maps to time. One of the two
-proposals for it was found to change how already-saved levels load.
-
 
 ## C-00 — On-canvas rotation and resize handles
 
@@ -1542,3 +1526,52 @@ and is a different feature.
 
 All three are absent by default, and absent is the arithmetic every saved level
 already flew.
+
+## C-56 — The screen-blocker
+
+Was F-11, Ryan's last archetype: "A large, durable mid-boss that slowly
+occupies the right half of the screen, acts as a bullet sponge, and dictates
+the entire pace of the screen scroll until defeated."
+
+**An item may carry a `blocker`, and the scroll waits for it.** The camera may
+not pass `x - along * station / 100` while the body lives, where `station` is a
+percentage of the view's own along span from the near edge — the unit the
+ship's flight limits already use. The stop line is a pure function of authored
+data, which is what lets the editor draw exactly where play will park and mark
+it on the level overview. What neither can know is how *long* it parks, because
+that is the player's kill.
+
+**Victory stopped being "the camera arrived".** It was exactly that, so a
+blocker whose line falls at or past the end of the sector would have been
+skipped: camera parked, run won, boss still standing. Both the advance and the
+win now read one `cameraCeiling()`, which returns Infinity when nothing blocks —
+so a sector without a blocker reduces to the arithmetic it always scrolled by.
+
+**The pin had to be stricter than terrain's.** `holds` stops an entity's travel
+and keeps its wobble, which is right for a nebula bobbing where it stands. It is
+not enough here: the figure eight has a fore-and-aft term, and a path `angle` or
+an arc's `curve` rotates the cross wobble into the along axis outright, up to
+the whole amplitude. A blocker's along coordinate has to *be* its origin,
+because that is the line the camera is parked at, so `movementPosition` gained
+`pinAlong` and the blocker bobs across the axis only.
+
+**Three ways to make a run unendable, all closed in the normalizer.** Only
+`enemy` and `terrain` may hold: nothing else in the world ever has its `alive`
+cleared, so a decoration given a blocker would stop the run for good. An
+`indestructible` body may not either — shots spark off it and never reach its
+hit points, and a boss you can only kill by ramming is not a boss. And a body
+the parked camera could never bring on screen is ignored rather than honoured,
+since bullets are culled past the far edge and it could never be shot; that one
+fires only where the sector's own end clamped the line, so a boss *at* the end
+is fine and one dragged past it is not.
+
+**Contact destroys outright, which the editor now says out loud.** Both the
+ship's nose and its satellite set `alive = false` on touch, whatever the hit
+points say, so a blocker parked inside the ship's reach turns a 400-point fight
+into a nudge. The Inspector computes both reaches against the real hit
+functions — the hitbox where there is one, `itemHitRadius` where there is not,
+the satellite held off the far edge by 26 — and warns when either arrives.
+
+**A `cameraSpeed` on the world, so the backdrop stops with the camera.** The
+renderer scaled its parallax by a boolean, which would have popped the whole
+starfield the instant the scroll halted.
