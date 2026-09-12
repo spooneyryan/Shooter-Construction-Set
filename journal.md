@@ -1056,6 +1056,17 @@ the two disagreed; a tick that lands somewhere the camera never goes is obvious
 in a way that a bracket nobody was comparing against anything was not. Adding a
 second thing that reads a number is how you discover the first one was wrong.
 
+**Two releases went out a commit behind and I did not notice for an hour.**
+`npm run release` tags `origin/dev`, not the branch the work is sitting on, and
+merges `dev-claude` into `dev` only afterwards -- so a fix committed and then
+released in the same breath goes out in the *next* release, with the announced
+version looking entirely correct. The script prints a NOTE saying exactly this;
+I piped its output through `tail` and cut the warning off. What caught it in the
+end was not reading the log but checking the behaviour: the end-to-end script
+asked the installed package whether it dropped the bad pair, and it said no.
+**Verify a release by what the published artifact does, not by the number it
+was given.**
+
 **The warning is computed against the real hit functions, because the honest
 answer was surprising.** Contact destroys outright — both the nose and the
 satellite set `alive = false` whatever the hit points say — so a blocker inside
