@@ -976,3 +976,33 @@ formation code and placed nothing at all. Clamping it to one rather than
 defaulting to five was the deliberate choice: the file described fewer than one
 enemy, so it gets one, and inventing four the level never mentioned would be
 the worse lie.
+
+## 2026-09-12 — Nine of twelve were already there
+
+C-55. Ryan sent the archetype list that had not come through with C-54.
+
+**Answer the list before building against it.** Three quarters of it was
+already in the editor, and two of those were not obvious — the bullet patterns
+aim at the player in the scrolling modes, not only in the arena, which took
+reading how the world hands a pattern its target. Checking first turned a
+twelve-item request into a three-item one, and one of the three then turned out
+to deserve its own slice.
+
+**The adversary found the bug that would have shipped.** A lock resolved per
+member latches the player a frame apart for each of them, and a five-ship vee
+arrives visibly bent — 60 units of shear, measured by the verifier before I had
+written a line. Resolving from the formation's anchor is a one-word change and
+is invisible in every test that does not look for it.
+
+**Then my own assertions were wrong twice.** A formation's members activate at
+different times, so `releaseAge` — each member's own age at release — is not
+comparable between them; two of my three new tests were measuring the wrong
+quantity and failing for it. The fix was to measure world time: the frame a
+departure was detected on, and the time flown since release. Worth writing down
+because the test failing looked exactly like the feature being broken.
+
+**A float-dust tiebreak is a real bug in geometry code.** The peel order is
+sorted on offsets, and a rotated formation's offsets carry 1e-15 of trig dust;
+a line at rotation 180 and the same line at rotation 0 are the same picture and
+sorted to opposite orders. Rounding before comparing is what makes the queue a
+property of the shape rather than of the rotation slider.

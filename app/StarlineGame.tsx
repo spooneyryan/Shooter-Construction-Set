@@ -3561,6 +3561,8 @@ A game exported from the Starline Foundry.
 
             {selected.type === "group" && section("formation", "FORMATION", <>
               <div className="field-grid"><label className="field"><span>FORMATION</span><select value={selected.group?.pattern} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, group: { ...(item.group ?? { count: 5, spacing: 60, pattern: "line" }), pattern: event.target.value as GroupPattern } }))}><option value="line">LINE</option><option value="column">COLUMN</option><option value="vee">VEE</option><option value="wedge">WEDGE</option><option value="crescent">CRESCENT</option><option value="ring">RING</option><option value="cluster">CLUSTER</option><option value="block">BLOCK</option><option value="ladder">LADDER</option></select></label><div className="field"><EbNumericInput label="COUNT" sliderEnabled={false} min={2} max={16} value={selected.group?.count ?? 5} onValueChange={(count) => updateItem(selected.id, (item) => ({ ...item, group: { ...(item.group ?? { pattern: "line", spacing: 60, count: 5 }), count } }))} /></div></div>
+              <RangeField name="PEEL" label={<>PEEL</>} display={selected.group?.peel ? `${selected.group.peel.toFixed(1)}s APART` : "TOGETHER"} min="0" max="4" step="0.1" value={selected.group?.peel ?? 0} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, group: { ...(item.group ?? { pattern: "vee", spacing: 60, count: 5 }), peel: Number(event.target.value) || undefined } }))} />
+              {(selected.group?.peel ?? 0) > 0 && <p className="inspector-note">They leave one at a time, front of the flight first. Give them a STALL under MOVEMENT and the formation holds together before it breaks up.</p>}
               <RangeField name="SPACING" label={<>SPACING</>} display={`${selected.group?.spacing ?? 60}u`} min="30" max="140" value={selected.group?.spacing ?? 60} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, group: { ...(item.group ?? { pattern: "line", spacing: 60, count: 5 }), spacing: Number(event.target.value) } }))} />
             </>)}
 
@@ -3597,6 +3599,16 @@ A game exported from the Starline Foundry.
                   set, but frequency is their whole rhythm -- pulses, gain and
                   lunges per second. */}
               {TIMED.has(selected.movement.pattern) && <RangeField name="FREQUENCY" label={<>FREQUENCY</>} display={`${selected.movement.frequency.toFixed(2)}Hz`} min="0.1" max="1.5" step="0.05" value={selected.movement.frequency} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, movement: { ...item.movement, frequency: Number(event.target.value) } }))} />}
+              {/* The wait, and what it aims at. Not shown for a thing that never
+                  flies: a stationary sprite has no path to delay, and a lock
+                  authored under it would slide in play with nothing drawn. */}
+              {selected.movement.pattern !== "stationary" && <>
+                <RangeField name="STALL" label={<>STALL</>} display={selected.movement.stall ? `${selected.movement.stall.toFixed(1)}s` : "NONE"} min="0" max="8" step="0.1" value={selected.movement.stall ?? 0} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, movement: { ...item.movement, stall: Number(event.target.value) || undefined } }))} />
+                {(selected.movement.stall ?? 0) > 0 && <RangeField name="LOCK ON" label={<>LOCK ON</>} display={selected.movement.lock ? `${Math.round(selected.movement.lock * 100)}%` : "OFF"} scale={100} min="0" max="1" step="0.05" value={selected.movement.lock ?? 0} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, movement: { ...item.movement, lock: Number(event.target.value) || undefined } }))} />}
+                <p className="inspector-note">{(selected.movement.stall ?? 0) > 0
+                  ? `Waits ${selected.movement.stall!.toFixed(1)}s once it is on screen, then flies${selected.movement.lock ? " at where the ship was standing" : ""}.`
+                  : "Waits where you placed it before flying, timed from the moment it comes into view."}</p>
+              </>}
               {/* A plunge is the one path with a fall rate rather than a width. */}
               {selected.movement.pattern === "plunge" && <RangeField name="FALL" label={<>FALL</>} display={`${selected.movement.gravity ?? 240}u/s²`} min="0" max="1200" step="20" value={selected.movement.gravity ?? 240} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, movement: { ...item.movement, gravity: Number(event.target.value) } }))} />}
             </>)}

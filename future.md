@@ -193,6 +193,22 @@ Harmless, since selection is not collision, and the wider target is easier to
 click; noted because someone will expect the two to match once the debug
 rings show them differing.
 
+## F-11 — The screen-blocker
+
+Ryan's last archetype, designed and not built: "A large, durable mid-boss that
+slowly occupies the right half of the screen, acts as a bullet sponge, and
+dictates the entire pace of the screen scroll until defeated."
+
+Nothing gates the scroll on an enemy's death today. The design is an optional
+`blocker` on an item that halts the camera while it lives, but the reason this
+is its own slice rather than a fourth field on C-55 is what halting the camera
+means to everything around it: a level's authored length is a distance the
+camera covers, so victory is reached by scrolling and a stalled camera stalls
+the run; every enemy further along the sector waits with it; and the editor's
+sector ruler measures a distance that no longer maps to time. One of the two
+proposals for it was found to change how already-saved levels load.
+
+
 ## C-00 — On-canvas rotation and resize handles
 
 When a playfield object is selected, add direct-manipulation handles around its selection circle. A rotation handle should let the designer rotate the object by dragging, while one or more resize handles should scale it proportionally. The handles should remain usable across object sizes and canvas zoom levels, provide live visual feedback, and update the same rotation and scale properties exposed in the Inspector. A drag should be recorded as one undoable operation.
@@ -1483,3 +1499,46 @@ dropped 20 of 34, almost all as redundant with an existing pattern plus its
 modifiers — a loop is a bezier, a boomerang is an arc, a wheel is a ring. The
 survey is what found the six scattered copies of the pattern enum and the
 silent `MOVE_PATTERNS` gate.
+
+## C-55 — A wait you can see, a dive that locks on, and a formation that peels
+
+Ryan sent the shmup archetype list he had meant to send with C-54. Nine of the
+twelve were already there: the fly-by is `straight`, the sine wave is `sine`,
+the swoop is `arc` (whose curve reaches 360°/s) or a `bezier`, the lurker is a
+stationary enemy with a gun, and all five bullet patterns — aimed, fan, stream,
+nova, spiral — are in the pattern designer, which the world hands the player's
+live position as a target in the scrolling modes and not only in the arena.
+Pop-up waves are placeable off the top and bottom and can be pointed in from any
+edge. Three were missing. Two are built here; the third is F-11.
+
+**`movement.stall`** holds a thing where it was placed before it flies at all,
+and the wait is timed from the moment the player can SEE it rather than from
+its spawn. That distinction is the whole feature: an entity wakes 260 units
+past the right edge and the scroll takes nearly two seconds to close that, so a
+wait counted from spawn is spent where nobody watches it happen.
+
+**`movement.lock`** turns the path toward the player's row when the wait ends,
+0 for the authored angle and 1 for straight at where they were standing. It is
+resolved once, by the world, from the formation's anchor. Resolved per member
+instead, five ships sight the player on five different frames and the wave
+arrives bent — the adversarial pass measured 60 units of shear on a vee of
+five before this was fixed, and the test now pins the whole formation to one
+heading.
+
+**`group.peel`** is the seconds between one member leaving and the next. With a
+stall that is Ryan's peeling escort: the formation enters, holds together in
+view, and then goes one at a time from the front of the flight outward. The
+queue is sorted on the authored offsets rather than placement order, and
+rounded before comparing, because a rotated formation carries float dust of
+1e-15 that would otherwise decide the whole order — a line at rotation 180
+peeled tip-to-tip where the same line at rotation 0 peeled centre-out.
+
+**A stall holds a thing in the LEVEL, not on the screen**, so the scroll carries
+it leftward while it waits. That is the same meaning `stationary` has always
+had, and it is why a stalled formation reads as having stopped and being
+carried rather than pinned to the glass. Stated because the alternative —
+holding screen position — would need the scroll speed inside the path function
+and is a different feature.
+
+All three are absent by default, and absent is the arithmetic every saved level
+already flew.
