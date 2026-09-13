@@ -1575,3 +1575,44 @@ the satellite held off the far edge by 26 — and warns when either arrives.
 **A `cameraSpeed` on the world, so the backdrop stops with the camera.** The
 renderer scaled its parallax by a boolean, which would have popped the whole
 starfield the instant the scroll halted.
+
+## C-57 — Edit a Component without placing one
+
+Ryan: "make selecting a component in the left sidebar put its attributes in the
+right bar for editing, without having to lay one on the playfield."
+
+Tuning a saved Object meant placing one, editing it, UPDATE COMPONENT, then
+deleting the copy — four steps, one of them destructive, to change a number.
+
+**Clicking a saved Object in the palette now opens it in the Inspector.** It
+still arms the placement tool, so click-card-then-click-playfield is unchanged;
+the editing is added beside it rather than replacing it. Edits write straight
+to the Component, so they reach every future placement and nothing already
+placed — which the Inspector says, because the form is otherwise identical to
+the one that edits a single object.
+
+**One form, not two.** A Component's `object` is a `LevelItem` in every respect
+but placement, so the Inspector body was pointed at a `subject` that resolves to
+either, with `writeOne` / `writeAll` standing in for `updateItem` /
+`updateSelectedItems`. A second copy of two hundred lines of form would have
+drifted from the first the next time a field was added — the blocker toggle in
+C-56 would already have landed in only one of them.
+
+**Three subjects, made exclusive in one place.** The Inspector could already
+show the player instead of the selection. `setSelection` is the single route
+that clears the other two, so selecting an object on the playfield still wins
+over everything, and placing from an armed Component hands the Inspector back
+to what was placed.
+
+**What a template cannot have.** Position, SAVE AS COMPONENT and the
+multi-selection controls are hidden — a template is not anywhere and is not a
+selection. The screen-blocker advice had to learn the difference too: its stop
+line is computed from the object's `x`, which for a template is wherever the
+object it was saved from happened to stand. Unplaced, it reports the distance
+the camera will keep instead, which is the part that travels with the
+Component.
+
+**Still open:** weapon, armor and satellite Components. Their card click is the
+apply-or-equip gesture, and their attributes are three shapes that are not
+`LevelItem`, so neither the gesture nor the form carries over. Only their bullet
+pattern is reachable today, through the player's weapon slots.

@@ -119,7 +119,7 @@ type Tool = "select" | "scroll" | "erase" | PaletteKey | `component:${string}`;
 type PaletteTab = "objects" | "components" | "assets";
 /** Toolbar Behavior: whether a tool panel keeps one section open, or several. */
 type SectionMode = "single" | "multiple";
-type PatternEditorTarget = { kind: "item"; id: string } | { kind: "weapon"; id: string } | { kind: "pattern"; id: string };
+type PatternEditorTarget = { kind: "item"; id: string } | { kind: "object"; id: string } | { kind: "weapon"; id: string } | { kind: "pattern"; id: string };
 
 // Render-side only. Stars are not simulation state — nothing in the world reads
 // one — so they live here, where Math.random is free to be Math.random.
@@ -981,14 +981,21 @@ const TIMED = new Set(["sine", "zigzag", "lane", "figureEight", "arcWeave", "sur
  * satellite's own bound. One place to read them, and one place to correct them
  * when the world moves.
  */
-function blockerAdvice(level: Level, item: LevelItem) {
+function blockerAdvice(level: Level, item: LevelItem, placed: boolean) {
   const alongSpan = viewSpans(level.mode).along;
   const sectorEnd = Math.max(0, level.length - alongSpan);
-  const park = clamp(item.x - alongSpan * (item.blocker?.station ?? 0) / 100, 0, sectorEnd);
+  const station = alongSpan * (item.blocker?.station ?? 0) / 100;
+  // A saved Component is not anywhere yet, so its `x` is wherever the object it
+  // was saved from happened to stand -- a number that says nothing about where
+  // this will hold. Unplaced, the station alone is the whole answer: it is the
+  // distance the camera keeps between its near edge and the body, and only the
+  // sector's own ends can spoil it.
+  const park = placed ? clamp(item.x - station, 0, sectorEnd) : item.x - station;
   // Where it stands on screen once the camera has parked. Measured from the
   // CLAMPED line rather than from the station, because the sector's own ends
   // move it: a station the level is too short to honour puts the body somewhere
-  // else entirely.
+  // else entirely. Unclamped that is exactly the station, which is why the
+  // contact warnings below mean the same thing for a Component.
   const onScreen = item.x - park;
   // How far it can be touched from its centre. A hitbox answers the same shape
   // to every striker -- the world stops asking `against` the moment there is
@@ -1004,7 +1011,9 @@ function blockerAdvice(level: Level, item: LevelItem) {
     alongSpan, sectorEnd, park,
     // The world's own floor: a body the parked camera could never bring on
     // screen could never be shot, so it does not hold at all.
-    unreachable: onScreen >= alongSpan,
+    // Only a placed object can be out of the camera's reach; where a template
+    // will stand is the author's next click, not ours to judge.
+    unreachable: placed && onScreen >= alongSpan,
     // Contact does not damage -- it destroys, whatever the hit points say -- so
     // either of these reaching turns the fight into a nudge. The satellite is
     // held off the far edge by 26, which is what stops a long range from
@@ -1191,6 +1200,19 @@ export function StarlineGame() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [inspectPlayer, setInspectPlayer] = useState(false);
+  /**
+   * The saved Component the Inspector is editing, if it is editing one.
+   *
+   * A Component's `object` is a LevelItem in every respect but placement, so
+   * the Inspector edits it with the same body it uses for a placed object --
+   * which is the whole point: a saved enemy is tuned where every other enemy
+   * is tuned, rather than by dropping one on the playfield, editing it, saving
+   * over the Component and deleting the copy.
+   *
+   * The id rather than the Component, so a rename or an edit is read back from
+   * the level on the next render and a deleted one resolves to nothing.
+   */
+  const [inspectComponentId, setInspectComponentId] = useState<string | null>(null);
   // The draw loop reads refs, not state, and the ship now has a selected look.
   const inspectPlayerRef = useRef(false);
   useEffect(() => { inspectPlayerRef.current = inspectPlayer; }, [inspectPlayer]);
@@ -1262,7 +1284,13 @@ export function StarlineGame() {
   const [editingAsset, setEditingAsset] = useState<SpriteAsset | null>(null);
   const [editingPattern, setEditingPattern] = useState<{ pattern: BulletPatternDefinition; target: PatternEditorTarget } | null>(null);
   /** The id of the item whose hitbox is open in the editor dialog. */
-  const [editingHitbox, setEditingHitbox] = useState<string | null>(null);
+  /**
+   * Whose hitbox the shape editor is open on. The kind travels with the id
+   * because a Component's template and a placed object are looked up in
+   * different places and written back through different functions -- and an id
+   * alone cannot say which, since nothing stops the two sets from overlapping.
+   */
+  const [editingHitbox, setEditingHitbox] = useState<{ kind: "item" | "component"; id: string } | null>(null);
   // Editing a saved Component rather than a loose document in both cases: the
   // id is what an item's fx points at, so it has to survive the round trip.
   const [editingSound, setEditingSound] = useState<{ id: string; sound: SfxDefinition } | null>(null);
@@ -1313,7 +1341,12 @@ export function StarlineGame() {
   // member falls back instead of pointing at nothing.
   const setSelection = useCallback((ids: string[], primary?: string | null) => {
     editorFor().selection.set(ids, primary);
+    // The three Inspector subjects are exclusive, and selecting an object on
+    // the playfield is the loudest of the three: it wins over both. Every route
+    // into the player or a Component therefore goes through here first and sets
+    // itself afterwards, rather than each one clearing the other two by hand.
     setInspectPlayer(false);
+    setInspectComponentId(null);
   }, [editorFor]);
 
   // The undo stack reports its own state; the two button-enabled flags follow it
@@ -1594,14 +1627,35 @@ export function StarlineGame() {
     updateLevel((current) => ({ ...current, items: current.items.map((item) => item.id === id ? updater(item) : item) }), record, `item-${id}`);
   }, [updateLevel]);
 
+  /**
+   * Edit a saved Component's template.
+   *
+   * The card and the template carry the same name -- `saveObjectComponent`
+   * writes both -- so a rename has to move both or the palette goes on showing
+   * the old one. Everything else lives on the object.
+   */
+  const writeComponentObject = useCallback((id: string, updater: (item: LevelItem) => LevelItem, record = true) => {
+    updateLevel((current) => ({
+      ...current,
+      components: current.components.map((component) => {
+        if (component.id !== id || !component.object) return component;
+        const object = updater(component.object);
+        return { ...component, name: object.name, object };
+      }),
+    }), record, `component-${id}`);
+  }, [updateLevel]);
+
   /** A hitbox read off the item's own art by the engine, in one click. */
-  const deriveHitbox = useCallback((item: LevelItem, mode: "outline" | "circles") => {
+  const deriveHitbox = useCallback((item: LevelItem, mode: "outline" | "circles", write: (updater: (current: LevelItem) => LevelItem) => void) => {
     const mask = rasterizeHitMask(paintItem(item), 96);
     const hitbox = mask ? hitboxFromMask(mask, { mode }) : undefined;
     if (!hitbox) { flash("NOTHING SOLID TO TRACE"); return; }
-    updateItem(item.id, (current) => ({ ...current, hitbox }));
+    // The caller says where this lands: a placed object or a Component's
+    // template. Reading `item.id` and writing to the item list would silently
+    // do nothing for a template, whose id is the literal "template".
+    write((current) => ({ ...current, hitbox }));
     flash(mode === "outline" ? "HITBOX TRACED" : "HITBOX COVERED");
-  }, [paintItem, updateItem, flash]);
+  }, [paintItem, flash]);
 
   // The library's default coalesce key is the reason plus the selection, which
   // is what the key built here by hand already was.
@@ -1712,9 +1766,10 @@ export function StarlineGame() {
     const saved = normalizeBulletPattern(structuredClone(pattern));
     const target = editingPattern.target;
     if (target.kind === "item") updateItem(target.id, (item) => ({ ...item, weapon: { ...item.weapon, enabled: true, pattern: saved } }));
+    else if (target.kind === "object") writeComponentObject(target.id, (item) => ({ ...item, weapon: { ...item.weapon, enabled: true, pattern: saved } }));
     else updateLevel((current) => ({ ...current, components: current.components.map((component) => component.id === target.id ? (target.kind === "weapon" ? { ...component, weapon: component.weapon ? { ...component.weapon, pattern: saved } : component.weapon } : { ...component, name: saved.name, pattern: saved }) : component) }));
     setEditingPattern(null); flash("BULLET PATTERN APPLIED");
-  }, [editingPattern, flash, updateItem, updateLevel]);
+  }, [editingPattern, flash, updateItem, updateLevel, writeComponentObject]);
 
   const applyEquipmentComponent = useCallback((component: ComponentDefinition) => {
     const target = levelRef.current.items.find((item) => item.id === editorFor().selection.primary);
@@ -3152,9 +3207,37 @@ A game exported from the Starline Foundry.
   };
 
   const selected = level.items.find((item) => item.id === selectedId) ?? null;
-  // Null unless the selection actually holds the scroll, so the Inspector below
+  /**
+   * What the Inspector is editing: a saved Component's template when one is
+   * open, otherwise the placed object.
+   *
+   * A Component's `object` is a LevelItem, so ONE body serves both and every
+   * field below writes through `writeOne` / `writeAll` rather than naming
+   * `updateItem`. The alternative was a second copy of two hundred lines of
+   * form that would drift from this one the first time a field was added.
+   *
+   * Resolved from the level rather than held, so an edit shows up on the next
+   * render and a Component deleted from under the Inspector falls back to the
+   * selection instead of editing a ghost.
+   */
+  const editingComponent = inspectComponentId
+    ? level.components.find((component) => component.id === inspectComponentId && component.object) ?? null
+    : null;
+  const subject = editingComponent?.object ?? selected;
+  // A Component is one template and never a multi-selection, so the "/ ALL"
+  // labels and the edit-together controls collapse to the subject itself.
+  const subjectIds = editingComponent ? [] : selectedIds;
+  const writeOne = (updater: (item: LevelItem) => LevelItem) => {
+    if (editingComponent) writeComponentObject(editingComponent.id, updater);
+    else if (selected) updateItem(selected.id, updater);
+  };
+  const writeAll = (updater: (item: LevelItem) => LevelItem, coalesceKey: string) => {
+    if (editingComponent) writeComponentObject(editingComponent.id, updater);
+    else updateSelectedItems(updater, coalesceKey);
+  };
+  // Null unless the subject actually holds the scroll, so the Inspector below
   // reads it without arithmetic of its own.
-  const blocker = selected?.blocker ? blockerAdvice(level, selected) : null;
+  const blocker = subject?.blocker ? blockerAdvice(level, subject, !editingComponent) : null;
   // The split between the two tabs, and the only place that decides it.
   //
   // COMPONENTS is a thing you place or equip: the six object kinds, plus the
@@ -3318,10 +3401,14 @@ A game exported from the Starline Foundry.
   const componentSections = (entries: ComponentDefinition[], prefix: string, categories: string[]) => categories.map((category) => {
     const inCategory = entries.filter((component) => componentCategory(component) === category);
     if (!inCategory.length) return null;
-    return section(`${prefix}-${category}`, category, <div className="palette-category-items">{inCategory.map((component) => <div className="component-card-row" key={component.id}><button className={`palette-card ${tool === `component:${component.id}` ? "active" : ""}`} type="button" onClick={() => { if (component.object) { if (applyObjectToGroup(component)) return; const value = `component:${component.id}` as Tool; setTool(value); toolRef.current = value; setInspectPlayer(false); } else applyEquipmentComponent(component); }}>{component.object ? <ObjectThumb item={component.object} assets={level.assets} /> : <span className={`sprite-icon ${component.kind === "weapon" ? "turret" : component.kind === "armor" ? "energy" : component.kind === "pattern" ? "blade" : "upgrade"}`} />}<span><strong>{component.name}</strong><small>{component.object ? (groupSelected ? "MAKE THE FORMATION THIS" : "PLACE COMPONENT") : component.kind === "weapon" ? `${component.weapon?.tag.toUpperCase()} WEAPON` : component.kind === "pattern" ? `${component.pattern?.spawns.length ?? 0} EMITTER PATTERN` : component.kind.toUpperCase()}</small></span><b>{component.object ? (groupSelected ? "CREW" : "+") : component.kind === "pattern" ? "EDIT / USE" : "USE"}</b></button>{component.id.startsWith("component-") ? <button className="component-delete" type="button" onClick={() => deleteComponent(component.id)} title="Delete Component">×</button> : <button className="component-save" type="button" onClick={() => saveAsComponent(component)} title="Save as Component">+</button>}</div>)}</div>, "palette");
+    return section(`${prefix}-${category}`, category, <div className="palette-category-items">{inCategory.map((component) => <div className="component-card-row" key={component.id}><button className={`palette-card ${tool === `component:${component.id}` || inspectComponentId === component.id ? "active" : ""}`} type="button" onClick={() => { if (component.object) { if (applyObjectToGroup(component)) return; const value = `component:${component.id}` as Tool; setTool(value); toolRef.current = value; setSelection([]); setInspectComponentId(component.id); } else applyEquipmentComponent(component); }}>{component.object ? <ObjectThumb item={component.object} assets={level.assets} /> : <span className={`sprite-icon ${component.kind === "weapon" ? "turret" : component.kind === "armor" ? "energy" : component.kind === "pattern" ? "blade" : "upgrade"}`} />}<span><strong>{component.name}</strong><small>{component.object ? (groupSelected ? "MAKE THE FORMATION THIS" : "EDIT / PLACE") : component.kind === "weapon" ? `${component.weapon?.tag.toUpperCase()} WEAPON` : component.kind === "pattern" ? `${component.pattern?.spawns.length ?? 0} EMITTER PATTERN` : component.kind.toUpperCase()}</small></span><b>{component.object ? (groupSelected ? "CREW" : "+") : component.kind === "pattern" ? "EDIT / USE" : "USE"}</b></button>{component.id.startsWith("component-") ? <button className="component-delete" type="button" onClick={() => deleteComponent(component.id)} title="Delete Component">×</button> : <button className="component-save" type="button" onClick={() => saveAsComponent(component)} title="Save as Component">+</button>}</div>)}</div>, "palette");
   });
 
-  const editingHitboxItem = editingHitbox ? level.items.find((item) => item.id === editingHitbox) : undefined;
+  const editingHitboxItem = editingHitbox
+    ? (editingHitbox.kind === "component"
+      ? level.components.find((component) => component.id === editingHitbox.id)?.object
+      : level.items.find((item) => item.id === editingHitbox.id))
+    : undefined;
   const editingHitboxPaint = useMemo(() => (editingHitboxItem ? paintItem(editingHitboxItem) : () => undefined), [editingHitboxItem, paintItem]);
 
   return (
@@ -3496,7 +3583,7 @@ A game exported from the Starline Foundry.
             </>}
           </EbAccordion>}
           />
-          <p className="palette-hint">{paletteTab === "objects" ? "Choose an object, then click the playfield to place it." : paletteTab === "components" ? "Things that go in the level: place a saved Object, or apply a weapon, armor or satellite to the selection." : "What things are made of. Author a sprite, explosion, sound or pattern here, then point an object at it."}</p>
+          <p className="palette-hint">{paletteTab === "objects" ? "Choose an object, then click the playfield to place it." : paletteTab === "components" ? "Things that go in the level. Pick a saved Object to tune it in the Inspector and arm it for placing, or apply a weapon, armor or satellite to the selection." : "What things are made of. Author a sprite, explosion, sound or pattern here, then point an object at it."}</p>
         </aside>
 
         <section className="stage-panel">
@@ -3620,33 +3707,39 @@ A game exported from the Starline Foundry.
               <button className="inspector-action" type="button" onClick={() => saveSatelliteComponent(level.player.satellite)}>SAVE AS SATELLITE COMPONENT</button>
             </>)}
             </EbAccordion>
-          </div> : !selected ? <div className="empty-inspector"><b>NO OBJECT SELECTED</b><p>Use the Select tool and choose an object to tune its behavior, or edit the player ship from the palette.</p></div> : <div className="inspector-form">
-            {selectedIds.length > 1 && <div className="multi-selection-note"><strong>{selectedIds.length} OBJECTS SELECTED</strong><span>Move, duplicate, delete, rotate, or scale them together. The Inspector edits the primary Object.</span></div>}
-            <div className="component-actions"><button type="button" onClick={() => saveObjectComponent(false)}>SAVE AS COMPONENT</button>{selected.componentId && <button type="button" onClick={() => saveObjectComponent(true)}>UPDATE COMPONENT</button>}</div>
-            <label className="field wide"><span>NAME</span><input value={selected.name} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, name: event.target.value }))} /></label>
-            <div className="type-tag"><span>TYPE</span><strong>{selected.type.toUpperCase()}</strong><i className={`sprite-icon ${selected.sprite.startsWith("asset:") ? "asset-custom" : selected.sprite}`} /></div>
-            <div className="field-grid">
-              <div className="field"><EbNumericInput label="POSITION X" sliderEnabled={false} min={0} max={level.length} value={Math.round(selected.x)} onValueChange={(x) => updateItem(selected.id, (item) => ({ ...item, x }))} /></div>
-              <div className="field"><EbNumericInput label="POSITION Y" sliderEnabled={false} min={0} max={VIEW_H} value={Math.round(selected.y)} onValueChange={(y) => updateItem(selected.id, (item) => ({ ...item, y }))} /></div>
-            </div>
-            <label className="field wide"><span>SPRITE{selectedIds.length > 1 ? " (APPLY TO ALL)" : ""}</span><select value={selected.sprite} onChange={(event) => updateSelectedItems((item) => ({ ...item, sprite: event.target.value as Sprite }), "selection-sprite")}><optgroup label="BUILT-IN">{["orb", "blade", "diamond", "turret", "raider", "wraith", "carrier", "asteroid", "energy", "upgrade", "planet", "nebula", "wreck", "comet"].map((sprite) => <option value={sprite} key={sprite}>{sprite.toUpperCase()}</option>)}</optgroup>{level.assets.length > 0 && <optgroup label="CUSTOM SPRITES">{level.assets.map((asset) => <option value={`asset:${asset.id}`} key={asset.id}>{asset.name.toUpperCase()} ({asset.kind.toUpperCase()})</option>)}</optgroup>}</select></label>
-            <RangeField name={`HUE TINT${selectedIds.length > 1 ? " / ALL" : ""}`} label={<>HUE TINT{selectedIds.length > 1 ? " / ALL" : ""}</>} display={`${Math.round(selected.tint)}°`} min="0" max="359" value={selected.tint} onChange={(event) => updateSelectedItems((item) => ({ ...item, tint: Number(event.target.value) }), "selection-tint")} />
-            <button className="mini-reset" type="button" onClick={() => updateSelectedItems((item) => ({ ...item, tint: 0 }), "selection-tint")}>RESET TINT</button>
-            <RangeField name={`SIZE${selectedIds.length > 1 ? " / ALL" : ""}`} label={<>SIZE{selectedIds.length > 1 ? " / ALL" : ""}</>} display={`${selected.size}px`} min="12" max="220" value={selected.size} onChange={(event) => updateSelectedItems((item) => ({ ...item, size: Number(event.target.value) }), "selection-size")} />
+          </div> : !subject ? <div className="empty-inspector"><b>NO OBJECT SELECTED</b><p>Use the Select tool and choose an object to tune its behavior, or pick a saved Component from the palette to tune the Component itself. The player ship is in the palette too.</p></div> : <div className="inspector-form">
+            {/* Which of the two this form is editing. A Component's template has
+                no place in the sector, so its edits reach every future
+                placement rather than one object -- which is worth saying
+                plainly, because the form underneath is otherwise identical. */}
+            {editingComponent && <div className="multi-selection-note"><strong>EDITING THE COMPONENT</strong><span>Changes are saved to <b>{editingComponent.name}</b> in the palette, not to anything already placed. Click the playfield to place one.</span></div>}
+            {subjectIds.length > 1 && <div className="multi-selection-note"><strong>{subjectIds.length} OBJECTS SELECTED</strong><span>Move, duplicate, delete, rotate, or scale them together. The Inspector edits the primary Object.</span></div>}
+            {!editingComponent && <div className="component-actions"><button type="button" onClick={() => saveObjectComponent(false)}>SAVE AS COMPONENT</button>{subject.componentId && <button type="button" onClick={() => saveObjectComponent(true)}>UPDATE COMPONENT</button>}</div>}
+            <label className="field wide"><span>NAME</span><input value={subject.name} onChange={(event) => writeOne((item) => ({ ...item, name: event.target.value }))} /></label>
+            <div className="type-tag"><span>TYPE</span><strong>{subject.type.toUpperCase()}</strong><i className={`sprite-icon ${subject.sprite.startsWith("asset:") ? "asset-custom" : subject.sprite}`} /></div>
+            {/* A template is not anywhere, so it has no position to edit. */}
+            {!editingComponent && <div className="field-grid">
+              <div className="field"><EbNumericInput label="POSITION X" sliderEnabled={false} min={0} max={level.length} value={Math.round(subject.x)} onValueChange={(x) => writeOne((item) => ({ ...item, x }))} /></div>
+              <div className="field"><EbNumericInput label="POSITION Y" sliderEnabled={false} min={0} max={VIEW_H} value={Math.round(subject.y)} onValueChange={(y) => writeOne((item) => ({ ...item, y }))} /></div>
+            </div>}
+            <label className="field wide"><span>SPRITE{subjectIds.length > 1 ? " (APPLY TO ALL)" : ""}</span><select value={subject.sprite} onChange={(event) => writeAll((item) => ({ ...item, sprite: event.target.value as Sprite }), "selection-sprite")}><optgroup label="BUILT-IN">{["orb", "blade", "diamond", "turret", "raider", "wraith", "carrier", "asteroid", "energy", "upgrade", "planet", "nebula", "wreck", "comet"].map((sprite) => <option value={sprite} key={sprite}>{sprite.toUpperCase()}</option>)}</optgroup>{level.assets.length > 0 && <optgroup label="CUSTOM SPRITES">{level.assets.map((asset) => <option value={`asset:${asset.id}`} key={asset.id}>{asset.name.toUpperCase()} ({asset.kind.toUpperCase()})</option>)}</optgroup>}</select></label>
+            <RangeField name={`HUE TINT${subjectIds.length > 1 ? " / ALL" : ""}`} label={<>HUE TINT{subjectIds.length > 1 ? " / ALL" : ""}</>} display={`${Math.round(subject.tint)}°`} min="0" max="359" value={subject.tint} onChange={(event) => writeAll((item) => ({ ...item, tint: Number(event.target.value) }), "selection-tint")} />
+            <button className="mini-reset" type="button" onClick={() => writeAll((item) => ({ ...item, tint: 0 }), "selection-tint")}>RESET TINT</button>
+            <RangeField name={`SIZE${subjectIds.length > 1 ? " / ALL" : ""}`} label={<>SIZE{subjectIds.length > 1 ? " / ALL" : ""}</>} display={`${subject.size}px`} min="12" max="220" value={subject.size} onChange={(event) => writeAll((item) => ({ ...item, size: Number(event.target.value) }), "selection-size")} />
             <EbAccordion allowMultiple={sectionMode === "multiple"} className="inspector-sections">
             {section("transform", "TRANSFORM", <>
-              <RangeField name={`SCALE${selectedIds.length > 1 ? " / ALL" : ""}`} label={<>SCALE{selectedIds.length > 1 ? " / ALL" : ""}</>} display={`${selected.scale.toFixed(2)}×`} min="0.25" max="4" step="0.05" value={selected.scale} onChange={(event) => updateSelectedItems((item) => ({ ...item, scale: Number(event.target.value) }), "selection-scale")} />
-              <RangeField name={`ROTATION${selectedIds.length > 1 ? " / ALL" : ""}`} label={<>ROTATION{selectedIds.length > 1 ? " / ALL" : ""}</>} display={`${Math.round(selected.rotation)}°`} min="-180" max="180" step="1" value={selected.rotation} onChange={(event) => updateSelectedItems((item) => ({ ...item, rotation: Number(event.target.value) }), "selection-rotation")} />
+              <RangeField name={`SCALE${subjectIds.length > 1 ? " / ALL" : ""}`} label={<>SCALE{subjectIds.length > 1 ? " / ALL" : ""}</>} display={`${subject.scale.toFixed(2)}×`} min="0.25" max="4" step="0.05" value={subject.scale} onChange={(event) => writeAll((item) => ({ ...item, scale: Number(event.target.value) }), "selection-scale")} />
+              <RangeField name={`ROTATION${subjectIds.length > 1 ? " / ALL" : ""}`} label={<>ROTATION{subjectIds.length > 1 ? " / ALL" : ""}</>} display={`${Math.round(subject.rotation)}°`} min="-180" max="180" step="1" value={subject.rotation} onChange={(event) => writeAll((item) => ({ ...item, rotation: Number(event.target.value) }), "selection-rotation")} />
               {/* How far the sprite turns to face the way it flies. LEVEL is the
                   bob every sprite had before this; a rocket on a sine wave wants
                   something near 100%. Zero is stored as absent, so a level that
                   never touched this saves exactly as it did. */}
-              <RangeField name="FACE DIRECTION OF TRAVEL" label={<>FACE DIRECTION OF TRAVEL</>} display={`${selected.heading?.follow ? Math.round(selected.heading.follow * 100) + "%" : "LEVEL"}`} scale={100} min="0" max="1" step="0.05" value={selected.heading?.follow ?? 0} onChange={(event) => updateSelectedItems((item) => ({ ...item, heading: Number(event.target.value) > 0 ? { follow: Number(event.target.value) } : undefined }), "selection-heading")} />
-              <GlowField glow={selected.glow} onChange={(glow) => updateSelectedItems((item) => ({ ...item, glow }), "item-glow")} />
-              <DepthField depth={selected.depth} onChange={(depth) => updateSelectedItems((item) => ({ ...item, depth }), "item-depth")} />
+              <RangeField name="FACE DIRECTION OF TRAVEL" label={<>FACE DIRECTION OF TRAVEL</>} display={`${subject.heading?.follow ? Math.round(subject.heading.follow * 100) + "%" : "LEVEL"}`} scale={100} min="0" max="1" step="0.05" value={subject.heading?.follow ?? 0} onChange={(event) => writeAll((item) => ({ ...item, heading: Number(event.target.value) > 0 ? { follow: Number(event.target.value) } : undefined }), "selection-heading")} />
+              <GlowField glow={subject.glow} onChange={(glow) => writeAll((item) => ({ ...item, glow }), "item-glow")} />
+              <DepthField depth={subject.depth} onChange={(depth) => writeAll((item) => ({ ...item, depth }), "item-depth")} />
             </>)}
 
-            {(selected.type === "enemy" || selected.type === "terrain" || selected.type === "group") && section("durability", "DURABILITY", <>
+            {(subject.type === "enemy" || subject.type === "terrain" || subject.type === "group") && section("durability", "DURABILITY", <>
               {/* The scroll waits for this one. Only a body that can die may
                   hold, so it is offered beside the hit points and hidden for a
                   formation, which would be `count` hold lines rather than one.
@@ -3656,135 +3749,137 @@ A game exported from the Starline Foundry.
                   it, and a camera waiting on a body that cannot die is a level
                   that cannot be finished. The normalizer refuses the pair as
                   well; this is what stops the editor from ever offering it. */}
-              {(selected.type === "enemy" || selected.type === "terrain") && !selected.indestructible && <>
-                <label className="toggle-row"><span>SCREEN BLOCKER</span><input type="checkbox" checked={Boolean(selected.blocker)} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, blocker: event.target.checked ? { station: 72 } : undefined }))} /><i /></label>
-                {selected.blocker && blocker && <>
-                  <RangeField name="STATION" label={<>STATION</>} display={`${Math.round(selected.blocker.station)}% IN`} min="25" max="90" step="1" value={selected.blocker.station} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, blocker: { station: Number(event.target.value) } }))} />
+              {(subject.type === "enemy" || subject.type === "terrain") && !subject.indestructible && <>
+                <label className="toggle-row"><span>SCREEN BLOCKER</span><input type="checkbox" checked={Boolean(subject.blocker)} onChange={(event) => writeOne((item) => ({ ...item, blocker: event.target.checked ? { station: 72 } : undefined }))} /><i /></label>
+                {subject.blocker && blocker && <>
+                  <RangeField name="STATION" label={<>STATION</>} display={`${Math.round(subject.blocker.station)}% IN`} min="25" max="90" step="1" value={subject.blocker.station} onChange={(event) => writeOne((item) => ({ ...item, blocker: { station: Number(event.target.value) } }))} />
                   <p className={`inspector-note${level.mode !== "arena" && blocker.unreachable ? " warn" : ""}`}>{level.mode === "arena"
                     ? "The arena has no scroll to hold: its camera is the wave clock, so this is ignored there."
                     : blocker.unreachable
                       ? `Never holds: the scroll can only reach ${Math.round(blocker.sectorEnd)}, and from there this sits off the far edge of the view where nothing could shoot it. Move it back toward the start, or push END LEVEL out.`
-                      : `The scroll stops at ${Math.round(blocker.park)} and waits until this is destroyed. Pinned where you placed it, so its flight becomes a bob on the spot.`}</p>
-                  {level.mode !== "arena" && !blocker.unreachable && (blocker.rammed || blocker.grazed) && <p className="inspector-note warn">{blocker.rammed && blocker.grazed ? "Both the ship and its satellite can touch it" : blocker.rammed ? "The ship can touch it" : "The satellite can reach it"} where it parks, and contact destroys outright — its {selected.hitPoints} hit points would never be spent. Raise STATION, or pull the FORWARD flight limit{blocker.grazed && !blocker.rammed ? " or the satellite RANGE" : ""} back.</p>}
+                      : editingComponent
+                        ? `Wherever you place one, the scroll stops ${Math.round(blocker.alongSpan - blocker.alongSpan * subject.blocker.station / 100)} short of it and waits until it is destroyed. Pinned where placed, so its flight becomes a bob on the spot.`
+                        : `The scroll stops at ${Math.round(blocker.park)} and waits until this is destroyed. Pinned where you placed it, so its flight becomes a bob on the spot.`}</p>
+                  {level.mode !== "arena" && !blocker.unreachable && (blocker.rammed || blocker.grazed) && <p className="inspector-note warn">{blocker.rammed && blocker.grazed ? "Both the ship and its satellite can touch it" : blocker.rammed ? "The ship can touch it" : "The satellite can reach it"} where it parks, and contact destroys outright — its {subject.hitPoints} hit points would never be spent. Raise STATION, or pull the FORWARD flight limit{blocker.grazed && !blocker.rammed ? " or the satellite RANGE" : ""} back.</p>}
                 </>}
               </>}
               {/* Takes no damage and is never destroyed; shots still spark and stop on it.
                   Only ever true or absent, so a level that never set it saves as it did. */}
-              <label className="toggle-row"><span>INDESTRUCTIBLE</span><input type="checkbox" checked={Boolean(selected.indestructible)} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, indestructible: event.target.checked ? true : undefined, blocker: event.target.checked ? undefined : item.blocker }))} /><i /></label>
-              {!selected.indestructible && <RangeField name="HIT POINTS" label={<>HIT POINTS</>} display={`${selected.hitPoints} HP`} min="50" max="2000" step="50" value={selected.hitPoints} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, hitPoints: Number(event.target.value) }))} />}
-              <label className="field wide"><span>ARMOR TYPE</span><select value={selected.armor?.type ?? "none"} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, armor: defaultArmor(event.target.value as ArmorType) }))}>{["none", "standard", "heavy", "ablative", "forcefield"].map((type) => <option value={type} key={type}>{type.toUpperCase()}</option>)}</select></label>
-              {(selected.armor?.type === "forcefield") && <><RangeField name="SHIELD CAPACITY" label={<>SHIELD CAPACITY</>} display={`${selected.armor.capacity}`} min="25" max="1000" step="25" value={selected.armor.capacity} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, armor: { ...(item.armor ?? defaultArmor("forcefield")), capacity: Number(event.target.value) } }))} /><RangeField name="RECHARGE RATE" label={<>RECHARGE RATE</>} display={`${selected.armor.rechargeRate}/s`} min="0" max="250" step="5" value={selected.armor.rechargeRate} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, armor: { ...(item.armor ?? defaultArmor("forcefield")), rechargeRate: Number(event.target.value) } }))} /></>}
-              <p className="inspector-note">{Math.max(1, Math.ceil(selected.hitPoints / level.player.shotPower))} hit{Math.ceil(selected.hitPoints / level.player.shotPower) === 1 ? "" : "s"} at base power {level.player.shotPower}.</p>
-              {selected.armor && selected.armor.type !== "none" && <button className="inspector-action" type="button" onClick={() => saveArmorComponent(selected.armor!)}>SAVE ARMOR COMPONENT</button>}
+              <label className="toggle-row"><span>INDESTRUCTIBLE</span><input type="checkbox" checked={Boolean(subject.indestructible)} onChange={(event) => writeOne((item) => ({ ...item, indestructible: event.target.checked ? true : undefined, blocker: event.target.checked ? undefined : item.blocker }))} /><i /></label>
+              {!subject.indestructible && <RangeField name="HIT POINTS" label={<>HIT POINTS</>} display={`${subject.hitPoints} HP`} min="50" max="2000" step="50" value={subject.hitPoints} onChange={(event) => writeOne((item) => ({ ...item, hitPoints: Number(event.target.value) }))} />}
+              <label className="field wide"><span>ARMOR TYPE</span><select value={subject.armor?.type ?? "none"} onChange={(event) => writeOne((item) => ({ ...item, armor: defaultArmor(event.target.value as ArmorType) }))}>{["none", "standard", "heavy", "ablative", "forcefield"].map((type) => <option value={type} key={type}>{type.toUpperCase()}</option>)}</select></label>
+              {(subject.armor?.type === "forcefield") && <><RangeField name="SHIELD CAPACITY" label={<>SHIELD CAPACITY</>} display={`${subject.armor.capacity}`} min="25" max="1000" step="25" value={subject.armor.capacity} onChange={(event) => writeOne((item) => ({ ...item, armor: { ...(item.armor ?? defaultArmor("forcefield")), capacity: Number(event.target.value) } }))} /><RangeField name="RECHARGE RATE" label={<>RECHARGE RATE</>} display={`${subject.armor.rechargeRate}/s`} min="0" max="250" step="5" value={subject.armor.rechargeRate} onChange={(event) => writeOne((item) => ({ ...item, armor: { ...(item.armor ?? defaultArmor("forcefield")), rechargeRate: Number(event.target.value) } }))} /></>}
+              <p className="inspector-note">{Math.max(1, Math.ceil(subject.hitPoints / level.player.shotPower))} hit{Math.ceil(subject.hitPoints / level.player.shotPower) === 1 ? "" : "s"} at base power {level.player.shotPower}.</p>
+              {subject.armor && subject.armor.type !== "none" && <button className="inspector-action" type="button" onClick={() => saveArmorComponent(subject.armor!)}>SAVE ARMOR COMPONENT</button>}
             </>)}
 
             {/* The shape it is struck within. None is the circle the engine has
                 always used; DEBUG on the toolbar shows whichever is in force. */}
-            {(selected.type === "enemy" || selected.type === "terrain" || selected.type === "group" || selected.type === "powerup" || selected.type === "upgrade") && section("hitbox", "HITBOX", <>
-              <p className="inspector-note">{selected.hitbox ? `${describeHitbox(selected.hitbox)}, in the sprite's own frame. Turns with the sprite; SIZE and SCALE keep it on the art.` : "The default circle. Read a shape off the art, or draw one."}</p>
+            {(subject.type === "enemy" || subject.type === "terrain" || subject.type === "group" || subject.type === "powerup" || subject.type === "upgrade") && section("hitbox", "HITBOX", <>
+              <p className="inspector-note">{subject.hitbox ? `${describeHitbox(subject.hitbox)}, in the sprite's own frame. Turns with the sprite; SIZE and SCALE keep it on the art.` : "The default circle. Read a shape off the art, or draw one."}</p>
               <div className="component-actions hitbox-actions">
-                <button type="button" onClick={() => deriveHitbox(selected, "outline")} title="Trace the art's outline as polygons">AUTO OUTLINE</button>
-                <button type="button" onClick={() => deriveHitbox(selected, "circles")} title="Cover the art with circles that stay inside it">AUTO CIRCLES</button>
-                <button type="button" onClick={() => setEditingHitbox(selected.id)}>{selected.hitbox ? "EDIT…" : "DRAW…"}</button>
-                {selected.hitbox && <button type="button" onClick={() => { updateItem(selected.id, (item) => ({ ...item, hitbox: undefined })); flash("HITBOX REMOVED"); }}>USE CIRCLE</button>}
+                <button type="button" onClick={() => deriveHitbox(subject, "outline", writeOne)} title="Trace the art's outline as polygons">AUTO OUTLINE</button>
+                <button type="button" onClick={() => deriveHitbox(subject, "circles", writeOne)} title="Cover the art with circles that stay inside it">AUTO CIRCLES</button>
+                <button type="button" onClick={() => setEditingHitbox(editingComponent ? { kind: "component", id: editingComponent.id } : { kind: "item", id: subject.id })}>{subject.hitbox ? "EDIT…" : "DRAW…"}</button>
+                {subject.hitbox && <button type="button" onClick={() => { writeOne((item) => ({ ...item, hitbox: undefined })); flash("HITBOX REMOVED"); }}>USE CIRCLE</button>}
               </div>
             </>)}
 
-            {selected.type === "group" && section("formation", "FORMATION", <>
-              <div className="field-grid"><label className="field"><span>FORMATION</span><select value={selected.group?.pattern} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, group: { ...(item.group ?? { count: 5, spacing: 60, pattern: "line" }), pattern: event.target.value as GroupPattern } }))}><option value="line">LINE</option><option value="column">COLUMN</option><option value="vee">VEE</option><option value="wedge">WEDGE</option><option value="crescent">CRESCENT</option><option value="ring">RING</option><option value="cluster">CLUSTER</option><option value="block">BLOCK</option><option value="ladder">LADDER</option></select></label><div className="field"><EbNumericInput label="COUNT" sliderEnabled={false} min={2} max={16} value={selected.group?.count ?? 5} onValueChange={(count) => updateItem(selected.id, (item) => ({ ...item, group: { ...(item.group ?? { pattern: "line", spacing: 60, count: 5 }), count } }))} /></div></div>
-              <RangeField name="PEEL" label={<>PEEL</>} display={selected.group?.peel ? `${selected.group.peel.toFixed(1)}s APART` : "TOGETHER"} min="0" max="4" step="0.1" value={selected.group?.peel ?? 0} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, group: { ...(item.group ?? { pattern: "vee", spacing: 60, count: 5 }), peel: Number(event.target.value) || undefined } }))} />
-              {(selected.group?.peel ?? 0) > 0 && <p className="inspector-note">They leave one at a time, front of the flight first. Give them a STALL under MOVEMENT and the formation holds together before it breaks up.</p>}
-              <RangeField name="SPACING" label={<>SPACING</>} display={`${selected.group?.spacing ?? 60}u`} min="30" max="140" value={selected.group?.spacing ?? 60} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, group: { ...(item.group ?? { pattern: "line", spacing: 60, count: 5 }), spacing: Number(event.target.value) } }))} />
+            {subject.type === "group" && section("formation", "FORMATION", <>
+              <div className="field-grid"><label className="field"><span>FORMATION</span><select value={subject.group?.pattern} onChange={(event) => writeOne((item) => ({ ...item, group: { ...(item.group ?? { count: 5, spacing: 60, pattern: "line" }), pattern: event.target.value as GroupPattern } }))}><option value="line">LINE</option><option value="column">COLUMN</option><option value="vee">VEE</option><option value="wedge">WEDGE</option><option value="crescent">CRESCENT</option><option value="ring">RING</option><option value="cluster">CLUSTER</option><option value="block">BLOCK</option><option value="ladder">LADDER</option></select></label><div className="field"><EbNumericInput label="COUNT" sliderEnabled={false} min={2} max={16} value={subject.group?.count ?? 5} onValueChange={(count) => writeOne((item) => ({ ...item, group: { ...(item.group ?? { pattern: "line", spacing: 60, count: 5 }), count } }))} /></div></div>
+              <RangeField name="PEEL" label={<>PEEL</>} display={subject.group?.peel ? `${subject.group.peel.toFixed(1)}s APART` : "TOGETHER"} min="0" max="4" step="0.1" value={subject.group?.peel ?? 0} onChange={(event) => writeOne((item) => ({ ...item, group: { ...(item.group ?? { pattern: "vee", spacing: 60, count: 5 }), peel: Number(event.target.value) || undefined } }))} />
+              {(subject.group?.peel ?? 0) > 0 && <p className="inspector-note">They leave one at a time, front of the flight first. Give them a STALL under MOVEMENT and the formation holds together before it breaks up.</p>}
+              <RangeField name="SPACING" label={<>SPACING</>} display={`${subject.group?.spacing ?? 60}u`} min="30" max="140" value={subject.group?.spacing ?? 60} onChange={(event) => writeOne((item) => ({ ...item, group: { ...(item.group ?? { pattern: "line", spacing: 60, count: 5 }), spacing: Number(event.target.value) } }))} />
             </>)}
 
-            {section("movement", selected.type === "decoration" ? "DECORATION MOTION" : "MOVEMENT", <>
-              <label className="field wide"><span>MOVEMENT</span><select value={selected.movement.pattern} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, movement: { ...item.movement, pattern: event.target.value as MovePattern } }))}><optgroup label="LINES AND WAVES"><option value="straight">STRAIGHT</option><option value="sine">SINE WAVE</option><option value="zigzag">ZIGZAG</option><option value="lane">LANE HOLD</option><option value="figureEight">FIGURE EIGHT</option></optgroup><optgroup label="TURNS"><option value="arc">ARC</option><option value="arcWeave">ARC WEAVE</option><option value="bezier">BEZIER</option></optgroup><optgroup label="CHANGES OF SPEED"><option value="surge">SURGE</option><option value="charge">CHARGE</option><option value="dart">DART</option><option value="plunge">BALLISTIC</option></optgroup><option value="stationary">STATIONARY</option></select></label>
-              <RangeField name="SPEED" label={<>SPEED</>} display={`${selected.movement.speed}u/s`} min="0" max="720" step="5" value={selected.movement.speed} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, movement: { ...item.movement, speed: Number(event.target.value) } }))} />
+            {section("movement", subject.type === "decoration" ? "DECORATION MOTION" : "MOVEMENT", <>
+              <label className="field wide"><span>MOVEMENT</span><select value={subject.movement.pattern} onChange={(event) => writeOne((item) => ({ ...item, movement: { ...item.movement, pattern: event.target.value as MovePattern } }))}><optgroup label="LINES AND WAVES"><option value="straight">STRAIGHT</option><option value="sine">SINE WAVE</option><option value="zigzag">ZIGZAG</option><option value="lane">LANE HOLD</option><option value="figureEight">FIGURE EIGHT</option></optgroup><optgroup label="TURNS"><option value="arc">ARC</option><option value="arcWeave">ARC WEAVE</option><option value="bezier">BEZIER</option></optgroup><optgroup label="CHANGES OF SPEED"><option value="surge">SURGE</option><option value="charge">CHARGE</option><option value="dart">DART</option><option value="plunge">BALLISTIC</option></optgroup><option value="stationary">STATIONARY</option></select></label>
+              <RangeField name="SPEED" label={<>SPEED</>} display={`${subject.movement.speed}u/s`} min="0" max="720" step="5" value={subject.movement.speed} onChange={(event) => writeOne((item) => ({ ...item, movement: { ...item.movement, speed: Number(event.target.value) } }))} />
               {/* Which way the whole path points. LEFT is the flight every level
                   already had; positive turns toward the top of the screen. The
                   dashed preview redraws as this moves, from the world's own path
                   function, so what is shown is what will fly. */}
-              {selected.movement.pattern !== "stationary" && <RangeField name="PATH ANGLE" label={<>PATH ANGLE</>} display={`${describeAngle(selected.movement.angle ?? 0)}`} min="-180" max="180" step="5" value={selected.movement.angle ?? 0} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, movement: { ...item.movement, angle: Number(event.target.value) } }))} />}
+              {subject.movement.pattern !== "stationary" && <RangeField name="PATH ANGLE" label={<>PATH ANGLE</>} display={`${describeAngle(subject.movement.angle ?? 0)}`} min="-180" max="180" step="5" value={subject.movement.angle ?? 0} onChange={(event) => writeOne((item) => ({ ...item, movement: { ...item.movement, angle: Number(event.target.value) } }))} />}
               {/* How fast an arc turns its heading. Radius is speed over this:
                   a slow, gentle curve or a tight dive are both here. */}
-              {(selected.movement.pattern === "arc" || selected.movement.pattern === "arcWeave") && <RangeField name="CURVE" label={<>CURVE</>} display={`${describeAngle(selected.movement.curve ?? 0, "/s")}`} min="-180" max="180" step="5" value={selected.movement.curve ?? 0} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, movement: { ...item.movement, curve: Number(event.target.value) } }))} />}
+              {(subject.movement.pattern === "arc" || subject.movement.pattern === "arcWeave") && <RangeField name="CURVE" label={<>CURVE</>} display={`${describeAngle(subject.movement.curve ?? 0, "/s")}`} min="-180" max="180" step="5" value={subject.movement.curve ?? 0} onChange={(event) => writeOne((item) => ({ ...item, movement: { ...item.movement, curve: Number(event.target.value) } }))} />}
               {/* A turn while it flies, in degrees per second: a tumbling rock, a
                   spinning mine. TRANSFORM's ROTATION is where the sprite starts;
                   this is how fast it keeps turning. Zero is stored as absent, so a
                   level that never touched it saves as it did. */}
-              <RangeField name="ROTATION" label={<>ROTATION</>} display={`${selected.movement.spin ? `${Math.round(selected.movement.spin * 1000) / 1000}°/s` : "NONE"}`} min="-360" max="360" step="0.1" value={selected.movement.spin ?? 0} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, movement: { ...item.movement, spin: Number(event.target.value) === 0 ? undefined : Number(event.target.value) } }))} />
+              <RangeField name="ROTATION" label={<>ROTATION</>} display={`${subject.movement.spin ? `${Math.round(subject.movement.spin * 1000) / 1000}°/s` : "NONE"}`} min="-360" max="360" step="0.1" value={subject.movement.spin ?? 0} onChange={(event) => writeOne((item) => ({ ...item, movement: { ...item.movement, spin: Number(event.target.value) === 0 ? undefined : Number(event.target.value) } }))} />
               {/* The curve's three points as numbers, for exactness; the cyan
                   handles on the playfield are the way to shape it by eye. Offsets
                   from the object in the path's own frame, before PATH ANGLE. */}
-              {selected.movement.pattern === "bezier" && <>
-                {(selected.movement.points ?? defaultBezierPoints()).map((point, index) => <label className="field wide" key={index}><span>{index === 2 ? "END POINT" : `CONTROL POINT ${index + 1}`}</span>
+              {subject.movement.pattern === "bezier" && <>
+                {(subject.movement.points ?? defaultBezierPoints()).map((point, index) => <label className="field wide" key={index}><span>{index === 2 ? "END POINT" : `CONTROL POINT ${index + 1}`}</span>
                   <span className="bezier-xy">
-                    <input type="number" step="10" value={Math.round(point.x)} aria-label={`${index === 2 ? "End point" : `Control point ${index + 1}`} X`} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, movement: { ...item.movement, points: (item.movement.points ?? defaultBezierPoints()).map((entry, i) => (i === index ? { ...entry, x: Number(event.target.value) } : entry)) as LevelItem["movement"]["points"] } }))} />
-                    <input type="number" step="10" value={Math.round(point.y)} aria-label={`${index === 2 ? "End point" : `Control point ${index + 1}`} Y`} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, movement: { ...item.movement, points: (item.movement.points ?? defaultBezierPoints()).map((entry, i) => (i === index ? { ...entry, y: Number(event.target.value) } : entry)) as LevelItem["movement"]["points"] } }))} />
+                    <input type="number" step="10" value={Math.round(point.x)} aria-label={`${index === 2 ? "End point" : `Control point ${index + 1}`} X`} onChange={(event) => writeOne((item) => ({ ...item, movement: { ...item.movement, points: (item.movement.points ?? defaultBezierPoints()).map((entry, i) => (i === index ? { ...entry, x: Number(event.target.value) } : entry)) as LevelItem["movement"]["points"] } }))} />
+                    <input type="number" step="10" value={Math.round(point.y)} aria-label={`${index === 2 ? "End point" : `Control point ${index + 1}`} Y`} onChange={(event) => writeOne((item) => ({ ...item, movement: { ...item.movement, points: (item.movement.points ?? defaultBezierPoints()).map((entry, i) => (i === index ? { ...entry, y: Number(event.target.value) } : entry)) as LevelItem["movement"]["points"] } }))} />
                   </span>
                 </label>)}
                 <p className="inspector-note">Drag the cyan handles on the playfield to shape the curve. Past the end point it flies straight on.</p>
               </>}
-              {WAVING.has(selected.movement.pattern) && <><RangeField name="AMPLITUDE" label={<>AMPLITUDE</>} display={`${selected.movement.amplitude}u`} min="10" max="200" value={selected.movement.amplitude} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, movement: { ...item.movement, amplitude: Number(event.target.value) } }))} /></>}
+              {WAVING.has(subject.movement.pattern) && <><RangeField name="AMPLITUDE" label={<>AMPLITUDE</>} display={`${subject.movement.amplitude}u`} min="10" max="200" value={subject.movement.amplitude} onChange={(event) => writeOne((item) => ({ ...item, movement: { ...item.movement, amplitude: Number(event.target.value) } }))} /></>}
               {/* Its own gate: a surge, a charge and a dart have no width to
                   set, but frequency is their whole rhythm -- pulses, gain and
                   lunges per second. */}
-              {TIMED.has(selected.movement.pattern) && <RangeField name="FREQUENCY" label={<>FREQUENCY</>} display={`${selected.movement.frequency.toFixed(2)}Hz`} min="0.1" max="1.5" step="0.05" value={selected.movement.frequency} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, movement: { ...item.movement, frequency: Number(event.target.value) } }))} />}
+              {TIMED.has(subject.movement.pattern) && <RangeField name="FREQUENCY" label={<>FREQUENCY</>} display={`${subject.movement.frequency.toFixed(2)}Hz`} min="0.1" max="1.5" step="0.05" value={subject.movement.frequency} onChange={(event) => writeOne((item) => ({ ...item, movement: { ...item.movement, frequency: Number(event.target.value) } }))} />}
               {/* The wait, and what it aims at. Not shown for a thing that never
                   flies: a stationary sprite has no path to delay, and a lock
                   authored under it would slide in play with nothing drawn. */}
-              {selected.movement.pattern !== "stationary" && <>
-                <RangeField name="STALL" label={<>STALL</>} display={selected.movement.stall ? `${selected.movement.stall.toFixed(1)}s` : "NONE"} min="0" max="8" step="0.1" value={selected.movement.stall ?? 0} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, movement: { ...item.movement, stall: Number(event.target.value) || undefined } }))} />
-                {(selected.movement.stall ?? 0) > 0 && <RangeField name="LOCK ON" label={<>LOCK ON</>} display={selected.movement.lock ? `${Math.round(selected.movement.lock * 100)}%` : "OFF"} scale={100} min="0" max="1" step="0.05" value={selected.movement.lock ?? 0} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, movement: { ...item.movement, lock: Number(event.target.value) || undefined } }))} />}
-                <p className="inspector-note">{(selected.movement.stall ?? 0) > 0
-                  ? `Waits ${selected.movement.stall!.toFixed(1)}s once it is on screen, then flies${selected.movement.lock ? " at where the ship was standing" : ""}.`
+              {subject.movement.pattern !== "stationary" && <>
+                <RangeField name="STALL" label={<>STALL</>} display={subject.movement.stall ? `${subject.movement.stall.toFixed(1)}s` : "NONE"} min="0" max="8" step="0.1" value={subject.movement.stall ?? 0} onChange={(event) => writeOne((item) => ({ ...item, movement: { ...item.movement, stall: Number(event.target.value) || undefined } }))} />
+                {(subject.movement.stall ?? 0) > 0 && <RangeField name="LOCK ON" label={<>LOCK ON</>} display={subject.movement.lock ? `${Math.round(subject.movement.lock * 100)}%` : "OFF"} scale={100} min="0" max="1" step="0.05" value={subject.movement.lock ?? 0} onChange={(event) => writeOne((item) => ({ ...item, movement: { ...item.movement, lock: Number(event.target.value) || undefined } }))} />}
+                <p className="inspector-note">{(subject.movement.stall ?? 0) > 0
+                  ? `Waits ${subject.movement.stall!.toFixed(1)}s once it is on screen, then flies${subject.movement.lock ? " at where the ship was standing" : ""}.`
                   : "Waits where you placed it before flying, timed from the moment it comes into view."}</p>
               </>}
               {/* A plunge is the one path with a fall rate rather than a width. */}
-              {selected.movement.pattern === "plunge" && <RangeField name="FALL" label={<>FALL</>} display={`${selected.movement.gravity ?? 240}u/s²`} min="0" max="1200" step="20" value={selected.movement.gravity ?? 240} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, movement: { ...item.movement, gravity: Number(event.target.value) } }))} />}
+              {subject.movement.pattern === "plunge" && <RangeField name="FALL" label={<>FALL</>} display={`${subject.movement.gravity ?? 240}u/s²`} min="0" max="1200" step="20" value={subject.movement.gravity ?? 240} onChange={(event) => writeOne((item) => ({ ...item, movement: { ...item.movement, gravity: Number(event.target.value) } }))} />}
             </>)}
 
-            {selected.type === "decoration" && section("decoration", "DECORATION", <>
-              <label className="field wide"><span>DRAW LAYER</span><select value={selected.decoration?.layer ?? "background"} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, decoration: { ...(item.decoration ?? { layer: "background", opacity: .5, parallax: .5 }), layer: event.target.value as DecorationLayer } }))}><option value="background">BACKGROUND</option><option value="foreground">FOREGROUND</option></select></label>
-              <RangeField name="OPACITY" label={<>OPACITY</>} display={`${Math.round((selected.decoration?.opacity ?? .5) * 100)}%`} scale={100} min="0.1" max="1" step="0.05" value={selected.decoration?.opacity ?? .5} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, decoration: { ...(item.decoration ?? { layer: "background", opacity: .5, parallax: .5 }), opacity: Number(event.target.value) } }))} />
-              <RangeField name="PARALLAX" label={<>PARALLAX</>} display={`${(selected.decoration?.parallax ?? .5).toFixed(2)}x`} min="0.1" max="2" step="0.05" value={selected.decoration?.parallax ?? .5} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, decoration: { ...(item.decoration ?? { layer: "background", opacity: .5, parallax: .5 }), parallax: Number(event.target.value) } }))} />
+            {subject.type === "decoration" && section("decoration", "DECORATION", <>
+              <label className="field wide"><span>DRAW LAYER</span><select value={subject.decoration?.layer ?? "background"} onChange={(event) => writeOne((item) => ({ ...item, decoration: { ...(item.decoration ?? { layer: "background", opacity: .5, parallax: .5 }), layer: event.target.value as DecorationLayer } }))}><option value="background">BACKGROUND</option><option value="foreground">FOREGROUND</option></select></label>
+              <RangeField name="OPACITY" label={<>OPACITY</>} display={`${Math.round((subject.decoration?.opacity ?? .5) * 100)}%`} scale={100} min="0.1" max="1" step="0.05" value={subject.decoration?.opacity ?? .5} onChange={(event) => writeOne((item) => ({ ...item, decoration: { ...(item.decoration ?? { layer: "background", opacity: .5, parallax: .5 }), opacity: Number(event.target.value) } }))} />
+              <RangeField name="PARALLAX" label={<>PARALLAX</>} display={`${(subject.decoration?.parallax ?? .5).toFixed(2)}x`} min="0.1" max="2" step="0.05" value={subject.decoration?.parallax ?? .5} onChange={(event) => writeOne((item) => ({ ...item, decoration: { ...(item.decoration ?? { layer: "background", opacity: .5, parallax: .5 }), parallax: Number(event.target.value) } }))} />
             </>)}
 
-            {(selected.type === "powerup" || selected.type === "upgrade") && section("pickup", selected.type === "powerup" ? "TIMED POWERUP" : "PERMANENT UPGRADE", <>
-              {selected.type === "powerup" && <RangeField name="DURATION" label={<>DURATION</>} display={`${selected.pickup?.duration ?? 8}s`} min="1" max="30" value={selected.pickup?.duration ?? 8} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, pickup: { ...(item.pickup ?? { duration: 8, xSpeedBoost: 0, ySpeedBoost: 0, shotSpeedBoost: 0, shotPowerBoost: 100, gun: "none" }), duration: Number(event.target.value) } }))} />}
-              <div className="field-grid"><div className="field"><EbNumericInput label="X SPEED +" sliderEnabled={false} min={0} max={800} step={10} value={selected.pickup?.xSpeedBoost ?? 0} onValueChange={(xSpeedBoost) => updateItem(selected.id, (item) => ({ ...item, pickup: { ...(item.pickup ?? { duration: 8, xSpeedBoost: 0, ySpeedBoost: 0, shotSpeedBoost: 0, shotPowerBoost: 100, gun: "none" }), xSpeedBoost } }))} /></div><div className="field"><EbNumericInput label="Y SPEED +" sliderEnabled={false} min={0} max={800} step={10} value={selected.pickup?.ySpeedBoost ?? 0} onValueChange={(ySpeedBoost) => updateItem(selected.id, (item) => ({ ...item, pickup: { ...(item.pickup ?? { duration: 8, xSpeedBoost: 0, ySpeedBoost: 0, shotSpeedBoost: 0, shotPowerBoost: 100, gun: "none" }), ySpeedBoost } }))} /></div></div>
-              <div className="field-grid"><div className="field"><EbNumericInput label="SHOT SPEED +" sliderEnabled={false} min={0} max={1600} step={25} value={selected.pickup?.shotSpeedBoost ?? 0} onValueChange={(shotSpeedBoost) => updateItem(selected.id, (item) => ({ ...item, pickup: { ...(item.pickup ?? { duration: 8, xSpeedBoost: 0, ySpeedBoost: 0, shotSpeedBoost: 0, shotPowerBoost: 100, gun: "none" }), shotSpeedBoost } }))} /></div><div className="field"><EbNumericInput label="SHOT POWER +" sliderEnabled={false} min={0} max={1000} step={100} value={selected.pickup?.shotPowerBoost ?? 0} onValueChange={(shotPowerBoost) => updateItem(selected.id, (item) => ({ ...item, pickup: { ...(item.pickup ?? { duration: 8, xSpeedBoost: 0, ySpeedBoost: 0, shotSpeedBoost: 0, shotPowerBoost: 100, gun: "none" }), shotPowerBoost } }))} /></div></div>
-              <label className="field wide"><span>GRANT GUN</span><select value={selected.pickup?.gun ?? "none"} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, pickup: { ...(item.pickup ?? { duration: 8, xSpeedBoost: 0, ySpeedBoost: 0, shotSpeedBoost: 0, shotPowerBoost: 100, gun: "none" }), gun: event.target.value as GunType | "none" } }))}><option value="none">NO NEW GUN</option><option value="pulse">PULSE</option><option value="spread">SPREAD</option><option value="rapid">RAPID</option></select></label>
+            {(subject.type === "powerup" || subject.type === "upgrade") && section("pickup", subject.type === "powerup" ? "TIMED POWERUP" : "PERMANENT UPGRADE", <>
+              {subject.type === "powerup" && <RangeField name="DURATION" label={<>DURATION</>} display={`${subject.pickup?.duration ?? 8}s`} min="1" max="30" value={subject.pickup?.duration ?? 8} onChange={(event) => writeOne((item) => ({ ...item, pickup: { ...(item.pickup ?? { duration: 8, xSpeedBoost: 0, ySpeedBoost: 0, shotSpeedBoost: 0, shotPowerBoost: 100, gun: "none" }), duration: Number(event.target.value) } }))} />}
+              <div className="field-grid"><div className="field"><EbNumericInput label="X SPEED +" sliderEnabled={false} min={0} max={800} step={10} value={subject.pickup?.xSpeedBoost ?? 0} onValueChange={(xSpeedBoost) => writeOne((item) => ({ ...item, pickup: { ...(item.pickup ?? { duration: 8, xSpeedBoost: 0, ySpeedBoost: 0, shotSpeedBoost: 0, shotPowerBoost: 100, gun: "none" }), xSpeedBoost } }))} /></div><div className="field"><EbNumericInput label="Y SPEED +" sliderEnabled={false} min={0} max={800} step={10} value={subject.pickup?.ySpeedBoost ?? 0} onValueChange={(ySpeedBoost) => writeOne((item) => ({ ...item, pickup: { ...(item.pickup ?? { duration: 8, xSpeedBoost: 0, ySpeedBoost: 0, shotSpeedBoost: 0, shotPowerBoost: 100, gun: "none" }), ySpeedBoost } }))} /></div></div>
+              <div className="field-grid"><div className="field"><EbNumericInput label="SHOT SPEED +" sliderEnabled={false} min={0} max={1600} step={25} value={subject.pickup?.shotSpeedBoost ?? 0} onValueChange={(shotSpeedBoost) => writeOne((item) => ({ ...item, pickup: { ...(item.pickup ?? { duration: 8, xSpeedBoost: 0, ySpeedBoost: 0, shotSpeedBoost: 0, shotPowerBoost: 100, gun: "none" }), shotSpeedBoost } }))} /></div><div className="field"><EbNumericInput label="SHOT POWER +" sliderEnabled={false} min={0} max={1000} step={100} value={subject.pickup?.shotPowerBoost ?? 0} onValueChange={(shotPowerBoost) => writeOne((item) => ({ ...item, pickup: { ...(item.pickup ?? { duration: 8, xSpeedBoost: 0, ySpeedBoost: 0, shotSpeedBoost: 0, shotPowerBoost: 100, gun: "none" }), shotPowerBoost } }))} /></div></div>
+              <label className="field wide"><span>GRANT GUN</span><select value={subject.pickup?.gun ?? "none"} onChange={(event) => writeOne((item) => ({ ...item, pickup: { ...(item.pickup ?? { duration: 8, xSpeedBoost: 0, ySpeedBoost: 0, shotSpeedBoost: 0, shotPowerBoost: 100, gun: "none" }), gun: event.target.value as GunType | "none" } }))}><option value="none">NO NEW GUN</option><option value="pulse">PULSE</option><option value="spread">SPREAD</option><option value="rapid">RAPID</option></select></label>
             </>)}
 
-            {selected.type !== "decoration" && section("effects", "EXPLOSION & SOUND", <>
-              <EffectField label="EXPLOSION" kind="explosion" components={level.components} value={selected.fx?.explosionId}
-                onChange={(next) => updateSelectedItems((item) => ({ ...item, fx: withEffect(item.fx, "explosionId", next) }), "item-explosion")} />
-              <EffectField label="DEATH SOUND" kind="sound" components={level.components} value={selected.fx?.deathSoundId}
-                onChange={(next) => updateSelectedItems((item) => ({ ...item, fx: withEffect(item.fx, "deathSoundId", next) }), "item-death-sound")} />
-              {(selected.type === "enemy" || selected.type === "group") && <EffectField label="FIRE SOUND" kind="sound" components={level.components} value={selected.fx?.fireSoundId}
-                onChange={(next) => updateSelectedItems((item) => ({ ...item, fx: withEffect(item.fx, "fireSoundId", next) }), "item-fire-sound")} />}
+            {subject.type !== "decoration" && section("effects", "EXPLOSION & SOUND", <>
+              <EffectField label="EXPLOSION" kind="explosion" components={level.components} value={subject.fx?.explosionId}
+                onChange={(next) => writeAll((item) => ({ ...item, fx: withEffect(item.fx, "explosionId", next) }), "item-explosion")} />
+              <EffectField label="DEATH SOUND" kind="sound" components={level.components} value={subject.fx?.deathSoundId}
+                onChange={(next) => writeAll((item) => ({ ...item, fx: withEffect(item.fx, "deathSoundId", next) }), "item-death-sound")} />
+              {(subject.type === "enemy" || subject.type === "group") && <EffectField label="FIRE SOUND" kind="sound" components={level.components} value={subject.fx?.fireSoundId}
+                onChange={(next) => writeAll((item) => ({ ...item, fx: withEffect(item.fx, "fireSoundId", next) }), "item-fire-sound")} />}
               <p className="inspector-note">Designed in the palette under COMPONENTS. Several objects can point at one explosion or sound; editing it reaches all of them.</p>
             </>)}
 
-            {(selected.type === "enemy" || selected.type === "group") && section("weapon", "WEAPON", <>
-              <label className="toggle-row"><span>WEAPON ENABLED</span><input type="checkbox" checked={selected.weapon.enabled} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, weapon: { ...item.weapon, enabled: event.target.checked } }))} /><i /></label>
-              {selected.weapon.enabled && <><div className="field-grid"><label className="field"><span>PROJECTILE</span><select value={selected.weapon.projectile} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, weapon: { ...item.weapon, projectile: event.target.value as ProjectileSprite } }))}><option value="bolt">BOLT</option><option value="plasma">PLASMA</option></select></label><label className="field"><span>MOTION</span><select value={selected.weapon.projectileMovement} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, weapon: { ...item.weapon, projectileMovement: event.target.value as "straight" | "sine" } }))}><option value="straight">STRAIGHT</option><option value="sine">SINE</option></select></label></div>
-                <RangeField name="SHOTS / SEC" label={<>SHOTS / SEC</>} display={`${selected.weapon.shotsPerSecond.toFixed(1)}`} min="0.1" max="4" step="0.1" value={selected.weapon.shotsPerSecond} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, weapon: { ...item.weapon, shotsPerSecond: Number(event.target.value) } }))} />
-                <RangeField name="COOLDOWN" label={<>COOLDOWN</>} display={`${selected.weapon.cooldown.toFixed(1)}s`} min="0" max="4" step="0.1" value={selected.weapon.cooldown} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, weapon: { ...item.weapon, cooldown: Number(event.target.value) } }))} />
-                <RangeField name="PROJECTILE SPEED" label={<>PROJECTILE SPEED</>} display={`${selected.weapon.projectileSpeed}u/s`} min="100" max="700" step="10" value={selected.weapon.projectileSpeed} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, weapon: { ...item.weapon, projectileSpeed: Number(event.target.value) } }))} />
-                <RangeField name="POWER" label={<>POWER</>} display={`${selected.weapon.power}`} min="1" max="3" value={selected.weapon.power} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, weapon: { ...item.weapon, power: Number(event.target.value) } }))} />
+            {(subject.type === "enemy" || subject.type === "group") && section("weapon", "WEAPON", <>
+              <label className="toggle-row"><span>WEAPON ENABLED</span><input type="checkbox" checked={subject.weapon.enabled} onChange={(event) => writeOne((item) => ({ ...item, weapon: { ...item.weapon, enabled: event.target.checked } }))} /><i /></label>
+              {subject.weapon.enabled && <><div className="field-grid"><label className="field"><span>PROJECTILE</span><select value={subject.weapon.projectile} onChange={(event) => writeOne((item) => ({ ...item, weapon: { ...item.weapon, projectile: event.target.value as ProjectileSprite } }))}><option value="bolt">BOLT</option><option value="plasma">PLASMA</option></select></label><label className="field"><span>MOTION</span><select value={subject.weapon.projectileMovement} onChange={(event) => writeOne((item) => ({ ...item, weapon: { ...item.weapon, projectileMovement: event.target.value as "straight" | "sine" } }))}><option value="straight">STRAIGHT</option><option value="sine">SINE</option></select></label></div>
+                <RangeField name="SHOTS / SEC" label={<>SHOTS / SEC</>} display={`${subject.weapon.shotsPerSecond.toFixed(1)}`} min="0.1" max="4" step="0.1" value={subject.weapon.shotsPerSecond} onChange={(event) => writeOne((item) => ({ ...item, weapon: { ...item.weapon, shotsPerSecond: Number(event.target.value) } }))} />
+                <RangeField name="COOLDOWN" label={<>COOLDOWN</>} display={`${subject.weapon.cooldown.toFixed(1)}s`} min="0" max="4" step="0.1" value={subject.weapon.cooldown} onChange={(event) => writeOne((item) => ({ ...item, weapon: { ...item.weapon, cooldown: Number(event.target.value) } }))} />
+                <RangeField name="PROJECTILE SPEED" label={<>PROJECTILE SPEED</>} display={`${subject.weapon.projectileSpeed}u/s`} min="100" max="700" step="10" value={subject.weapon.projectileSpeed} onChange={(event) => writeOne((item) => ({ ...item, weapon: { ...item.weapon, projectileSpeed: Number(event.target.value) } }))} />
+                <RangeField name="POWER" label={<>POWER</>} display={`${subject.weapon.power}`} min="1" max="3" value={subject.weapon.power} onChange={(event) => writeOne((item) => ({ ...item, weapon: { ...item.weapon, power: Number(event.target.value) } }))} />
                 {/* Where the gun sits on the ship, forward along the way it faces and across it,
                     in world units. NOSE and CENTRE are where every weapon fired from before there
                     was a choice; the sight on the playfield shows the spot. */}
-                <RangeField name="MOUNT FORWARD" label={<>MOUNT FORWARD</>} display={`${selected.weapon.mount ? `${selected.weapon.mount.x}u` : "NOSE"}`} min="-120" max="120" step="2" value={selected.weapon.mount?.x ?? Math.round(selected.size * selected.scale)} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, weapon: { ...item.weapon, mount: { x: Number(event.target.value), y: item.weapon.mount?.y ?? 0 } } }))} />
-                <RangeField name="MOUNT ACROSS" label={<>MOUNT ACROSS</>} display={`${selected.weapon.mount ? `${selected.weapon.mount.y}u` : "CENTRE"}`} min="-120" max="120" step="2" value={selected.weapon.mount?.y ?? 0} onChange={(event) => updateItem(selected.id, (item) => ({ ...item, weapon: { ...item.weapon, mount: { x: item.weapon.mount?.x ?? Math.round(item.size * item.scale), y: Number(event.target.value) } } }))} />
-                <button className="inspector-action" type="button" onClick={() => saveWeaponComponent(selected.weapon, `${selected.name} Weapon`)}>SAVE WEAPON COMPONENT</button>
+                <RangeField name="MOUNT FORWARD" label={<>MOUNT FORWARD</>} display={`${subject.weapon.mount ? `${subject.weapon.mount.x}u` : "NOSE"}`} min="-120" max="120" step="2" value={subject.weapon.mount?.x ?? Math.round(subject.size * subject.scale)} onChange={(event) => writeOne((item) => ({ ...item, weapon: { ...item.weapon, mount: { x: Number(event.target.value), y: item.weapon.mount?.y ?? 0 } } }))} />
+                <RangeField name="MOUNT ACROSS" label={<>MOUNT ACROSS</>} display={`${subject.weapon.mount ? `${subject.weapon.mount.y}u` : "CENTRE"}`} min="-120" max="120" step="2" value={subject.weapon.mount?.y ?? 0} onChange={(event) => writeOne((item) => ({ ...item, weapon: { ...item.weapon, mount: { x: item.weapon.mount?.x ?? Math.round(item.size * item.scale), y: Number(event.target.value) } } }))} />
+                <button className="inspector-action" type="button" onClick={() => saveWeaponComponent(subject.weapon, `${subject.name} Weapon`)}>SAVE WEAPON COMPONENT</button>
                 {/* The dropdown covers removal too, as NONE, so the separate
                     "remove pattern" button it replaced is gone rather than
                     sitting beside a control that already does its job. */}
-                <BulletPatternField components={patternComponents} pattern={selected.weapon.pattern} onApply={(next) => updateItem(selected.id, (item) => ({ ...item, weapon: { ...item.weapon, enabled: true, pattern: next } }))} />
-                <button className="inspector-action pattern-designer-button" type="button" onClick={() => setEditingPattern({ pattern: structuredClone(selected.weapon.pattern ?? createPatternPreset("Pendulum Sweep")), target: { kind: "item", id: selected.id } })}>{selected.weapon.pattern ? "EDIT THIS PATTERN" : "DESIGN A PATTERN"}</button>
+                <BulletPatternField components={patternComponents} pattern={subject.weapon.pattern} onApply={(next) => writeOne((item) => ({ ...item, weapon: { ...item.weapon, enabled: true, pattern: next } }))} />
+                <button className="inspector-action pattern-designer-button" type="button" onClick={() => setEditingPattern({ pattern: structuredClone(subject.weapon.pattern ?? createPatternPreset("Pendulum Sweep")), target: editingComponent ? { kind: "object", id: editingComponent.id } : { kind: "item", id: subject.id } })}>{subject.weapon.pattern ? "EDIT THIS PATTERN" : "DESIGN A PATTERN"}</button>
               </>}
             </>)}
             </EbAccordion>
@@ -3800,7 +3895,7 @@ A game exported from the Starline Foundry.
         value={editingHitboxItem.hitbox}
         name={editingHitboxItem.name}
         reference={Math.max(itemHitRadius(editingHitboxItem, "bullet"), itemHitRadius(editingHitboxItem, "ship")) / (editingHitboxItem.size * editingHitboxItem.scale) || undefined}
-        onSave={(hitbox) => { updateItem(editingHitboxItem.id, (item) => ({ ...item, hitbox })); setEditingHitbox(null); flash(hitbox ? "HITBOX APPLIED" : "HITBOX REMOVED"); }}
+        onSave={(hitbox) => { const write = (item: LevelItem) => ({ ...item, hitbox }); if (editingHitbox?.kind === "component") writeComponentObject(editingHitbox.id, write); else if (editingHitbox) updateItem(editingHitbox.id, write); setEditingHitbox(null); flash(hitbox ? "HITBOX APPLIED" : "HITBOX REMOVED"); }}
         onCancel={() => setEditingHitbox(null)}
       />}
       {pendingConfirm && <EbDialog visible title={pendingConfirm.title} onVisibleChange={(open) => { if (!open) setPendingConfirm(null); }} showCloseButton={false} className="confirm-dialog" footerContent={<>

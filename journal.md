@@ -1075,3 +1075,41 @@ limit and satellite range, the default station of 72% is within about four units
 of the satellite's maximum reach. Guessing at that arithmetic would have got it
 wrong in both directions; reading `itemHitRadius`, `hitboxReach`, the flight
 limits and the satellite's own clamp is what makes the warning worth trusting.
+
+## 2026-09-12 — A Component is an object that is not anywhere
+
+C-57. Ryan asked for saved Components to be editable from the palette rather
+than by placing one, editing it, saving over the Component and deleting the
+copy.
+
+**The whole feature was a question about how much to duplicate, and the answer
+was none.** A Component's `object` is a `LevelItem`; the only thing it lacks is
+a position. So rather than write a Component form, the existing Inspector body
+was pointed at a `subject` that resolves to either, with two writers standing in
+for the two update functions. That is 46 `updateItem` calls, 12
+`updateSelectedItems`, and 199 `selected.` references rewritten mechanically —
+and the payoff is that the next field added to an object is added once. Had this
+been built as a second form a week ago, C-56's blocker toggle would already be
+missing from it.
+
+**Exclusivity belongs at the one gate everything passes through.** The Inspector
+now has three possible subjects, and the temptation is to have each entry point
+clear the other two. `setSelection` already cleared the player, so the Component
+is cleared there too and every route in sets itself afterwards. Placing a
+Component then hands the Inspector back to the placed object for free, because
+placement already calls `setSelection`.
+
+**Resolve by id, not by holding the thing.** `editingComponent` is looked up
+from the level on every render. That is what makes a rename show up in the
+palette, an edit show up in the form, and a Component deleted from under the
+Inspector fall back to the empty state instead of editing an object nothing
+points at any more.
+
+**A number that is only true once something is placed.** The screen-blocker note
+quotes the sector position the scroll will stop at, computed from the object's
+`x`. A template's `x` is wherever the object it was saved from happened to
+stand, so the note was confidently wrong. It now reports the distance the camera
+keeps from the body instead — the part of the answer that travels with the
+Component — and only a placed object is judged out of reach. **Reusing a form
+means auditing what each field means for the new subject, not just whether it
+renders.**
