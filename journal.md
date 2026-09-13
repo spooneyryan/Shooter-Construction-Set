@@ -1113,3 +1113,36 @@ keeps from the body instead — the part of the answer that travels with the
 Component — and only a placed object is judged out of reach. **Reusing a form
 means auditing what each field means for the new subject, not just whether it
 renders.**
+
+## 2026-09-13 — The rest of the shelf, and a comment worth disbelieving
+
+Ryan left the second half of C-57 to me: whether weapon, armor and satellite
+Components should be editable too, and by what gesture.
+
+**The codebase had already answered it.** `applyEquipmentComponent` treated a
+pattern as "apply it to the selection, or open it for editing if there is
+nothing to apply it to" — the exact question I was weighing for the other three.
+Extending that rule cost nothing in surprise and meant no second affordance to
+explain. Looking for the convention beat inventing one.
+
+**The thing that rule displaces was worth displacing.** Clicking a weapon card
+with nothing selected used to add it to the player's inventory and equip it —
+a loadout change as the silent side effect of clicking a card in a palette.
+It is now a button inside that Component's own Inspector. Same capability, and
+the intent is said out loud instead of inferred from what happened to be
+selected.
+
+**I nearly built on a comment that was false.** `saveAsComponent` said
+normalizeLevel "reinstates the built-in library on every load, replacing same-id
+entries, so a copy is the only form of one the user can edit and keep." If true,
+offering the built-in Pulse Cannon for editing would have been a data-loss bug
+I had already shipped for object Components. The code does the opposite: it
+seeds the built-ins and then lets the level's own entries replace them. Ten
+lines of node against the real `normalizeLevel` settled it in a minute.
+**A comment is evidence about intent, not about behaviour** — and this one has
+been corrected.
+
+**The same lint trap twice in two days.** Arrow functions defined inside an IIFE
+in JSX are not recognisable as event handlers, so everything they close over
+reads as a ref touched during render. The fix both times was to hoist the
+closures beside the value they edit and let the markup stay markup.

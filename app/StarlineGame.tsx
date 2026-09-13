@@ -53,6 +53,7 @@ import {
   type BulletPatternDefinition,
   type Burst,
   type ComponentDefinition,
+  type ComponentWeapon,
   type ItemEffects,
   type ShmupEvent,
   type SpriteDepth,
@@ -1634,16 +1635,44 @@ export function StarlineGame() {
    * writes both -- so a rename has to move both or the palette goes on showing
    * the old one. Everything else lives on the object.
    */
-  const writeComponentObject = useCallback((id: string, updater: (item: LevelItem) => LevelItem, record = true) => {
+  const writeComponent = useCallback((id: string, updater: (component: ComponentDefinition) => ComponentDefinition) => {
     updateLevel((current) => ({
       ...current,
-      components: current.components.map((component) => {
-        if (component.id !== id || !component.object) return component;
-        const object = updater(component.object);
-        return { ...component, name: object.name, object };
-      }),
-    }), record, `component-${id}`);
+      components: current.components.map((component) => component.id === id ? updater(component) : component),
+    }), true, `component-${id}`);
   }, [updateLevel]);
+
+  const writeComponentObject = useCallback((id: string, updater: (item: LevelItem) => LevelItem) => {
+    writeComponent(id, (component) => {
+      if (!component.object) return component;
+      const object = updater(component.object);
+      // The card and the template carry the same name, so a rename moves both.
+      return { ...component, name: object.name, object };
+    });
+  }, [writeComponent]);
+
+  /**
+   * Put a weapon, armor or satellite Component on the player's ship.
+   *
+   * Lifted out of `applyEquipmentComponent`, where it used to be what a palette
+   * click did when nothing was selected -- a loadout change as the silent side
+   * effect of clicking a card. It is now a button in the Component's own
+   * Inspector, which is the same capability with the intent said out loud.
+   */
+  const equipToPlayer = useCallback((component: ComponentDefinition) => {
+    if (component.kind === "weapon" && component.weapon) {
+      updateLevel((current) => {
+        const inventory = current.player.inventory.includes(component.id) ? current.player.inventory : [...current.player.inventory.slice(0, Math.max(0, current.player.inventoryLimit - 1)), component.id];
+        const slots = current.player.weaponSlots.map((slot, index) => index === 0 && (slot.accepts === component.weapon?.tag || slot.accepts === "any") ? { ...slot, weaponId: component.id } : slot);
+        return { ...current, player: { ...current.player, inventory, weaponSlots: slots } };
+      });
+      flash("WEAPON ADDED / EQUIPPED");
+    } else if (component.kind === "armor" && component.armor) {
+      updateLevel((current) => ({ ...current, player: { ...current.player, armor: structuredClone(component.armor!) } })); flash("ARMOR EQUIPPED");
+    } else if (component.kind === "satellite" && component.satellite) {
+      updateLevel((current) => ({ ...current, player: { ...current.player, satellite: { ...structuredClone(component.satellite!), enabled: true } } })); flash("SATELLITE EQUIPPED");
+    }
+  }, [flash, updateLevel]);
 
   /** A hitbox read off the item's own art by the engine, in one click. */
   const deriveHitbox = useCallback((item: LevelItem, mode: "outline" | "circles", write: (updater: (current: LevelItem) => LevelItem) => void) => {
@@ -1712,9 +1741,14 @@ export function StarlineGame() {
   }, [flash, updateLevel]);
 
   // Saving a built-in Enhancement copies it under a fresh `component-` id
-  // rather than referencing it. normalizeLevel reinstates the built-in library
-  // on every load, replacing same-id entries, so a copy is the only form of one
-  // the user can edit and keep.
+  // rather than referencing it.
+  //
+  // Not because an edited built-in would be lost: normalizeLevel seeds the
+  // built-in library and then lets the level's OWN entries replace same-id ones,
+  // so editing one in place does persist, which is what makes the Inspector
+  // offer the built-ins for editing at all. The copy is for wanting both -- the
+  // Pulse Cannon as it ships and a heavier one beside it -- and it is the only
+  // form that survives into a level that never carried the edit.
   const saveAsComponent = useCallback((source: ComponentDefinition) => {
     const name = window.prompt("Component name:", source.name)?.trim(); if (!name) return;
     updateLevel((current) => ({ ...current, components: [...current.components, { ...structuredClone(source), id: `component-${uid()}`, name }] })); flash("COMPONENT SAVED");
@@ -1775,15 +1809,22 @@ export function StarlineGame() {
     const target = levelRef.current.items.find((item) => item.id === editorFor().selection.primary);
     if (component.kind === "weapon" && component.weapon) {
       if (target && (target.type === "enemy" || target.type === "group")) { updateItem(target.id, (item) => ({ ...item, weapon: { ...structuredClone(component.weapon!), power: Math.max(1, Math.round(component.weapon!.power / 100)) } })); flash("WEAPON APPLIED TO OBJECT"); return; }
-      updateLevel((current) => { const inventory = current.player.inventory.includes(component.id) ? current.player.inventory : [...current.player.inventory.slice(0, Math.max(0, current.player.inventoryLimit - 1)), component.id]; const slots = current.player.weaponSlots.map((slot, index) => index === 0 && (slot.accepts === component.weapon?.tag || slot.accepts === "any") ? { ...slot, weaponId: component.id } : slot); return { ...current, player: { ...current.player, inventory, weaponSlots: slots } }; }); flash("WEAPON ADDED / EQUIPPED");
-    } else if (component.kind === "armor" && component.armor) { if (target && (target.type === "enemy" || target.type === "terrain" || target.type === "group")) { updateItem(target.id, (item) => ({ ...item, armor: structuredClone(component.armor!) })); flash("ARMOR APPLIED TO OBJECT"); return; } updateLevel((current) => ({ ...current, player: { ...current.player, armor: structuredClone(component.armor!) } })); flash("ARMOR EQUIPPED"); }
-    else if (component.kind === "satellite" && component.satellite) { updateLevel((current) => ({ ...current, player: { ...current.player, satellite: { ...structuredClone(component.satellite!), enabled: true } } })); flash("SATELLITE EQUIPPED"); }
+    } else if (component.kind === "armor" && component.armor) { if (target && (target.type === "enemy" || target.type === "terrain" || target.type === "group")) { updateItem(target.id, (item) => ({ ...item, armor: structuredClone(component.armor!) })); flash("ARMOR APPLIED TO OBJECT"); return; } }
     else if (component.kind === "pattern" && component.pattern) {
       if (target && (target.type === "enemy" || target.type === "group")) { updateItem(target.id, (item) => ({ ...item, weapon: { ...item.weapon, enabled: true, pattern: structuredClone(component.pattern!) } })); flash("PATTERN APPLIED TO OBJECT"); return; }
       setEditingPattern({ pattern: structuredClone(component.pattern), target: { kind: "pattern", id: component.id } }); flash("PATTERN DESIGNER OPEN"); return;
     }
+    // Nothing to apply it to, so the click is about the Component itself. This
+    // is the rule a pattern already followed above -- apply it where there is a
+    // target, otherwise open it -- and the rest of the shelf now follows it too.
+    // A weapon, armor or satellite opens in the Inspector; the two that have a
+    // studio of their own open there, where before they fell through every
+    // branch and silently showed the player instead.
+    if (component.kind === "explosion" && component.explosion) { setEditingExplosion({ id: component.id, name: component.name, burst: structuredClone(component.explosion) }); return; }
+    if (component.kind === "sound" && component.sound) { setEditingSound({ id: component.id, sound: structuredClone(component.sound) }); return; }
+    if (component.kind === "weapon" || component.kind === "armor" || component.kind === "satellite") { setSelection([]); setInspectComponentId(component.id); return; }
     setSelection([]); setInspectPlayer(true);
-  }, [editorFor, flash, setSelection, updateItem, updateLevel]);
+  }, [editorFor, flash, setSelection, updateItem]);
 
   /**
    * Make every member of the selected formation this saved object.
@@ -3220,9 +3261,25 @@ A game exported from the Starline Foundry.
    * render and a Component deleted from under the Inspector falls back to the
    * selection instead of editing a ghost.
    */
-  const editingComponent = inspectComponentId
-    ? level.components.find((component) => component.id === inspectComponentId && component.object) ?? null
+  const inspectedComponent = inspectComponentId
+    ? level.components.find((component) => component.id === inspectComponentId) ?? null
     : null;
+  // A saved Object is edited by the form below, which is the object form. A
+  // weapon, armor or satellite has no `object` and gets its own short form,
+  // because those three are not LevelItems and share none of its fields.
+  const editingComponent = inspectedComponent?.object ? inspectedComponent : null;
+  const editingEquipment = inspectedComponent && !inspectedComponent.object ? inspectedComponent : null;
+  // Its three possible payloads, and a writer for each. Hoisted out of the
+  // markup rather than closed over inside it: an arrow defined inside an IIFE
+  // in JSX is not recognisable as an event handler, so the level it writes
+  // through reads as a ref touched during render.
+  const equipId = editingEquipment?.id ?? "";
+  const equipWeapon = editingEquipment?.weapon ?? null;
+  const equipArmor = editingEquipment?.armor ?? null;
+  const equipSatellite = editingEquipment?.satellite ?? null;
+  const writeEquipWeapon = (change: Partial<ComponentWeapon>) => writeComponent(equipId, (component) => ({ ...component, weapon: component.weapon ? { ...component.weapon, ...change } : component.weapon }));
+  const writeEquipArmor = (change: Partial<ArmorSettings>) => writeComponent(equipId, (component) => ({ ...component, armor: component.armor ? { ...component.armor, ...change } : component.armor }));
+  const writeEquipSatellite = (change: Partial<SatelliteSettings>) => writeComponent(equipId, (component) => ({ ...component, satellite: component.satellite ? { ...component.satellite, ...change } : component.satellite }));
   const subject = editingComponent?.object ?? selected;
   // A Component is one template and never a multi-selection, so the "/ ALL"
   // labels and the edit-together controls collapse to the subject itself.
@@ -3401,7 +3458,7 @@ A game exported from the Starline Foundry.
   const componentSections = (entries: ComponentDefinition[], prefix: string, categories: string[]) => categories.map((category) => {
     const inCategory = entries.filter((component) => componentCategory(component) === category);
     if (!inCategory.length) return null;
-    return section(`${prefix}-${category}`, category, <div className="palette-category-items">{inCategory.map((component) => <div className="component-card-row" key={component.id}><button className={`palette-card ${tool === `component:${component.id}` || inspectComponentId === component.id ? "active" : ""}`} type="button" onClick={() => { if (component.object) { if (applyObjectToGroup(component)) return; const value = `component:${component.id}` as Tool; setTool(value); toolRef.current = value; setSelection([]); setInspectComponentId(component.id); } else applyEquipmentComponent(component); }}>{component.object ? <ObjectThumb item={component.object} assets={level.assets} /> : <span className={`sprite-icon ${component.kind === "weapon" ? "turret" : component.kind === "armor" ? "energy" : component.kind === "pattern" ? "blade" : "upgrade"}`} />}<span><strong>{component.name}</strong><small>{component.object ? (groupSelected ? "MAKE THE FORMATION THIS" : "EDIT / PLACE") : component.kind === "weapon" ? `${component.weapon?.tag.toUpperCase()} WEAPON` : component.kind === "pattern" ? `${component.pattern?.spawns.length ?? 0} EMITTER PATTERN` : component.kind.toUpperCase()}</small></span><b>{component.object ? (groupSelected ? "CREW" : "+") : component.kind === "pattern" ? "EDIT / USE" : "USE"}</b></button>{component.id.startsWith("component-") ? <button className="component-delete" type="button" onClick={() => deleteComponent(component.id)} title="Delete Component">×</button> : <button className="component-save" type="button" onClick={() => saveAsComponent(component)} title="Save as Component">+</button>}</div>)}</div>, "palette");
+    return section(`${prefix}-${category}`, category, <div className="palette-category-items">{inCategory.map((component) => <div className="component-card-row" key={component.id}><button className={`palette-card ${tool === `component:${component.id}` || inspectComponentId === component.id ? "active" : ""}`} type="button" onClick={() => { if (component.object) { if (applyObjectToGroup(component)) return; const value = `component:${component.id}` as Tool; setTool(value); toolRef.current = value; setSelection([]); setInspectComponentId(component.id); } else applyEquipmentComponent(component); }}>{component.object ? <ObjectThumb item={component.object} assets={level.assets} /> : <span className={`sprite-icon ${component.kind === "weapon" ? "turret" : component.kind === "armor" ? "energy" : component.kind === "pattern" ? "blade" : "upgrade"}`} />}<span><strong>{component.name}</strong><small>{component.object ? (groupSelected ? "MAKE THE FORMATION THIS" : "EDIT / PLACE") : component.kind === "weapon" ? `${component.weapon?.tag.toUpperCase()} WEAPON` : component.kind === "pattern" ? `${component.pattern?.spawns.length ?? 0} EMITTER PATTERN` : component.kind.toUpperCase()}</small></span><b>{component.object ? (groupSelected ? "CREW" : "+") : "EDIT / USE"}</b></button>{component.id.startsWith("component-") ? <button className="component-delete" type="button" onClick={() => deleteComponent(component.id)} title="Delete Component">×</button> : <button className="component-save" type="button" onClick={() => saveAsComponent(component)} title="Save as Component">+</button>}</div>)}</div>, "palette");
   });
 
   const editingHitboxItem = editingHitbox
@@ -3707,6 +3764,71 @@ A game exported from the Starline Foundry.
               <button className="inspector-action" type="button" onClick={() => saveSatelliteComponent(level.player.satellite)}>SAVE AS SATELLITE COMPONENT</button>
             </>)}
             </EbAccordion>
+          </div> : editingEquipment ? <div className="inspector-form">
+            {/* The three Components that bolt onto something rather than being
+                placed. One Component is one saved thing, so an edit here reaches
+                every object it has been applied to and every slot it is equipped
+                in -- which is the whole reason for saving one. */}
+            <div className="multi-selection-note"><strong>EDITING THE COMPONENT</strong><span>Changes reach everything carrying <b>{editingEquipment.name}</b>, and are saved to the palette rather than to any one object.</span></div>
+            <label className="field wide"><span>NAME</span><input value={editingEquipment.name} onChange={(event) => writeComponent(editingEquipment.id, (component) => ({ ...component, name: event.target.value }))} /></label>
+            <div className="type-tag"><span>TYPE</span><strong>{editingEquipment.kind.toUpperCase()}</strong><i className={`sprite-icon ${editingEquipment.kind === "weapon" ? "turret" : editingEquipment.kind === "armor" ? "energy" : "upgrade"}`} /></div>
+            <EbAccordion allowMultiple={sectionMode === "multiple"} className="inspector-sections">
+            {equipWeapon && <>
+              {section("comp-weapon", "FIRE", <>
+                <RangeField name="POWER" label={<>POWER</>} display={`${equipWeapon.power}`} min="10" max="600" step="5" value={equipWeapon.power} onChange={(event) => writeEquipWeapon({ power: Number(event.target.value) })} />
+                <p className="inspector-note">A hundred is what the built-in cannons do. Put on an enemy it becomes {Math.max(1, Math.round(equipWeapon.power / 100))} hit{Math.max(1, Math.round(equipWeapon.power / 100)) === 1 ? "" : "s"} of damage, which is the scale an object&apos;s own gun is authored in.</p>
+                <RangeField name="RATE" label={<>RATE</>} display={`${equipWeapon.shotsPerSecond.toFixed(1)}/s`} min="0.5" max="20" step="0.1" value={equipWeapon.shotsPerSecond} onChange={(event) => writeEquipWeapon({ shotsPerSecond: Number(event.target.value) })} />
+                <RangeField name="COOLDOWN" label={<>COOLDOWN</>} display={equipWeapon.cooldown ? `+${equipWeapon.cooldown.toFixed(2)}s` : "NONE"} min="0" max="3" step="0.05" value={equipWeapon.cooldown} onChange={(event) => writeEquipWeapon({ cooldown: Number(event.target.value) })} />
+                <RangeField name="SPREAD" label={<>SPREAD</>} display={`${equipWeapon.spread} SHOT${equipWeapon.spread === 1 ? "" : "S"}`} min="1" max="5" step="1" value={equipWeapon.spread} onChange={(event) => writeEquipWeapon({ spread: Number(event.target.value) })} />
+              </>)}
+              {section("comp-bullet", "PROJECTILE", <>
+                <div className="field-grid">
+                  <label className="field"><span>SPRITE</span><select value={equipWeapon.projectile} onChange={(event) => writeEquipWeapon({ projectile: event.target.value })}><option value="bolt">BOLT</option><option value="plasma">PLASMA</option></select></label>
+                  <label className="field"><span>MOTION</span><select value={equipWeapon.projectileMovement} onChange={(event) => writeEquipWeapon({ projectileMovement: event.target.value as "straight" | "sine" })}><option value="straight">STRAIGHT</option><option value="sine">SINE</option></select></label>
+                </div>
+                <RangeField name="PROJECTILE SPEED" label={<>PROJECTILE SPEED</>} display={`${equipWeapon.projectileSpeed}u/s`} min="100" max="1600" step="20" value={equipWeapon.projectileSpeed} onChange={(event) => writeEquipWeapon({ projectileSpeed: Number(event.target.value) })} />
+                <label className="field wide"><span>BULLET COLOUR</span><input type="color" value={equipWeapon.color} onChange={(event) => writeEquipWeapon({ color: event.target.value })} /></label>
+                <BulletPatternField components={patternComponents} pattern={equipWeapon.pattern} onApply={(next) => writeEquipWeapon({ pattern: next })} />
+                <button className="inspector-action pattern-designer-button" type="button" onClick={() => setEditingPattern({ pattern: structuredClone(equipWeapon.pattern ?? createPatternPreset("Pendulum Sweep")), target: { kind: "weapon", id: equipId } })}>{equipWeapon.pattern ? "EDIT THIS PATTERN" : "DESIGN A PATTERN"}</button>
+              </>)}
+              {section("comp-fit", "HOW IT IS CARRIED", <>
+                {/* `tag` decides which slots will take it and `gun` is the firing
+                    model the world uses. Neither means anything to an enemy,
+                    which fires whatever it is handed. */}
+                <div className="field-grid">
+                  <label className="field"><span>FITS SLOTS</span><select value={equipWeapon.tag} onChange={(event) => writeEquipWeapon({ tag: event.target.value })}>{["standard", "light", "heavy", "satellite"].map((tag) => <option value={tag} key={tag}>{tag.toUpperCase()}</option>)}</select></label>
+                  <label className="field"><span>FIRING MODEL</span><select value={equipWeapon.gun} onChange={(event) => writeEquipWeapon({ gun: event.target.value as GunType })}>{["pulse", "spread", "rapid"].map((kind) => <option value={kind} key={kind}>{kind.toUpperCase()}</option>)}</select></label>
+                </div>
+                <p className="inspector-note">A slot takes a weapon whose FITS SLOTS matches what that slot accepts, or anything at all if it accepts ANY.</p>
+              </>)}
+            </>}
+            {equipArmor && <>
+              {section("comp-armor", "PROTECTION", <>
+                <label className="field wide"><span>ARMOR TYPE</span><select value={equipArmor.type} onChange={(event) => writeComponent(equipId, (component) => ({ ...component, armor: defaultArmor(event.target.value as ArmorType) }))}>{["none", "standard", "heavy", "ablative", "forcefield"].map((type) => <option value={type} key={type}>{type.toUpperCase()}</option>)}</select></label>
+                <RangeField name={equipArmor.type === "forcefield" ? "SHIELD" : "HULL"} label={<>{equipArmor.type === "forcefield" ? "SHIELD" : "HULL"}</>} display={`${equipArmor.capacity}`} min="1" max={equipArmor.type === "forcefield" ? 1000 : 10} step={equipArmor.type === "forcefield" ? 25 : 1} value={equipArmor.capacity} onChange={(event) => writeEquipArmor({ capacity: Number(event.target.value) })} />
+                <RangeField name="DAMAGE TAKEN" label={<>DAMAGE TAKEN</>} display={`${Math.round(equipArmor.damageMultiplier * 100)}%`} scale={100} min="0" max="2" step="0.05" value={equipArmor.damageMultiplier} onChange={(event) => writeEquipArmor({ damageMultiplier: Number(event.target.value) })} />
+                {equipArmor.type === "forcefield" && <><RangeField name="RECHARGE DELAY" label={<>RECHARGE DELAY</>} display={`${equipArmor.rechargeDelay.toFixed(2)}s`} min="0" max="6" step="0.1" value={equipArmor.rechargeDelay} onChange={(event) => writeEquipArmor({ rechargeDelay: Number(event.target.value) })} />
+                <RangeField name="RECHARGE RATE" label={<>RECHARGE RATE</>} display={`${equipArmor.rechargeRate}/s`} min="0" max="250" step="5" value={equipArmor.rechargeRate} onChange={(event) => writeEquipArmor({ rechargeRate: Number(event.target.value) })} /></>}
+                <p className="inspector-note">{equipArmor.type === "forcefield" ? "A force field absorbs damage and comes back after the delay. The hull underneath is untouched until the field is down." : "Hull pips. There is nothing to recharge, so the delay and rate do not apply."}</p>
+              </>)}
+            </>}
+            {equipSatellite && <>
+              {section("comp-satellite", "SATELLITE", <>
+                <label className="field wide"><span>CONTROL MODE</span><select value={equipSatellite.mode} onChange={(event) => writeEquipSatellite({ mode: event.target.value as SatelliteMode })}><option value="orbit">ORBIT</option><option value="tether">TETHER</option><option value="aim">AIM</option></select></label>
+                <RangeField name="RANGE" label={<>RANGE</>} display={`${equipSatellite.range}u`} min="50" max="280" value={equipSatellite.range} onChange={(event) => writeEquipSatellite({ range: Number(event.target.value) })} />
+                <RangeField name="SPEED" label={<>SPEED</>} display={`${equipSatellite.speed}u/s`} min="100" max="800" step="10" value={equipSatellite.speed} onChange={(event) => writeEquipSatellite({ speed: Number(event.target.value) })} />
+                <label className="field wide"><span>WEAPON</span><select value={equipSatellite.weaponId} onChange={(event) => writeEquipSatellite({ weaponId: event.target.value })}>{level.components.filter((component) => component.kind === "weapon").map((component) => <option value={component.id} key={component.id}>{component.name.toUpperCase()}</option>)}</select></label>
+                <label className="field wide"><span>SATELLITE ARMOR</span><select value={equipSatellite.armor.type} onChange={(event) => writeEquipSatellite({ armor: defaultArmor(event.target.value as ArmorType) })}>{["none", "standard", "heavy", "ablative", "forcefield"].map((type) => <option value={type} key={type}>{type.toUpperCase()}</option>)}</select></label>
+                <RangeField name={equipSatellite.armor.type === "forcefield" ? "SATELLITE SHIELD" : "SATELLITE HULL"} label={<>{equipSatellite.armor.type === "forcefield" ? "SATELLITE SHIELD" : "SATELLITE HULL"}</>} display={`${equipSatellite.armor.capacity}`} min="1" max={equipSatellite.armor.type === "forcefield" ? 600 : 10} step={equipSatellite.armor.type === "forcefield" ? 25 : 1} value={equipSatellite.armor.capacity} onChange={(event) => writeEquipSatellite({ armor: { ...equipSatellite.armor, capacity: Number(event.target.value) } })} />
+                <p className="inspector-note">The satellite is held a little off the far edge of the screen, so a long range does not put it out past where the ship may fly.</p>
+              </>)}
+            </>}
+            </EbAccordion>
+            {/* The equipping that clicking this card used to do by itself.
+                Said out loud, because changing the player's loadout is not what
+                "open this for editing" should quietly mean. */}
+            <button className="inspector-action" type="button" onClick={() => equipToPlayer(editingEquipment)}>{editingEquipment.kind === "weapon" ? "ADD TO INVENTORY & EQUIP" : "EQUIP TO PLAYER SHIP"}</button>
+            <p className="inspector-note">To put this on an enemy instead, select the enemy and click this Component in the palette.</p>
           </div> : !subject ? <div className="empty-inspector"><b>NO OBJECT SELECTED</b><p>Use the Select tool and choose an object to tune its behavior, or pick a saved Component from the palette to tune the Component itself. The player ship is in the palette too.</p></div> : <div className="inspector-form">
             {/* Which of the two this form is editing. A Component's template has
                 no place in the sector, so its edits reach every future

@@ -1612,7 +1612,19 @@ object it was saved from happened to stand. Unplaced, it reports the distance
 the camera will keep instead, which is the part that travels with the
 Component.
 
-**Still open:** weapon, armor and satellite Components. Their card click is the
-apply-or-equip gesture, and their attributes are three shapes that are not
-`LevelItem`, so neither the gesture nor the form carries over. Only their bullet
-pattern is reachable today, through the player's weapon slots.
+**Weapon, armor and satellite Components too, by extending the rule the shelf
+already had.** A pattern card already meant "apply it to the selection, or open
+it if there is nothing to apply it to"; the other three now mean the same, and
+each gets a short form of its own because none of them is a `LevelItem`. The
+equipping that a click used to do by itself is a button in that form instead --
+the same capability with the intent said out loud, rather than a loadout change
+as the silent side effect of clicking a card. Explosion and sound cards open
+their studios for the same reason; they used to fall through every branch and
+show the player ship.
+
+**A comment that was wrong, and had to be checked rather than believed.** The
+code said a copy was "the only form of one the user can edit and keep", which
+would have made offering the built-ins for editing a data-loss bug.
+`normalizeLevel` seeds the built-in library and then lets the level's own
+entries replace same-id ones, so an edited built-in does persist -- measured
+before building on it.
