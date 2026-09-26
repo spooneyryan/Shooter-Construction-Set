@@ -211,6 +211,18 @@ button { cursor: pointer; }
 .music-row .component-save { right: 27px; }
 .asset-glyph { width: 28px; height: 28px; display: grid; place-items: center; border: 1px solid var(--cyan); background: rgba(100,227,255,.08); color: var(--cyan); font-family: var(--font-mono); font-size: 9px; }
 .asset-preview { width: 34px; height: 34px; display: block; image-rendering: pixelated; }
+/* A pack leads with its artwork instead of a thumbnail: four of its sprites
+   across the full card, with the name and the action beneath. The palette
+   column has no room to put that strip beside a name, which is what the
+   34px first column of .palette-card assumes. */
+.pack-card { grid-template-columns: 1fr auto; row-gap: 5px; align-items: center; }
+.pack-card > .pack-preview { grid-column: 1 / -1; width: 100%; height: auto; aspect-ratio: 4 / 1; display: block; }
+.pack-card > strong { grid-column: 1; }
+.pack-card > b { grid-column: 2; }
+/* Its own row: the palette column is too narrow to wrap a sentence in what is
+   left beside the action, and squeezed to five words a line it read as a
+   column of confetti. */
+.pack-card > small { grid-column: 1 / -1; white-space: normal; line-height: 1.4; }
 .palette-card { width: 100%; min-height: 53px; margin-bottom: 5px; padding: 7px 8px; display: grid; grid-template-columns: 34px 1fr auto; align-items: center; gap: 8px; border: 1px solid #1f323c; background: #0c1720; color: #aebfc7; text-align: left; }
 .palette-card > span:nth-child(2) { display: flex; flex-direction: column; gap: 3px; }
 .palette-card strong { color: #d9e8ed; font-size: 12px; font-weight: 600; }

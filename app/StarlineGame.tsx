@@ -85,6 +85,7 @@ type EditorMode = "build" | "playing" | "paused" | "gameover" | "victory";
 // The sprite unions moved into scene.ts with the code that paints them: they
 // are the renderer's business, and the standalone player needs them too.
 import type { PlayerSpriteChoice, ProjectileSprite, Sprite } from "./scene.js";
+import { SPRITE_PACKS, type SpritePack } from "./sprite-packs.js";
 
 // The two draw entry points below take a plain `string` rather than these
 // unions, because that is what a level actually carries: the union is what
@@ -1059,6 +1060,32 @@ function SpriteAssetPreview({ asset }: { asset: SpriteAsset }) {
   return <canvas className="asset-preview" ref={ref} aria-hidden="true" />;
 }
 
+/**
+ * How many sprite assets a level may hold.
+ *
+ * `normalizeAssets` takes the first hundred and drops the rest without a word,
+ * which is the right thing for a malformed import and the wrong thing to
+ * discover after adding a pack -- so the palette checks the room first and
+ * says so rather than letting fourteen sprites evaporate on the next save.
+ */
+const ASSET_LIMIT = 100;
+
+/** Four of a pack's sprites, so the card shows the look rather than naming it. */
+function PackPreview({ pack }: { pack: SpritePack }) {
+  const ref = useRef<HTMLCanvasElement>(null);
+  useEffect(() => {
+    const canvas = ref.current; const context = canvas?.getContext("2d");
+    if (!canvas || !context) return;
+    const shown = ["raider", "orb", "diamond", "energy"].map((shape) => pack.sprites.find((asset) => asset.id.endsWith(`-${shape}`))).filter(Boolean) as SpriteAsset[];
+    const dpr = Math.max(1, window.devicePixelRatio || 1);
+    canvas.width = 34 * shown.length * dpr; canvas.height = 34 * dpr;
+    context.setTransform(dpr, 0, 0, dpr, 0, 0);
+    context.clearRect(0, 0, 34 * shown.length, 34);
+    shown.forEach((asset, index) => drawSprite(context, `asset:${asset.id}`, 17 + index * 34, 17, 14, false, 1, 0, 1, false, [asset], 0));
+  }, [pack]);
+  return <canvas className="pack-preview" ref={ref} aria-hidden="true" />;
+}
+
 export function StarlineGame() {
   const mainCanvasRef = useRef<HTMLCanvasElement>(null);
   const miniCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -1887,6 +1914,54 @@ export function StarlineGame() {
       message: uses ? `This sprite is used ${uses} time(s). Delete it and replace those uses with ORB?` : "Delete this sprite asset?",
       action: () => {
         updateLevel((current) => ({ ...current, assets: current.assets.filter((asset) => asset.id !== id), items: current.items.map((item) => item.sprite === sprite ? { ...item, sprite: "orb" } : item), components: current.components.map((component) => component.object?.sprite === sprite ? { ...component, object: { ...component.object, sprite: "orb" } } : component) })); flash("SPRITE ASSET DELETED");
+      },
+    });
+  }, [flash, updateLevel]);
+
+  /**
+   * Put a pack's sprites in the level.
+   *
+   * Idempotent by id: the sprites carry stable `pack-<pack>-<shape>` ids
+   * rather than fresh ones, so adding a pack twice cannot leave two copies of
+   * the same drone in the list, and a level that already carries the pack
+   * recognises it. The trade is that an edited pack sprite is overwritten by
+   * nothing -- re-adding skips what is already there, edits and all.
+   */
+  const addSpritePack = useCallback((pack: SpritePack) => {
+    const have = new Set(levelRef.current.assets.map((asset) => asset.id));
+    const incoming = pack.sprites.filter((asset) => !have.has(asset.id));
+    if (!incoming.length) { flash(`${pack.name.toUpperCase()} IS ALREADY HERE`); return; }
+    const room = ASSET_LIMIT - levelRef.current.assets.length;
+    if (incoming.length > room) { flash(`ONLY ${Math.max(0, room)} SPRITE SLOT${room === 1 ? "" : "S"} LEFT`); return; }
+    updateLevel((current) => ({ ...current, assets: [...current.assets, ...structuredClone(incoming)] }));
+    flash(`${pack.name.toUpperCase()}: ${incoming.length} SPRITES ADDED`);
+  }, [flash, updateLevel]);
+
+  /**
+   * Take a pack back out, and say first what that costs.
+   *
+   * Placed objects pointing at one of its sprites fall back to ORB, exactly as
+   * deleting a single sprite does -- the same sentence, because it is the same
+   * consequence fourteen times over.
+   */
+  const removeSpritePack = useCallback((pack: SpritePack) => {
+    const ids = new Set(pack.sprites.map((asset) => asset.id));
+    const usesPack = (sprite: string | undefined) => Boolean(sprite?.startsWith("asset:") && ids.has(sprite.slice("asset:".length)));
+    const uses = levelRef.current.items.filter((item) => usesPack(item.sprite)).length
+      + levelRef.current.components.filter((component) => usesPack(component.object?.sprite)).length;
+    setPendingConfirm({
+      title: `REMOVE ${pack.name.toUpperCase()}`,
+      message: uses
+        ? `${uses} object(s) are drawn with this pack. Remove its sprites and replace those with ORB?`
+        : `Remove this pack's ${pack.sprites.length} sprites from the level?`,
+      action: () => {
+        updateLevel((current) => ({
+          ...current,
+          assets: current.assets.filter((asset) => !ids.has(asset.id)),
+          items: current.items.map((item) => usesPack(item.sprite) ? { ...item, sprite: "orb" as Sprite } : item),
+          components: current.components.map((component) => component.object && usesPack(component.object.sprite) ? { ...component, object: { ...component.object, sprite: "orb" as Sprite } } : component),
+        }));
+        flash(`${pack.name.toUpperCase()} REMOVED`);
       },
     });
   }, [flash, updateLevel]);
@@ -3609,6 +3684,23 @@ A game exported from the Starline Foundry.
                   in the top bar, with the other editors. */}<button type="button" onClick={() => setDesigningBursts(true)}>✳ DEFAULT EXPLOSIONS</button><button type="button" onClick={() => setEditingAsset({ id: uid(), name: "New Pixel Art", kind: "raster", width: 16, height: 16, pixels: Array(256).fill("") })}>+ PIXEL ART</button><button type="button" onClick={() => setEditingAsset({ id: uid(), name: "New Vector", kind: "vector", width: 256, height: 256, shapes: [] })}>+ VECTOR SPRITE</button>{/* An image asset is defined by carrying real bytes, so a blank one is a
                   real transparent PNG rather than an empty string -- which is what
                   blankImageAsset exists for, and what normalizeAssets would drop. */}<button type="button" onClick={() => setEditingAsset(blankImageAsset(uid(), "New Image", 256, 256))}>+ IMAGE</button><button type="button" onClick={() => setEditingExplosion({ id: `component-${uid()}`, name: "New Explosion", burst: { ...createBurstPreset("Blast"), name: "New Explosion" } })}>+ EXPLOSION</button><button type="button" onClick={() => setEditingSound({ id: `component-${uid()}`, sound: { ...createSfxPreset("Explosion"), name: "New Sound" } })}>+ SOUND</button></div>
+              {/* Ready-made artwork for the fourteen shapes the Foundry draws by
+                  hand. Above the user's own sprites because it is where someone
+                  with nothing drawn yet should start, and because what it adds
+                  lands in the list underneath it. */}
+              {section("PACKS", "SPRITE PACKS", <div className="palette-category-items">{SPRITE_PACKS.map((pack) => {
+                const here = pack.sprites.filter((asset) => level.assets.some((entry) => entry.id === asset.id)).length;
+                const complete = here === pack.sprites.length;
+                return <div className="component-card-row" key={pack.id}>
+                  <button className={`palette-card pack-card ${complete ? "active" : ""}`} type="button" onClick={() => addSpritePack(pack)} title={pack.blurb}>
+                    <PackPreview pack={pack} />
+                    <strong>{pack.name}</strong>
+                    <b>{complete ? "✓" : "ADD"}</b>
+                    <small>{complete ? `ALL ${pack.sprites.length} SPRITES ARE IN THIS LEVEL` : here ? `${here} OF ${pack.sprites.length} HERE` : pack.blurb}</small>
+                  </button>
+                  {here > 0 && <button className="component-delete" type="button" onClick={() => removeSpritePack(pack)} title={`Remove ${pack.name}`}>×</button>}
+                </div>;
+              })}</div>, "palette")}
               {level.assets.length > 0 && section("SPRITES", "SPRITES", <div className="palette-category-items">{level.assets.map((asset) => <div className="component-card-row" key={asset.id}><button className="palette-card" type="button" onClick={() => setEditingAsset(structuredClone(asset))}><SpriteAssetPreview asset={asset} /><span><strong>{asset.name}</strong><small>{asset.kind.toUpperCase()} / {asset.width}×{asset.height}</small></span><b>EDIT</b></button><button className="component-delete" type="button" onClick={() => deleteSpriteAsset(asset.id)} title="Delete sprite">×</button></div>)}</div>, "palette")}
               {componentSections(shelf, "ASSET", assetCategories)}
               {/* The audio lives beside the levels rather than in one, so this

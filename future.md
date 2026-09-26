@@ -1628,3 +1628,44 @@ would have made offering the built-ins for editing a data-loss bug.
 `normalizeLevel` seeds the built-in library and then lets the level's own
 entries replace same-id ones, so an edited built-in does persist -- measured
 before building on it.
+
+## C-58 — Sprite packs for the built-in shapes
+
+Ryan asked for ready-made artwork for the fourteen shapes the Foundry draws by
+hand. Those built-ins are one readable look that needs no assets and cannot
+fail to load — and they are the only look, so every sector built from them
+resembles every other one.
+
+**Three packs, fourteen sprites each, in `app/sprite-packs.ts`.** *Chitin* is
+grown rather than built: violet carapace, mandibles, egg sacs, a single amber
+eye. *Ironclad* is boxes where Chitin is ellipses — plated hulls, rivet heads,
+hazard stripes, a hot orange running light. *Halcyon* is faceted glass with
+translucent fills, so the starfield shows through it, which is the one thing
+the other two deliberately never do. Each covers all fourteen shapes, so a
+level can change its whole look without a gap where the comets used to be.
+
+**Vector, not pixels, and the reason is the level file.** Assets travel inside
+the level through IndexedDB, export files and the standalone player, and a
+24x24 raster is 576 colour strings per sprite — some 24,000 across three
+packs. These are six to ten shapes each, they scale to whatever size the
+author picks, and they arrive in the vector editor as something to pull apart
+rather than a grid of cells.
+
+**The artwork is built around what the renderer will actually do.** `rect` and
+`ellipse` fill and stroke; `line` and `path` only stroke. So every solid mass
+in a pack is a box or an oval, and paths are seams, antennae and cracks rather
+than silhouettes — a filled polygon is not expressible. A ship's prow is a
+square stood on its corner with the hull covering its back half, which is the
+only way to get a solid point. The asset box is scaled onto a square with x
+and y independent, so every sprite is 64x64 or it would arrive stretched. And
+a custom asset is never mirrored — only the three built-in ship shapes are —
+so every pack ship is drawn facing left, the way it flies.
+
+**Adding is idempotent, and removal is offered.** The sprites carry stable
+`pack-<pack>-<shape>` ids rather than fresh ones, so adding a pack twice cannot
+leave two of the same drone; the card reads the level and says how many of its
+sprites are already there. The palette checks for room first, because
+`normalizeAssets` keeps a hundred assets and drops the rest without a word —
+three packs is 42, and finding that out after a save would be finding out too
+late. Removing a pack replaces any object drawn with it with ORB, the same
+sentence deleting one sprite has always used.

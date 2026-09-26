@@ -1146,3 +1146,38 @@ been corrected.
 in JSX are not recognisable as event handlers, so everything they close over
 reads as a ref touched during render. The fix both times was to hoist the
 closures beside the value they edit and let the markup stay markup.
+
+## 2026-09-25 — Forty-two sprites, drawn against the grain of the renderer
+
+C-58. Ready-made artwork for the fourteen built-in shapes, in three themed
+packs.
+
+**I read the renderer before drawing a line, and it changed the artwork.**
+`drawVectorShape` fills rects and ellipses and only strokes lines and paths.
+That single fact decides the whole visual vocabulary: there is no filled
+polygon, so a ship's nose cannot be a triangle. The first pass drew prows as
+paths and they came out as floating outlines with the starfield showing
+through them. A square stood on its corner with the hull covering its back
+half is the fix, and it is what every ship in all three packs now uses.
+
+**The preview loop was worth more than any amount of care.** Vite serves the
+module, so the page could `import('/app/sprite-packs.ts')` and draw a contact
+sheet onto a canvas — forty-two sprites at three sizes, screenshotted and
+looked at. Everything I got wrong was invisible in the source and obvious in
+the sheet: the prows, Ironclad's palette sinking into the violet backdrop, and
+the ships whose facing read as ambiguous until the nose was a lighter plate
+than the hull behind it. **Art cannot be reviewed as code.**
+
+**Two constants that only matter when they bite.** `normalizeAssets` keeps the
+first hundred assets and silently drops the rest, and three packs is
+forty-two — so the palette counts the room before adding rather than letting a
+pack evaporate on the next save. And the asset box is scaled onto a square with
+x and y independently, so a non-square sprite arrives stretched; every pack
+sprite is 64x64 for that reason alone.
+
+**Stable ids rather than fresh ones.** `pack-chitin-raider` and not a `uid()`,
+which makes adding a pack idempotent, lets the card say "all 14 are here", and
+makes removal a set membership test. The cost is honest and worth naming: a
+re-add skips what is already present, edits included, so it will not restore a
+sprite the author has since changed. That is the right default — the alternative
+silently overwrites work.
