@@ -131,7 +131,7 @@ maintained deliberately:
 |---|---|---|
 | `@ccllc/arcade` (`shmup`, `core`, `platform`, …) | The level model, `normalizeLevel`/`normalizeBulletPattern`, the deterministic world simulation, damage, bullet-pattern engine, game loop, undo history, input action maps, perf monitoring | node_modules (feed) |
 | `@ccllc/studio` | Authoring UI: `SpriteStudio` (raster + vector editors), `BulletPatternStudio`; plus `@ccllc/studio/render`, the React-free drawing routines for saved sprite assets | node_modules (feed) |
-| **This repo** | Wiring and presentation: the editor shell (palette, inspector, tools, selection, dialogs), the canvas renderer and its built-in artwork, particles/stars, persistence in `localStorage`, keyboard/pad bindings | `app/` |
+| **This repo** | Wiring and presentation: the editor shell (palette, inspector, tools, selection, dialogs), the canvas renderer and its built-in artwork, particles/stars, persistence in `localStorage`, keyboard/pad bindings — where the shortcut table is the construction-set shell's standard rows (GameBase's `docs/SHELL.md`, `shellBindings`) plus this set's own in `app/shortcuts.ts`, the help sheet is the studio's `HelpSheet` over it, and the preferences store is `defineShellSettings` under the namespace it always had | `app/` |
 
 Consequences you must respect:
 

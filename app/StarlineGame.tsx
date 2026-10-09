@@ -1,14 +1,15 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
-import { createDocumentSession, createHistory, createIndexedDbStorage, createLoop, createPerformanceMonitor, defineLibrary, defineSettings, DocumentError, type DocumentFormat, type PerfStats } from "@ccllc/arcade/core";
+import { createDocumentSession, createHistory, createIndexedDbStorage, createLoop, createPerformanceMonitor, defineLibrary, DocumentError, type DocumentFormat, type PerfStats } from "@ccllc/arcade/core";
 import { useSyncExternalStore } from "react";
 import { createInput, createMusic } from "@ccllc/arcade/platform";
-import { createSelection, createEditorCommands, createKeymap } from "@ccllc/arcade/editor";
+import { createSelection, createEditorCommands, createKeymap, defineShellSettings } from "@ccllc/arcade/editor";
+import { FLIGHT_KEYS, starlineBindings } from "./shortcuts.js";
 import { uniqueId } from "@ccllc/arcade/core";
 import { createTelemetry } from "@ccllc/arcade/telemetry";
 import { createPixelPresenter, type PixelFilter, type PixelPresenter } from "@ccllc/arcade/render";
-import { BulletPatternStudio, HitboxEditor, SfxStudio, SpriteStudio, blankImageAsset, drawHitbox, rasterizeHitMask, type PaintSprite } from "@ccllc/studio";
+import { BulletPatternStudio, HelpSheet, HitboxEditor, SfxStudio, SpriteStudio, blankImageAsset, drawHitbox, rasterizeHitMask, type PaintSprite } from "@ccllc/studio";
 import { advanceBurst, burstFrame, createBurstPreset, createBurstRuntime, drawBurst, normalizeBurst, type BurstDefinition, type BurstRuntime } from "@ccllc/arcade/burst";
 import { createSfxPlayer, createSfxPreset, normalizeSfx, type SfxDefinition } from "@ccllc/arcade/sfx";
 import { EbAccordion, EbAccordionItem, EbDialog, EbNumericInput, EbTabbedCard } from "@electricblazor/react";
@@ -592,27 +593,24 @@ const levelStore = createIndexedDbStorage({
 type DisplayFilter = Extract<PixelFilter, "none" | "display-scanlines" | "lcd-grid" | "crt">;
 type DisplayPrefs = { pixelFilter: DisplayFilter; lineBrightness: number; bandRows: number; gridThickness: number; crtAmount: number; crtGlow: number; crtNoise: number };
 
-const editorSettings = defineSettings<{ sectionMode: SectionMode; paletteWidth: number; inspectorWidth: number } & DisplayPrefs>({
+// The schema is the construction-set shell's (GameBase docs/SHELL.md): the
+// same fields under the same names this store always had -- the rails, how
+// their sections fold, the played picture's filter and its numbers -- plus
+// the ones every set shares (text size, sound, the rate readout), under the
+// same namespace, so nothing anyone stored is orphaned by the move.
+const editorSettings = defineShellSettings({
   namespace: "starline-editor",
-  version: 1,
-  fields: {
-    sectionMode: { type: "enum", values: ["single", "multiple"], default: "multiple" },
-    // The panel widths belong to the person rather than the level, so they sit
-    // here beside Toolbar Behavior. Adding them cost two lines and no parsing,
-    // which is exactly what this schema was for; the store clamps on the way
-    // in, so a hand-edited value cannot reopen the editor with no stage left.
-    paletteWidth: { type: "integer", default: PANEL_LIMITS.palette.fallback, min: PANEL_LIMITS.palette.min, max: PANEL_LIMITS.palette.max },
-    inspectorWidth: { type: "integer", default: PANEL_LIMITS.inspector.fallback, min: PANEL_LIMITS.inspector.min, max: PANEL_LIMITS.inspector.max },
-    // The played picture's treatment, with the presenter's own defaults, so a
-    // filter switched on for the first time looks the way its author tuned it.
-    pixelFilter: { type: "enum", values: ["none", "display-scanlines", "lcd-grid", "crt"], default: "none" },
-    lineBrightness: { type: "number", default: 0.72, min: 0, max: 1 },
-    bandRows: { type: "integer", default: 1, min: 1, max: 6 },
-    gridThickness: { type: "number", default: 1, min: 0, max: 4 },
-    crtAmount: { type: "number", default: 1, min: 0, max: 1 },
-    crtGlow: { type: "number", default: 1, min: 0, max: 1 },
-    crtNoise: { type: "number", default: 0.25, min: 0, max: 1 },
+  rails: {
+    palette: { min: PANEL_LIMITS.palette.min, max: PANEL_LIMITS.palette.max, default: PANEL_LIMITS.palette.fallback },
+    inspector: { min: PANEL_LIMITS.inspector.min, max: PANEL_LIMITS.inspector.max, default: PANEL_LIMITS.inspector.fallback },
   },
+});
+
+/** The table once more with nothing behind it, for the help sheet, which reads only the labels. */
+const HELP_BINDINGS = starlineBindings({
+  mode: () => "edit", save() {}, duplicateLevel() {}, undo() {}, redo() {}, test() {}, present() {}, leave() {},
+  deleteSelected() {}, duplicateSelected() {}, rotate() {}, nudge() {}, selectTool() {}, deselect() {}, scrollTool() {},
+  fullscreen() {}, togglePause() {}, restart() {}, toggleRates() {}, toggleHelp() {}, equip() {},
 });
 
 /** The display preferences as one object, read from the store. */
@@ -1277,6 +1275,7 @@ export function StarlineGame() {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [fpsStats, setFpsStats] = useState<PerfStats | null>(null);
   const [showFps, setShowFps] = useState(false);
+  const toggleRates = useCallback(() => { setShowFps((value) => { editorSettings.set("showRates", !value); return !value; }); }, []);
   /**
    * Debug mode: outline what the simulation actually collides against. Held in
    * a ref as well, because the frame loop reads it and the loop is started once.
@@ -1303,6 +1302,7 @@ export function StarlineGame() {
   const [openSections, setOpenSections] = useState<Record<string, string>>({});
   const [sectionMode, setSectionMode] = useState<SectionMode>("multiple");
   const [showSettings, setShowSettings] = useState(false);
+  const [showHelp, setShowHelp] = useState(false);
   const [presenting, setPresenting] = useState(false);
   // Annotated, because PANEL_LIMITS is `as const` and the fallback would
   // otherwise infer as the literal 214 rather than as a width.
@@ -1335,6 +1335,8 @@ export function StarlineGame() {
   const pendingConfirmRef = useRef(false);
   useEffect(() => { pendingConfirmRef.current = pendingConfirm !== null; }, [pendingConfirm]);
   const showSettingsRef = useRef(false);
+  const showHelpRef = useRef(false);
+  useEffect(() => { showHelpRef.current = showHelp; }, [showHelp]);
   useEffect(() => { showSettingsRef.current = showSettings; }, [showSettings]);
   // The designed explosions belong to this browser rather than to the level:
   // the level format is the library's, and a field it does not declare would be
@@ -1546,6 +1548,7 @@ export function StarlineGame() {
     setPaletteWidth(editorSettings.get("paletteWidth"));
     setInspectorWidth(editorSettings.get("inspectorWidth"));
     setDisplayPrefs(readDisplayPrefs());
+    setShowFps(editorSettings.get("showRates"));
   }, []);
 
   // The designed explosions, on the same two-phase load and for the same
@@ -2347,76 +2350,58 @@ A game exported from the Starline Foundry.
     // effect of browsing the panels.
     const nudgeable = (event: KeyboardEvent) =>
       hasSelection() && !(event.target as HTMLElement | null)?.closest?.('.eb-card-collapse-toggle, [role="tablist"]');
-    const rotateBy = (fine: boolean) => (event: KeyboardEvent) => {
-      const delta = (event.code === "KeyQ" ? -1 : 1) * (fine ? 1 : 15);
-      editorFor().commands.update((item) => ({ ...item, rotation: item.rotation + delta }), { reason: "rotate" });
-    };
-    const nudgeBy = (step: number) => (event: KeyboardEvent) => {
-      const dx = event.code === "ArrowLeft" ? -step : event.code === "ArrowRight" ? step : 0;
-      const dy = event.code === "ArrowUp" ? -step : event.code === "ArrowDown" ? step : 0;
-      editorFor().commands.update((item) => ({
-        ...item,
-        x: clamp(item.x + dx, 0, levelRef.current.length),
-        y: clamp(item.y + dy, -PLACE_MARGIN, VIEW_H + PLACE_MARGIN),
-      }), { reason: "nudge" });
-    };
-    const keymap = createKeymap([
-      // Shift distinguishes these two rather than being read inside one, which
-      // is the whole reason the modifier match is exact.
-      { code: "KeyZ", ctrl: true, shift: true, when: build, label: "Redo", run: () => applyHistory(1) },
-      { code: "KeyZ", ctrl: true, when: build, label: "Undo", run: () => applyHistory(-1) },
-      { code: "KeyY", ctrl: true, when: build, label: "Redo", run: () => applyHistory(1) },
-      // The one shortcut that survives a focused text field: losing an edit
-      // because focus was still in the name box is worse than the alternative.
-      { code: "KeyS", ctrl: true, shift: true, allowInTextEntry: true, label: "Duplicate", run: () => duplicateLevel() },
-      { code: "KeyS", ctrl: true, allowInTextEntry: true, label: "Save", run: () => saveLevel() },
-      { code: "KeyT", shift: true, when: build, label: "Present", run: () => enterPlay(true) },
-      { code: "KeyT", when: build, label: "Playtest", run: () => enterPlay() },
-      { code: "Escape", when: () => !build(), label: "Leave playtest", run: () => exitPlay() },
-      { code: ["Delete", "Backspace"], when: build, label: "Delete", run: () => deleteSelected() },
-      {
-        code: "Escape", when: build, label: "Select tool / clear selection",
-        run: () => {
-          if (toolRef.current !== "select") { setTool("select"); toolRef.current = "select"; flash("SELECT MODE"); }
-          else { setSelection([]); setInspectPlayer(false); flash("SELECTION CLEARED"); }
-        },
+    // The shell's standard table for everything this set can do, then its
+    // own (app/shortcuts.ts): movement and fire are not here, createInput
+    // owns those codes, preventDefaults them, and releases them on blur.
+    const keymap = createKeymap(starlineBindings({
+      mode: () => (build() ? "edit" : "play"),
+      save: () => saveLevel(),
+      duplicateLevel: () => duplicateLevel(),
+      undo: () => applyHistory(-1),
+      redo: () => applyHistory(1),
+      test: () => enterPlay(),
+      present: () => enterPlay(true),
+      leave: () => exitPlay(),
+      deleteSelected: () => deleteSelected(),
+      duplicateSelected: () => duplicateSelected(),
+      rotate: (degrees) => { editorFor().commands.update((item) => ({ ...item, rotation: item.rotation + degrees }), { reason: "rotate" }); },
+      nudge: (dx, dy) => {
+        editorFor().commands.update((item) => ({
+          ...item,
+          x: clamp(item.x + dx, 0, levelRef.current.length),
+          y: clamp(item.y + dy, -PLACE_MARGIN, VIEW_H + PLACE_MARGIN),
+        }), { reason: "nudge" });
       },
-      { code: "KeyD", when: build, label: "Duplicate", run: () => duplicateSelected() },
-      { code: "KeyS", when: build, label: "Scroll tool", run: () => { setTool("scroll"); toolRef.current = "scroll"; flash("SCROLL TOOL"); } },
-      { code: ["KeyQ", "KeyE"], shift: true, when: hasSelection, label: "Rotate 1°", run: rotateBy(true) },
-      { code: ["KeyQ", "KeyE"], when: hasSelection, label: "Rotate 15°", run: rotateBy(false) },
-      { code: "KeyF", label: "Full screen", run: () => void toggleFullscreen() },
-      // F8 for the frame-rate readout, matching the other two games.
-      { code: "F8", label: "FPS", run: () => setShowFps((value) => !value) },
-      // allowRepeat, unlike every other binding here: holding an arrow should
-      // keep nudging, where holding D should duplicate exactly once.
-      { code: ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"], shift: true, allowRepeat: true, when: () => build(), label: "Nudge 25", run: nudgeBy(25) },
-      { code: ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"], allowRepeat: true, when: () => build(), label: "Nudge 5", run: nudgeBy(5) },
-      // passive: these three never preventDefaulted before, and Enter in
-      // particular has to stay available to whatever else is listening.
-      { code: "Enter", passive: true, when: () => modeRef.current === "gameover" || modeRef.current === "victory", run: () => enterPlay() },
-      { code: "KeyP", passive: true, when: () => modeRef.current === "playing", label: "Pause", run: () => { setMode("paused"); modeRef.current = "paused"; } },
-      { code: "KeyP", passive: true, when: () => modeRef.current === "paused", label: "Resume", run: () => { setMode("playing"); modeRef.current = "playing"; } },
-      {
-        code: ["Digit1", "Digit2", "Digit3", "Digit4", "Digit5", "Digit6", "Digit7", "Digit8", "Digit9"],
-        when: () => modeRef.current === "playing", label: "Equip",
-        run: (event) => equipInventoryWeapon(Number(event.code.slice(-1)) - 1),
+      selectTool: () => { setTool("select"); toolRef.current = "select"; flash("SELECT MODE"); },
+      deselect: () => {
+        if (toolRef.current !== "select") { setTool("select"); toolRef.current = "select"; flash("SELECT MODE"); }
+        else { setSelection([]); setInspectPlayer(false); flash("SELECTION CLEARED"); }
       },
-      // Movement and fire are not here: createInput owns those codes,
-      // preventDefaults them, and releases them on blur.
-    ]);
+      scrollTool: () => { setTool("scroll"); toolRef.current = "scroll"; flash("SCROLL TOOL"); },
+      fullscreen: () => void toggleFullscreen(),
+      togglePause: () => {
+        if (modeRef.current === "playing") { setMode("paused"); modeRef.current = "paused"; }
+        else if (modeRef.current === "paused") { setMode("playing"); modeRef.current = "playing"; }
+      },
+      restart: () => { if (modeRef.current === "gameover" || modeRef.current === "victory") enterPlay(); },
+      toggleRates,
+      toggleHelp: () => setShowHelp((open) => !open),
+      equip: (slot) => equipInventoryWeapon(slot),
+    }));
     const keyDown = (event: KeyboardEvent) => {
       // The pattern designer, the confirm and the settings dialog each own the
       // keyboard outright while open, which is a gate over the whole table
       // rather than a condition on any one binding.
       if (editingPatternRef.current || pendingConfirmRef.current || showSettingsRef.current || designingBurstsRef.current || editingOverlayRef.current) return;
+      // The help sheet owns the keys while open, except the one that closes it.
+      if (showHelpRef.current && event.code !== "F1" && event.code !== "Slash") return;
       // The nudge bindings need the event to decide, which `when` cannot see.
       if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.code) && !nudgeable(event)) return;
       keymap.handle(event);
     };
     window.addEventListener("keydown", keyDown, { passive: false });
     return () => { window.removeEventListener("keydown", keyDown); };
-  }, [applyHistory, deleteSelected, duplicateSelected, editorFor, enterPlay, equipInventoryWeapon, exitPlay, flash, saveLevel, setSelection, toggleFullscreen, updateLevel]);
+  }, [applyHistory, deleteSelected, duplicateLevel, duplicateSelected, editorFor, enterPlay, equipInventoryWeapon, exitPlay, flash, saveLevel, setSelection, toggleFullscreen, toggleRates, updateLevel]);
 
   useEffect(() => {
     const canvas = mainCanvasRef.current;
@@ -3553,7 +3538,7 @@ A game exported from the Starline Foundry.
           <span className={`controller-status ${controllerName ? "connected" : ""}`} title={controllerName || "Connect a game controller"}><i />{controllerName ? "CONTROLLER" : "NO GAMEPAD"}</span>
           <div className="history-actions"><button type="button" onClick={() => applyHistory(-1)} disabled={!canUndo || mode !== "build"} title="Undo (Ctrl+Z)">↶</button><button type="button" onClick={() => applyHistory(1)} disabled={!canRedo || mode !== "build"} title="Redo (Ctrl+Y)">↷</button></div>
           <button className="fullscreen-button" type="button" onClick={() => void toggleFullscreen()} aria-pressed={isFullscreen}><kbd>F</kbd> {isFullscreen ? "EXIT FULL" : "FULLSCREEN"}</button>
-          <button className="fullscreen-button" type="button" onClick={() => setShowFps((value) => !value)} aria-pressed={showFps}><kbd>F8</kbd> FPS</button>
+          <button className="fullscreen-button" type="button" onClick={toggleRates} aria-pressed={showFps}><kbd>F8</kbd> FPS</button>
           <button className="fullscreen-button" type="button" onClick={() => { setShowHits((value) => { showHitsRef.current = !value; return !value; }); }} aria-pressed={showHits} title="Outline what the simulation collides against"><b>◎</b> DEBUG</button>
           {showFps && (
             <span className="fps-readout" aria-live="off">
@@ -3566,6 +3551,8 @@ A game exported from the Starline Foundry.
             </span>
           )}
           <button className="fullscreen-button settings-button" type="button" onClick={() => setShowSettings(true)}><b>⚙</b> SETTINGS</button>
+          <button className="fullscreen-button" type="button" onClick={() => setShowHelp(true)} aria-keyshortcuts="F1"><kbd>F1</kbd> HELP</button>
+          {showHelp && <HelpSheet bindings={HELP_BINDINGS} groups={[{ title: "Flying", rows: FLIGHT_KEYS }]} onClose={() => setShowHelp(false)} />}
           {mode === "build" ? <>
             <button className="fullscreen-button present-button" type="button" onClick={() => enterPlay(true)}><b>▣</b> PRESENT</button>
             {/* `() => enterPlay()` rather than `onClick={enterPlay}`: the handler

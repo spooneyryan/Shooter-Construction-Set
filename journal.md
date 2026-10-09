@@ -1181,3 +1181,51 @@ makes removal a set membership test. The cost is honest and worth naming: a
 re-add skips what is already present, edits included, so it will not restore a
 sprite the author has since changed. That is the right default — the alternative
 silently overwrites work.
+
+
+## 2026-10-09 — The keys and the sheets of the construction-set shell, on GameBase 2.0.43
+
+The third adoption slice of GameBase's `docs/SHELL.md` — one frame, one
+key table and one preferences store for every construction set — after
+the Racer and the Platformer the same day. This set keeps its frame and
+its rails on the ElectricBlazor chrome, which this file records as a
+deliberate choice; what it takes is the keys, the help sheet it never had,
+and the preferences schema.
+
+**Bumped to 2.0.43** from the feed (`^2.0.43`, lockfile regenerated).
+
+**What changed.**
+- `app/shortcuts.ts` is `shellBindings` for everything this set can do,
+  then its own: S for the scroll tool, the number keys for the inventory
+  while flying. Starline's table already agreed with the standard
+  everywhere — Ctrl+S, Ctrl+Shift+S, Ctrl+Z, T and Shift+T, Esc, D,
+  Delete, Q and E, the arrows, F, F8, P — so nothing moved; it gains V for
+  the select tool and the standard labels. P is no longer passive, which
+  nothing else listened for; Enter still is. The `createKeymap([...])`
+  block in `StarlineGame.tsx` is the one call over the table; the nudge
+  guard for focused accordion headers and tab strips stays in `keyDown`.
+- A **HELP** button beside SETTINGS, and `?` or `F1`: the studio's
+  `HelpSheet` rendered from the same table the keys are read from, with a
+  Flying group for the input layer's keys. The sheet owns the keyboard
+  while open, except the key that closes it.
+- `editorSettings` is `defineShellSettings` under the namespace it always
+  had, with the same field names it always had — the rails, how their
+  sections fold, the played picture and its numbers — so nothing stored is
+  orphaned; the standard's other fields (text size, sound, the rate
+  readout) arrive with defaults. `F8` writes `showRates` and the readout
+  restores on the next visit, where it used to forget itself.
+
+**Proof.** The two edited files lint clean (the four `installGame`
+warnings are the old ones); `npm test` built the export and passed its
+eleven tests; the app typechecks (the worker scaffolding's four missing
+types are not new). On the dev server in the hidden Browser pane, by DOM
+and synthetic events: HELP in the top bar, F1's sheet with Document ·
+Editing · View · Playing · App · Tools · Flying, T quiet while it was
+open, F1 closing it, S and V flashing SCROLL TOOL and SELECT MODE, D
+quiet with nothing selected, F8 showing the readout and writing the
+store with its thirteen standard fields, T into PLAYTEST, P pausing, Esc
+back to BUILD MODE, Shift+T presenting, Ctrl+S saying LEVEL SAVED TO
+THIS DEVICE. **Not seen:** full screen (a gesture), the inventory keys in
+flight, the lint over the whole tree — it reports thousands of errors
+from a stale `.claude/worktrees/` copy inside the checkout that eslint
+scans, which predates this and is worth deleting.
