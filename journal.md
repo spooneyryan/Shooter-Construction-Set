@@ -1229,3 +1229,12 @@ THIS DEVICE. **Not seen:** full screen (a gesture), the inventory keys in
 flight, the lint over the whole tree — it reports thousands of errors
 from a stale `.claude/worktrees/` copy inside the checkout that eslint
 scans, which predates this and is worth deleting.
+
+## 2026-10-13 — The keys and the sheets go live
+
+Ryan: "I give you explicit permission to do those commands and checks so we
+can get all these published." `master` fast-forwarded to `682c73e`, the
+shell commit, and pushed; the pipeline's run on `master` queued at 22:16 UTC
+and finished green at 22:24. **Live** on the Static Web App: the home page is
+a new build (fresh `index` and `vinext` chunks) and its markup carries the
+HELP button the sheet opens from. Not seen by hand: `F1` on the deployed page.
