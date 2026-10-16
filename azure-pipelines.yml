@@ -45,10 +45,13 @@ stages:
         pool:
           vmImage: ubuntu-latest
         steps:
-          - task: NodeTool@0
+          # UseNode@1, not the deprecated NodeTool@0. The input is `version` here where
+          # NodeTool used `versionSpec`: swap only the task name and the agent quietly
+          # builds on whatever Node it shipped with instead of failing.
+          - task: UseNode@1
             displayName: Use Node 22
             inputs:
-              versionSpec: 22.x
+              version: 22.x
 
           # The GameBase feed lives in the ccllc organization and this
           # pipeline runs in MorrisonHotel, so the build-service identity
