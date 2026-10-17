@@ -8,6 +8,7 @@
   "scripts": {
     "dev": "node build/stage-player.mjs && vinext dev",
     "build": "node build/stage-player.mjs && vinext build",
+    "build:room": "node build/build-room.mjs",
     "start": "vinext start",
     "test": "npm run build && node --experimental-strip-types --test tests/rendered-html.test.mjs tests/explosions.test.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next --ignore-pattern public/player-runtime",

@@ -110,6 +110,24 @@ stages:
               targetPath: dist/client
               artifact: starline-site
 
+          # The same commit again, as a room under the GameBase app, which serves
+          # each construction set's own build under a path of its own (GameBase
+          # docs/GAMEBASE-APP.md). The prefix is baked in and the bundler refuses
+          # a relative one, so the room is a second export; build-room.mjs lays
+          # it out so dist/room is exactly what is served at /starline/, and
+          # fails if the prefix did not reach the build. The GameBase app's
+          # pipeline downloads this artifact; nothing here deploys it.
+          - script: node build/build-room.mjs
+            displayName: Build the GameBase room (/starline/)
+            env:
+              STARLINE_ROOM_PATH: /starline
+
+          - task: PublishPipelineArtifact@1
+            displayName: Publish room artifact
+            inputs:
+              targetPath: dist/room
+              artifact: starline-room
+
   - stage: Deploy
     displayName: Deploy to Static Web Apps
     dependsOn: Build

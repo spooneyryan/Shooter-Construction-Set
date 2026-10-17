@@ -2062,8 +2062,8 @@ export function StarlineGame() {
    * The game as a folder somebody can host, mail or open: the engine, the
    * renderer, a player, the game itself and its music.
    *
-   * The runtime is staged into /player-runtime at build time and fetched back
-   * from this origin here, rather than bundled into the editor -- it is a
+   * The runtime is staged into player-runtime/ beside the page at build time
+   * and fetched back from there, rather than bundled into the editor -- it is a
    * megabyte and a half of engine that only an export needs, and the editor
    * should not carry it on every load. Music is copied under its own folder
    * with a map from the ids the levels name, because the level format holds a
@@ -2072,13 +2072,16 @@ export function StarlineGame() {
   const exportPlayable = useCallback(async () => {
     flash("BUILDING…");
     try {
-      const manifest = await fetch("/player-runtime/manifest.json", { cache: "no-store" }).then((response) => {
+      // Beside the page, not at the origin's root: the editor may be served
+      // as a room under the GameBase app, or under /games/starline/.
+      const runtime = (name: string) => new URL(`player-runtime/${name}`, document.baseURI).toString();
+      const manifest = await fetch(runtime("manifest.json"), { cache: "no-store" }).then((response) => {
         if (!response.ok) throw new Error("the player runtime is not on this server");
         return response.json() as Promise<{ files: string[] }>;
       });
       const entries: ZipEntry[] = [];
       for (const name of manifest.files) {
-        const response = await fetch(`/player-runtime/${name}`, { cache: "no-store" });
+        const response = await fetch(runtime(name), { cache: "no-store" });
         if (!response.ok) throw new Error(`missing ${name}`);
         entries.push({ path: name, data: new Uint8Array(await response.arrayBuffer()) });
       }
