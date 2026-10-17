@@ -1260,3 +1260,53 @@ with a null server snapshot, because the page is prerendered without it.
 shows with no hydration error, and the shared store carries the launcher's
 text size — which this set's own chrome does not yet apply; that comes
 with its move into the shell's frame.
+
+## 2026-10-17 — Into the construction-set shell's frame, on GameBase 2.0.46
+
+Ryan, on GameBase's plan for one app over the four sets: "Please proceed
+with all your recommendations." Decision 7 of that plan
+(docs/GAMEBASE-APP.md): Starline, the one React set still drawing its own
+frame, moves into the shell's.
+
+**What moved.** The top bar, the level bar, the workspace grid with its two
+hand-written resizers, the settings dialog and the shortcut strip are gone.
+In their place: `Shell` with the GameBase home link, the brand as its title,
+the `DocumentBar` over the game's session (PLAYABLE… as its transport verb),
+the mode buttons (undo and redo, DEBUG, FULLSCREEN, TEST RUN or RETURN TO
+BUILD, PRESENT, HELP, SETTINGS), the status line and presenting;
+`Workspace` with the palette and the Inspector as its rails, dropped while
+flying so the stage's canvases stay mounted; `SettingsSheet` for the whole
+of the old dialog, which held only standard preferences; and `HelpSheet`
+with the document chords prepended, since the bar binds Ctrl+S, Ctrl+Shift+S
+and Ctrl+O now. The level's END LEVEL and MODE moved beside its name above
+the list of levels. Inside the rails nothing changed.
+
+**What the bar replaced.** Thirteen functions — rename, new, load, delete,
+undo delete, duplicate, save, its rename-or-save-as-new and unsaved-work
+questions, import, export, share — and the shelf list they kept. Two
+behaviours carried across on purpose: a level file still imports as a
+one-level game (the session's format view converts it, which also covers
+share links), and a refused save still says whether the browser blocked
+storage or ran out of it (`say` translates the bar's generic message).
+The editor takes up whatever the bar opens through one session
+subscription: a rename keeps the levels and is taken as it is; anything else
+is installed from its first level.
+
+**The preferences are the store's.** `displayPrefs`, the section mode and
+the rate readout read `useShellSettings(editorSettings, { prerendered: true })`
+— GameBase 2.0.46's option, made for this page: it is prerendered, so its
+first render is the defaults the server used and the stored values follow
+straight after hydrating. The two-phase effect with its lint suppression is
+gone.
+
+**Proof.** 11 tests; typecheck clean for app/ (the Cloudflare template files
+still fail as before); lint without errors. In the dev server, driven by
+synthetic events: rename through the bar, Save and Ctrl+S, the picker
+listing the shelf and three samples, a sample opened under its own name and
+installed, an edit marking it unsaved, TEST RUN dropping the rails with the
+same canvas element, Esc back, Shift+T presenting with no bar, the help
+sheet with Document first and Flying last, the settings sheet writing CRT to
+the shared store, and a `starline-level` file imported as a one-level game.
+As a room under the GameBase app, the static export hydrated with stored
+widths of 380 and 300, the rate readout and a 125% text size, with no
+hydration error. Not seen by hand: a real drag of a rail, gamepad play.

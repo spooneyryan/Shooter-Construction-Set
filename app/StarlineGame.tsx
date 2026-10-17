@@ -1,15 +1,15 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
-import { createDocumentSession, createHistory, createIndexedDbStorage, createLoop, createPerformanceMonitor, defineLibrary, DocumentError, type DocumentFormat, type PerfStats } from "@ccllc/arcade/core";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createDocumentSession, createHistory, createIndexedDbStorage, createLoop, createPerformanceMonitor, defineLibrary, type DocumentFormat, type PerfStats } from "@ccllc/arcade/core";
 import { useSyncExternalStore } from "react";
 import { createInput, createMusic } from "@ccllc/arcade/platform";
-import { createSelection, createEditorCommands, createKeymap, defineShellSettings, readShellHome } from "@ccllc/arcade/editor";
+import { SHELL_DOCUMENT_SHORTCUTS, createSelection, createEditorCommands, createKeymap, defineShellSettings, readShellHome, type ShellRailLimits } from "@ccllc/arcade/editor";
 import { FLIGHT_KEYS, starlineBindings } from "./shortcuts.js";
 import { uniqueId } from "@ccllc/arcade/core";
 import { createTelemetry } from "@ccllc/arcade/telemetry";
 import { createPixelPresenter, type PixelFilter, type PixelPresenter } from "@ccllc/arcade/render";
-import { BulletPatternStudio, HelpSheet, HitboxEditor, SfxStudio, SpriteStudio, blankImageAsset, drawHitbox, rasterizeHitMask, type PaintSprite } from "@ccllc/studio";
+import { BulletPatternStudio, DocumentBar, HelpSheet, HitboxEditor, SettingsSheet, SfxStudio, Shell, SpriteStudio, Workspace, blankImageAsset, useShellSettings, drawHitbox, rasterizeHitMask, type PaintSprite } from "@ccllc/studio";
 import { advanceBurst, burstFrame, createBurstPreset, createBurstRuntime, drawBurst, normalizeBurst, type BurstDefinition, type BurstRuntime } from "@ccllc/arcade/burst";
 import { createSfxPlayer, createSfxPreset, normalizeSfx, type SfxDefinition } from "@ccllc/arcade/sfx";
 import { EbAccordion, EbAccordionItem, EbDialog, EbNumericInput, EbTabbedCard } from "@electricblazor/react";
@@ -94,17 +94,6 @@ import { SPRITE_PACKS, type SpritePack } from "./sprite-packs.js";
 // through to the default rather than being a type error at the call site.
 
 /**
- * A DocumentError already says what was wrong and in what way -- a file from
- * another application, one from a newer build, truncated JSON -- so it is worth
- * showing instead of the single generic line the hand-rolled import showed for
- * all of them alike. Anything else is a bug or a blocked clipboard, and gets
- * the caller's fallback.
- */
-function documentMessage(error: unknown, fallback: string) {
-  return error instanceof DocumentError ? error.message.toUpperCase() : fallback;
-}
-
-/**
  * Set one effect slot, dropping `fx` entirely once nothing is left in it.
  *
  * The engine normalizes an all-empty `fx` away, so leaving `{}` behind would
@@ -150,104 +139,12 @@ const PANEL_LIMITS = {
  */
 const STAGE_MIN_WIDTH = 460;
 
-type PanelSide = keyof typeof PANEL_LIMITS;
+/** The rails as the shell's Workspace takes them, from the limits above. */
+const STARLINE_RAILS: ShellRailLimits = {
+  palette: { min: PANEL_LIMITS.palette.min, max: PANEL_LIMITS.palette.max, default: PANEL_LIMITS.palette.fallback },
+  inspector: { min: PANEL_LIMITS.inspector.min, max: PANEL_LIMITS.inspector.max, default: PANEL_LIMITS.inspector.fallback },
+};
 
-/**
- * The drag handle between a tool panel and the stage.
- *
- * It reports itself as a separator rather than a slider, because what it moves
- * is a pane boundary; that also brings the arrow/Home/End keys the WAI-ARIA
- * pattern expects, so the handle works without a pointer. Double-click restores
- * the default, which is the cheapest way back from a width dragged to something
- * unusable.
- */
-/* eslint-disable jsx-a11y/no-noninteractive-element-interactions, jsx-a11y/no-noninteractive-tabindex --
-   Both rules treat `separator` as non-interactive, and a plain one is. A
-   FOCUSABLE separator is the WAI-ARIA window-splitter pattern itself: the spec
-   gives it aria-valuenow/min/max and expects it to move under the arrow keys,
-   which is precisely what this is. The rules cannot tell the two apart, so this
-   is a false positive rather than a hole -- and the alternative, a <button>,
-   would announce "press" for something that does not press. Scoped to this
-   component, which exists only for this element. */
-function PanelResizer({ side, width, other, onResize, onCommit }: {
-  side: PanelSide;
-  width: number;
-  /** The opposite panel, because the stage floor is what the two of them share. */
-  other: number;
-  onResize: (width: number) => void;
-  onCommit: (width: number) => void;
-}) {
-  const limits = PANEL_LIMITS[side];
-  const [dragging, setDragging] = useState(false);
-  // Measured rather than stored: the window can be resized between drags, so
-  // the honest ceiling is whatever is spare right now.
-  const ceiling = () => {
-    const room = (document.getElementById("workspace")?.clientWidth ?? 0) - STAGE_MIN_WIDTH - other;
-    return Math.max(limits.min, Math.min(limits.max, room > 0 ? room : limits.max));
-  };
-  const settle = (next: number) => { onResize(next); onCommit(next); };
-  // Dragging the Inspector handle LEFT widens it, so its delta is mirrored:
-  // either panel grows toward the stage.
-  const growth = (fromX: number, toX: number) => (side === "palette" ? toX - fromX : fromX - toX);
-  return (
-    <div
-      className={"panel-resizer " + side + "-resizer" + (dragging ? " is-dragging" : "")}
-      // `position` is inline rather than left to the stylesheet, and it is the
-      // one declaration that has to be. This element is a CHILD of the grid, so
-      // if the rule taking it out of flow is ever missing or late it becomes a
-      // grid item: it claims a column, pushes the panels along and wraps them
-      // onto a second row, which is not a cosmetic glitch but an unusable
-      // editor. That is not hypothetical -- a dev server that had stopped
-      // re-reading globals.css produced exactly it. Appearance can wait for a
-      // stylesheet; being out of flow cannot.
-      style={{
-        position: "absolute",
-        top: 0,
-        bottom: 0,
-        ...(side === "palette" ? { left: "var(--palette-w)" } : { right: "var(--inspector-w)" }),
-      }}
-      role="separator"
-      aria-orientation="vertical"
-      aria-label={side === "palette" ? "Palette width" : "Inspector width"}
-      aria-valuenow={width}
-      aria-valuemin={limits.min}
-      aria-valuemax={limits.max}
-      tabIndex={0}
-      onDoubleClick={() => settle(limits.fallback)}
-      onKeyDown={(event) => {
-        const step = event.shiftKey ? 48 : 12;
-        if (event.key === "ArrowLeft") settle(clamp(width + (side === "palette" ? -step : step), limits.min, ceiling()));
-        else if (event.key === "ArrowRight") settle(clamp(width + (side === "palette" ? step : -step), limits.min, ceiling()));
-        else if (event.key === "Home") settle(limits.min);
-        else if (event.key === "End") settle(ceiling());
-        else return;
-        event.preventDefault();
-      }}
-      onPointerDown={(event) => {
-        if (event.button !== 0) return;
-        event.preventDefault();
-        const handle = event.currentTarget;
-        const startX = event.clientX;
-        const startWidth = width;
-        const top = ceiling();
-        handle.setPointerCapture(event.pointerId);
-        setDragging(true);
-        const move = (moving: PointerEvent) => onResize(clamp(startWidth + growth(startX, moving.clientX), limits.min, top));
-        const done = (ending: PointerEvent) => {
-          handle.removeEventListener("pointermove", move);
-          handle.removeEventListener("pointerup", done);
-          handle.removeEventListener("pointercancel", done);
-          setDragging(false);
-          onCommit(clamp(startWidth + growth(startX, ending.clientX), limits.min, top));
-        };
-        handle.addEventListener("pointermove", move);
-        handle.addEventListener("pointerup", done);
-        handle.addEventListener("pointercancel", done);
-      }}
-    />
-  );
-}
-/* eslint-enable jsx-a11y/no-noninteractive-element-interactions, jsx-a11y/no-noninteractive-tabindex */
 
 /**
  * Which saved Pattern Component a weapon is carrying.
@@ -605,31 +502,15 @@ const editorSettings = defineShellSettings({
   // served from one address (the GameBase app); the rails stay Starline's.
   // The first time, the shared half takes what this store already held.
   shared: true,
-  rails: {
-    palette: { min: PANEL_LIMITS.palette.min, max: PANEL_LIMITS.palette.max, default: PANEL_LIMITS.palette.fallback },
-    inspector: { min: PANEL_LIMITS.inspector.min, max: PANEL_LIMITS.inspector.max, default: PANEL_LIMITS.inspector.fallback },
-  },
+  rails: STARLINE_RAILS,
 });
 
 /** The table once more with nothing behind it, for the help sheet, which reads only the labels. */
 const HELP_BINDINGS = starlineBindings({
-  mode: () => "edit", save() {}, duplicateLevel() {}, undo() {}, redo() {}, test() {}, present() {}, leave() {},
+  mode: () => "edit", undo() {}, redo() {}, test() {}, present() {}, leave() {},
   deleteSelected() {}, duplicateSelected() {}, rotate() {}, nudge() {}, selectTool() {}, deselect() {}, scrollTool() {},
   fullscreen() {}, togglePause() {}, restart() {}, toggleRates() {}, toggleHelp() {}, equip() {},
 });
-
-/** The display preferences as one object, read from the store. */
-function readDisplayPrefs(): DisplayPrefs {
-  return {
-    pixelFilter: editorSettings.get("pixelFilter"),
-    lineBrightness: editorSettings.get("lineBrightness"),
-    bandRows: editorSettings.get("bandRows"),
-    gridThickness: editorSettings.get("gridThickness"),
-    crtAmount: editorSettings.get("crtAmount"),
-    crtGlow: editorSettings.get("crtGlow"),
-    crtNoise: editorSettings.get("crtNoise"),
-  };
-}
 
 /**
  * The one-time carry-over from the hand-rolled key. Toolbar Behavior is a
@@ -731,13 +612,38 @@ const migrateLevelsToGames = () => {
   return moved;
 };
 
+/**
+ * The game format as the session -- and so the document bar -- sees it. A
+ * level file, by import or by link, opens as the one-level game it always
+ * was, which is what Starline's own import did before the shared document
+ * bar took it over; the plain game format would refuse it as foreign.
+ */
+const gameFormat = gameDocument as unknown as DocumentFormat<Game>;
+const levelAsGame = (input: unknown): unknown => {
+  let raw = input;
+  if (typeof raw === "string") {
+    try { raw = JSON.parse(raw); } catch { return input; }
+  }
+  return raw && typeof raw === "object" && (raw as { format?: unknown }).format === "starline-level" ? normalizeShmupGame(raw) : raw;
+};
+const sessionFormat: DocumentFormat<Game> = {
+  ...gameFormat,
+  parse: (input) => gameFormat.parse(levelAsGame(input)),
+  readFile: async (file) => gameFormat.parse(levelAsGame(await file.text())),
+};
+
 const gameSession = createDocumentSession<Game>({
-  format: gameDocument as unknown as DocumentFormat<Game>,
+  format: sessionFormat,
   library: gameLibrary,
   blank: () => emptyShmupGame("Untitled Game"),
   nameOf: (candidate) => candidate.name,
   withName: (candidate, name) => ({ ...candidate, name }),
 });
+
+/** The picker's starting points: each sample level, as the one-level game it opens as. */
+const GAME_SAMPLES = starterLevels.map((sample) => ({ id: sample.key, name: sample.name, document: normalizeShmupGame(sample.build()) }));
+/** The picker's one line about a game. */
+const describeGame = (candidate: Game) => `${candidate.levels.length} level${candidate.levels.length === 1 ? "" : "s"}`;
 
 /**
  * The rule every GameBase editor follows for saving (docs/EDITOR-UX.md in
@@ -1103,7 +1009,6 @@ export function StarlineGame() {
   const home = useSyncExternalStore(subscribeToNothing, readHomeSnapshot, readNoHome);
   const mainCanvasRef = useRef<HTMLCanvasElement>(null);
   const miniCanvasRef = useRef<HTMLCanvasElement>(null);
-  const importRef = useRef<HTMLInputElement>(null);
   const modeRef = useRef<EditorMode>("build");
   const toolRef = useRef<Tool>("select");
   // Selection and commands, created together because the commands need the
@@ -1131,7 +1036,19 @@ export function StarlineGame() {
   // The played picture's treatment. Stored beside the panel widths -- the
   // person's, not the level's -- read after mount like them, and mirrored into
   // a ref because the render loop reads refs.
-  const [displayPrefs, setDisplayPrefs] = useState<DisplayPrefs>(() => readDisplayPrefs());
+  // The preferences as state, from the store. The page is prerendered, so the
+  // first render is the defaults the server used, and this browser's values
+  // follow straight after hydrating (GameBase 2.0.46's `prerendered`).
+  const preferences = useShellSettings(editorSettings, { prerendered: true });
+  const displayPrefs = useMemo<DisplayPrefs>(() => ({
+    pixelFilter: preferences.pixelFilter as DisplayFilter,
+    lineBrightness: preferences.lineBrightness,
+    bandRows: preferences.bandRows,
+    gridThickness: preferences.gridThickness,
+    crtAmount: preferences.crtAmount,
+    crtGlow: preferences.crtGlow,
+    crtNoise: preferences.crtNoise,
+  }), [preferences]);
   const displayPrefsRef = useRef<DisplayPrefs>(displayPrefs);
   useEffect(() => { displayPrefsRef.current = displayPrefs; }, [displayPrefs]);
   const presentCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -1264,11 +1181,6 @@ export function StarlineGame() {
   const [hullMax, setHullMax] = useState(3);
   const [shield, setShield] = useState(0);
   const [progress, setProgress] = useState(0);
-  const [savedEntries, setSavedEntries] = useState<{ id: string; name: string; bytes: number }[]>([]);
-  const [loadName, setLoadName] = useState("");
-  // The third argument is the server snapshot: this page is prerendered, and
-  // without it React refuses to render the store on the server at all.
-  const gameDoc = useSyncExternalStore(gameSession.subscribe, () => gameSession.state, () => gameSession.state);
   /**
    * The open Game, and which of its levels the editor is on.
    *
@@ -1290,8 +1202,8 @@ export function StarlineGame() {
   const [canRedo, setCanRedo] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [fpsStats, setFpsStats] = useState<PerfStats | null>(null);
-  const [showFps, setShowFps] = useState(false);
-  const toggleRates = useCallback(() => { setShowFps((value) => { editorSettings.set("showRates", !value); return !value; }); }, []);
+  const showFps = preferences.showRates;
+  const toggleRates = useCallback(() => { editorSettings.set("showRates", !editorSettings.get("showRates")); }, []);
   /**
    * Debug mode: outline what the simulation actually collides against. Held in
    * a ref as well, because the frame loop reads it and the loop is started once.
@@ -1316,14 +1228,10 @@ export function StarlineGame() {
   // record, kept current so switching to "single" leaves the section you last
   // opened up rather than shutting the panel entirely.
   const [openSections, setOpenSections] = useState<Record<string, string>>({});
-  const [sectionMode, setSectionMode] = useState<SectionMode>("multiple");
+  const sectionMode = preferences.sectionMode as SectionMode;
   const [showSettings, setShowSettings] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   const [presenting, setPresenting] = useState(false);
-  // Annotated, because PANEL_LIMITS is `as const` and the fallback would
-  // otherwise infer as the literal 214 rather than as a width.
-  const [paletteWidth, setPaletteWidth] = useState<number>(PANEL_LIMITS.palette.fallback);
-  const [inspectorWidth, setInspectorWidth] = useState<number>(PANEL_LIMITS.inspector.fallback);
   const [paletteTab, setPaletteTab] = useState<PaletteTab>("objects");
   const [editingAsset, setEditingAsset] = useState<SpriteAsset | null>(null);
   const [editingPattern, setEditingPattern] = useState<{ pattern: BulletPatternDefinition; target: PatternEditorTarget } | null>(null);
@@ -1426,6 +1334,31 @@ export function StarlineGame() {
     const level = gameLevel(normalized, safe);
     if (level) installLevel(level, reset);
   }, [installLevel]);
+
+  // The document bar opens, creates, imports, duplicates and renames through
+  // the session itself. A game the session holds that this editor did not
+  // hand it came from there: a rename keeps the levels and is taken as it is;
+  // anything else is installed from its first level. `seen` keeps an event
+  // that changes only dirty or the shelf from installing the same game twice.
+  const installGameRef = useRef(installGame);
+  useEffect(() => { installGameRef.current = installGame; }, [installGame]);
+  useEffect(() => {
+    let seen = gameSession.state.doc;
+    return gameSession.subscribe((state) => {
+      if (state.doc === seen) return;
+      seen = state.doc;
+      const current = gameRef.current;
+      if (state.doc === current) return;
+      if (state.doc.levels === current.levels) { gameRef.current = state.doc; setGame(state.doc); return; }
+      installGameRef.current(state.doc, 0, true);
+      setCamera(0); editorCameraRef.current = 0;
+    });
+  }, []);
+
+  /** The bar's words in the editor's voice, with the save failure said precisely. */
+  const say = useCallback((message: string) => {
+    flash(message === "Could not save: storage refused it" ? describeSaveFailure() : message.toUpperCase());
+  }, [flash]);
 
   const applyHistory = useCallback((direction: -1 | 1) => {
     const restored = direction < 0 ? historyRef.current.undo() : historyRef.current.redo();
@@ -1541,7 +1474,6 @@ export function StarlineGame() {
         // has to say so, and there is nowhere earlier to say it from.
         if (shared.error) flash("SHARED LINK UNREADABLE");
         else if (moved) flash(`${moved} SAVED LEVEL${moved === 1 ? "" : "S"} ARE NOW GAMES`);
-        setSavedEntries(gameLibrary.list().map(({ id, name }) => ({ id, name, bytes: (JSON.stringify(gameLibrary.read(id)) ?? "").length * 2 })));
       } catch { /* use the starter level */ }
     });
     return () => { stale = true; };
@@ -1552,19 +1484,9 @@ export function StarlineGame() {
   // it can only be read after mount, because the exported HTML was built
   // without it.
   useEffect(() => {
+    // The stored values themselves arrive through useShellSettings's
+    // prerendered snapshot; this only carries the oldest key across once.
     adoptLegacyEditorSettings();
-    // Clamped and defaulted by the schema, so there is nothing to validate here
-    // and no try/catch: a blocked browser gives the store memory, not a throw.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setSectionMode(editorSettings.get("sectionMode"));
-    // The panel widths ride the same two-phase load, for the same reason: the
-    // exported HTML was built with the defaults, so the first client render has
-    // to match them and localStorage only gets a say after mount. They need no
-    // suppression of their own -- the directive above covers the effect.
-    setPaletteWidth(editorSettings.get("paletteWidth"));
-    setInspectorWidth(editorSettings.get("inspectorWidth"));
-    setDisplayPrefs(readDisplayPrefs());
-    setShowFps(editorSettings.get("showRates"));
   }, []);
 
   // The designed explosions, on the same two-phase load and for the same
@@ -1575,18 +1497,6 @@ export function StarlineGame() {
     setExplosions(loadExplosions());
   }, []);
 
-  // Written where the choice is made rather than from an effect on the value:
-  // one control changes it, and an effect would race the restore above and put
-  // the default back over the stored choice on the way in.
-  /** One display preference: into the store, and into the state the dialog and the loop read. */
-  const applyDisplayPref = <K extends keyof DisplayPrefs>(key: K, value: DisplayPrefs[K]) => {
-    editorSettings.set(key, value);
-    setDisplayPrefs((current) => ({ ...current, [key]: value }));
-  };
-  const applySectionMode = useCallback((next: SectionMode) => {
-    setSectionMode(next);
-    editorSettings.set("sectionMode", next);
-  }, []);
 
   // Every edit reaches the session, which autosaves the draft behind a
   // debounce and owns dirty; a load is the one change that is not an edit.
@@ -1601,7 +1511,6 @@ export function StarlineGame() {
     gameRef.current = next; setGame(next);
     gameSession.update(next);
   }, [level]);
-  useEffect(() => gameSession.guardUnload(window), []);
 
   /**
    * Switch to another level of the open game.
@@ -1646,14 +1555,6 @@ export function StarlineGame() {
       },
     });
   }, [flash, openLevelAt]);
-
-  /** The game's own name, which is not a level edit and not on the level's undo stack. */
-  const renameGame = useCallback((name: string) => {
-    const next = { ...gameRef.current, name };
-    gameRef.current = next; setGame(next);
-    gameSession.rename(name);
-    gameSession.update(next);
-  }, []);
 
   const updateLevel = useCallback((updater: (current: Level) => Level, record = true, coalesceKey = "") => {
     const next = normalizeLevel(updater(levelRef.current));
@@ -1985,95 +1886,6 @@ export function StarlineGame() {
     });
   }, [flash, updateLevel]);
 
-  const refreshSaved = useCallback(() => {
-    setSavedEntries(gameLibrary.list().map(({ id, name }) => ({ id, name, bytes: (JSON.stringify(gameLibrary.read(id)) ?? "").length * 2 })));
-  }, []);
-
-  const commitSave = useCallback(() => {
-    const entry = gameSession.save();
-    if (!entry) { flash(describeSaveFailure()); return false; }
-    refreshSaved();
-    setLoadName(entry.id); flash("LEVEL SAVED TO THIS DEVICE");
-    return true;
-  }, [flash, refreshSaved]);
-
-  const duplicateLevel = useCallback(() => {
-    const entry = gameSession.duplicate();
-    if (!entry) { flash(describeSaveFailure()); return; }
-    installGame(gameSession.state.doc, 0, true);
-    refreshSaved();
-    setLoadName(entry.id); flash(`DUPLICATED AS ${entry.name.toUpperCase()} — EDITING THE COPY`);
-  }, [flash, installLevel, refreshSaved]);
-
-  const saveLevel = useCallback(() => {
-    const { id, renamed, savedName, name } = gameSession.state;
-    if (id !== null && renamed && savedName !== null) {
-      // A saved level under a changed name: rename it, or keep the old one
-      // and save this as a new level? The one question the contract asks.
-      setPendingConfirm({
-        title: "RENAME OR SAVE AS NEW?",
-        message: `You changed the name from "${savedName}" to "${name}". Rename the saved level, or keep "${savedName}" as it was and save this as a new level?`,
-        confirmLabel: "RENAME IT",
-        action: () => { commitSave(); },
-        alternate: { label: "SAVE AS NEW LEVEL", action: duplicateLevel },
-      });
-      return;
-    }
-    commitSave();
-  }, [commitSave, duplicateLevel]);
-
-  /** Unsaved work is never thrown away in silence: save it, discard it, or stay. */
-  const withSettledDirty = useCallback((before: string, proceed: () => void) => {
-    if (!gameSession.state.dirty) { proceed(); return; }
-    setPendingConfirm({
-      title: "UNSAVED CHANGES",
-      message: `"${gameSession.state.name}" has unsaved changes. Save them before ${before}?`,
-      confirmLabel: "SAVE AND CONTINUE",
-      action: () => { if (commitSave()) proceed(); },
-      alternate: { label: "DISCARD", action: proceed },
-    });
-  }, [commitSave]);
-
-  const loadLevel = useCallback(() => {
-    if (!loadName) return;
-    if (loadName.startsWith("sample:")) {
-      const sample = starterLevels.find((entry) => `sample:${entry.key}` === loadName);
-      if (!sample) return;
-      withSettledDirty(`loading ${sample.name}`, () => {
-        // A sample opens as a clean starting point; saving it makes it yours.
-        // A sample is a Level; it opens as a one-level game.
-        gameSession.openDocument(normalizeShmupGame(sample.build()), { force: true, dirty: false });
-        installGame(gameSession.state.doc, 0, true); setCamera(0); editorCameraRef.current = 0;
-        flash(`LOADED ${sample.name.toUpperCase()}`);
-      });
-      return;
-    }
-    const entry = savedEntries.find((saved) => saved.id === loadName);
-    if (!entry) { flash("THAT SAVED LEVEL IS NO LONGER AVAILABLE"); return; }
-    withSettledDirty(`loading ${entry.name}`, () => {
-      if (!gameSession.open(entry.id, { force: true })) { flash("THAT SAVED GAME IS NO LONGER AVAILABLE"); refreshSaved(); return; }
-      installGame(gameSession.state.doc, 0, true); setCamera(0); editorCameraRef.current = 0; flash(`LOADED ${entry.name.toUpperCase()}`);
-    });
-  }, [flash, installLevel, loadName, refreshSaved, savedEntries, withSettledDirty]);
-
-  const deleteSavedLevel = useCallback(() => {
-    const entry = savedEntries.find((saved) => saved.id === loadName);
-    if (!entry) return;
-    if (!gameSession.remove(entry.id)) return;
-    refreshSaved(); setLoadName("");
-    flash(`DELETED ${entry.name.toUpperCase()} — UNDO IS BESIDE LOAD FOR A FEW SECONDS`);
-  }, [flash, loadName, refreshSaved, savedEntries]);
-
-  const undoDelete = useCallback(() => {
-    if (gameSession.undoRemove()) { refreshSaved(); flash("RESTORED"); }
-  }, [flash, refreshSaved]);
-
-  // `parse` before handing a level to the format, in both places below. The
-  // editor holds a plain `Level`; the format's document type is that plus the
-  // envelope it stamps (`format`, `savedAt`), and since 2.0.6 the declarations
-  // say so. Nothing changes at runtime -- `serialize` parses whatever it is
-  // given anyway -- so this makes the call sites state the conversion that was
-  // always happening one layer down.
   /**
    * The game as a folder somebody can host, mail or open: the engine, the
    * renderer, a player, the game itself and its music.
@@ -2149,11 +1961,6 @@ A game exported from the Starline Foundry.
     }
   }, [flash]);
 
-  const exportLevel = useCallback(() => {
-    try { gameDocument.download(gameDocument.parse(gameRef.current)); flash("GAME EXPORTED"); }
-    catch (error) { flash(documentMessage(error, "EXPORT FAILED")); }
-  }, [flash]);
-
   /** Everything that changes the shelf goes through here, so the store and the player never disagree. */
   const writeMusicShelf = useCallback((next: MusicPiece[]) => {
     setMusicShelf(next);
@@ -2208,30 +2015,6 @@ A game exported from the Starline Foundry.
       if (started) setPlayingPiece(id); else flash("COULD NOT PLAY THAT TRACK");
     });
   }, [flash, playingPiece]);
-
-  const importLevel = useCallback(async (file: File) => {
-    // A game file or a level file, told apart by normalizeShmupGame: a level
-    // arrives as the one-level game it always was.
-    let parsed: Game;
-    try { parsed = normalizeShmupGame(JSON.parse(await file.text())); }
-    catch (error) { flash(documentMessage(error, "INVALID GAME OR LEVEL FILE")); return; }
-    withSettledDirty("importing a file", () => {
-      // A file opens as unsaved work: it is not on the shelf until saved.
-      gameSession.openDocument(parsed, { force: true });
-      installGame(gameSession.state.doc, 0, true); setCamera(0); editorCameraRef.current = 0; flash("IMPORTED — SAVE IT TO KEEP IT");
-    });
-  }, [flash, installLevel, withSettledDirty]);
-
-  // A whole sector in the URL fragment: no server and no account, the same
-  // trade Pinball already makes. The cap is the library's 256 KB default, and a
-  // sector carrying several hand-drawn sprite assets can reach it -- which is
-  // what the "too large to share" refusal is for.
-  const shareLevel = useCallback(async () => {
-    try {
-      await navigator.clipboard.writeText(gameDocument.shareLink(gameDocument.parse(gameRef.current)));
-      flash("SHARE LINK COPIED");
-    } catch (error) { flash(documentMessage(error, "SHARE FAILED")); }
-  }, [flash]);
 
   // The renderer decides what an explosion looks like. The world only asks for
   // one, which is what lets the simulation stay free of Math.random.
@@ -2374,8 +2157,6 @@ A game exported from the Starline Foundry.
     // owns those codes, preventDefaults them, and releases them on blur.
     const keymap = createKeymap(starlineBindings({
       mode: () => (build() ? "edit" : "play"),
-      save: () => saveLevel(),
-      duplicateLevel: () => duplicateLevel(),
       undo: () => applyHistory(-1),
       redo: () => applyHistory(1),
       test: () => enterPlay(),
@@ -2420,7 +2201,7 @@ A game exported from the Starline Foundry.
     };
     window.addEventListener("keydown", keyDown, { passive: false });
     return () => { window.removeEventListener("keydown", keyDown); };
-  }, [applyHistory, deleteSelected, duplicateLevel, duplicateSelected, editorFor, enterPlay, equipInventoryWeapon, exitPlay, flash, saveLevel, setSelection, toggleFullscreen, toggleRates, updateLevel]);
+  }, [applyHistory, deleteSelected, duplicateSelected, editorFor, enterPlay, equipInventoryWeapon, exitPlay, flash, setSelection, toggleFullscreen, toggleRates, updateLevel]);
 
   useEffect(() => {
     const canvas = mainCanvasRef.current;
@@ -3475,15 +3256,6 @@ A game exported from the Starline Foundry.
     return () => canvas.removeEventListener("wheel", onWheel);
   }, []);
 
-  // Declared here, after setCameraSafe, which is a plain function of the
-  // render; the level bar below is the only caller.
-  const newLevel = () => {
-    withSettledDirty("starting a new level", () => {
-      gameSession.new({ force: true });
-      installGame(gameSession.state.doc, 0, true); setCameraSafe(0); flash("NEW GAME CREATED");
-    });
-  };
-
   // Every collapsible section in both tool panels goes through here: state
   // recorded for palette categories and Inspector sections alike, keyed by a
   // stable slug so a section keeps its state across selection changes, and
@@ -3547,571 +3319,582 @@ A game exported from the Starline Foundry.
     : undefined;
   const editingHitboxPaint = useMemo(() => (editingHitboxItem ? paintItem(editingHitboxItem) : () => undefined), [editingHitboxItem, paintItem]);
 
-  return (
-    <main className={"editor-app" + (presenting ? " is-presenting" : "")}>
-      <header className="topbar">
-        <div className="topbar-start">
-          {home ? <a className="topbar-home" href={home.href}>{home.label}</a> : null}
-          <a className="brand" href="#workspace" aria-label="Starline Foundry"><span className="brand-mark">S</span><span>STARLINE <i>FOUNDRY</i></span></a>
-        </div>
-        <div className="mode-chip"><span className={mode === "build" ? "cyan-dot" : "lime-dot"} />{mode === "build" ? "BUILD MODE" : "PLAYTEST"}</div>
-        <div className="top-actions">
-          <span className="autosave-state">{notice}</span>
-          <span className={`controller-status ${controllerName ? "connected" : ""}`} title={controllerName || "Connect a game controller"}><i />{controllerName ? "CONTROLLER" : "NO GAMEPAD"}</span>
-          <div className="history-actions"><button type="button" onClick={() => applyHistory(-1)} disabled={!canUndo || mode !== "build"} title="Undo (Ctrl+Z)">↶</button><button type="button" onClick={() => applyHistory(1)} disabled={!canRedo || mode !== "build"} title="Redo (Ctrl+Y)">↷</button></div>
-          <button className="fullscreen-button" type="button" onClick={() => void toggleFullscreen()} aria-pressed={isFullscreen}><kbd>F</kbd> {isFullscreen ? "EXIT FULL" : "FULLSCREEN"}</button>
-          <button className="fullscreen-button" type="button" onClick={toggleRates} aria-pressed={showFps}><kbd>F8</kbd> FPS</button>
-          <button className="fullscreen-button" type="button" onClick={() => { setShowHits((value) => { showHitsRef.current = !value; return !value; }); }} aria-pressed={showHits} title="Outline what the simulation collides against"><b>◎</b> DEBUG</button>
-          {showFps && (
-            <span className="fps-readout" aria-live="off">
-              {(["current", "min", "median"] as const).map((key) => (
-                <span key={key}>
-                  {key === "median" ? "med" : key === "current" ? "now" : key}{" "}
-                  <b>{fpsStats?.[key] == null ? "—" : Math.round(fpsStats[key] as number)}</b>
-                </span>
-              ))}
-            </span>
-          )}
-          <button className="fullscreen-button settings-button" type="button" onClick={() => setShowSettings(true)}><b>⚙</b> SETTINGS</button>
-          <button className="fullscreen-button" type="button" onClick={() => setShowHelp(true)} aria-keyshortcuts="F1"><kbd>F1</kbd> HELP</button>
-          {showHelp && <HelpSheet bindings={HELP_BINDINGS} groups={[{ title: "Flying", rows: FLIGHT_KEYS }]} onClose={() => setShowHelp(false)} />}
-          {mode === "build" ? <>
-            <button className="fullscreen-button present-button" type="button" onClick={() => enterPlay(true)}><b>▣</b> PRESENT</button>
-            {/* `() => enterPlay()` rather than `onClick={enterPlay}`: the handler
-                would otherwise hand the click event in as `presented`, and an
-                event object is truthy, so TEST RUN would silently present. */}
-            <button className="test-button" type="button" onClick={() => enterPlay()}><kbd>T</kbd> TEST RUN <b>▶</b></button>
-          </> : <button className="exit-button" type="button" onClick={exitPlay}><kbd>ESC</kbd> RETURN TO BUILD</button>}
-        </div>
-      </header>
-
-      <section className="levelbar" aria-label="Level controls">
-        <label className="level-name"><span>GAME{gameDoc.dirty ? <i className="dirty-dot" title="Unsaved changes" aria-label="Unsaved changes" /> : null}</span><input value={game.name} onChange={(event) => renameGame(event.target.value)} aria-label="Game name" /></label>
-        <label className="length-control"><span>END LEVEL</span><input type="number" min="1600" step="250" value={level.length} onChange={(event) => {
-          const length = Math.max(1600, Number(event.target.value) || 1600);
-          updateLevel((current) => ({ ...current, length }), true, "level-length"); setCameraSafe(Math.min(editorCameraRef.current, length - VIEW_W));
-        }} /><em>u</em></label>
-        <label className="length-control"><span>MODE</span><select value={level.mode} aria-label="Level mode" onChange={(event) => updateLevel((current) => ({ ...current, mode: event.target.value as LevelMode }), true, "level-mode")}>
-          <option value="horizontal">HORIZONTAL</option>
-          <option value="vertical">VERTICAL</option>
-          <option value="arena">ARENA</option>
-        </select></label>
-        <div className="file-actions">
-          <button type="button" onClick={newLevel}>NEW</button>
-          <select value={loadName} onChange={(event) => setLoadName(event.target.value)} aria-label="Saved games"><option value="">LOAD GAME...</option><optgroup label="SAMPLES">{starterLevels.map((sample) => <option value={`sample:${sample.key}`} key={sample.key}>{sample.name}</option>)}</optgroup>{savedEntries.map((entry) => <option value={entry.id} key={entry.id}>{entry.name}{entry.bytes > 200000 ? ` · ${(entry.bytes / 1048576).toFixed(1)} MB` : ""}</option>)}</select>
-          <button type="button" onClick={loadLevel} disabled={!loadName}>LOAD</button>
-          <button type="button" onClick={deleteSavedLevel} disabled={!loadName || loadName.startsWith("sample:")} title="Delete the selected saved level (undo for a few seconds)">DELETE</button>
-          {gameDoc.canUndoRemove && <button type="button" onClick={undoDelete}>UNDO DELETE</button>}
-          <button type="button" onClick={duplicateLevel} title="Copy this level to (copy) and edit the copy (Ctrl+Shift+S)">DUPLICATE</button>
-          <button type="button" className="primary" onClick={saveLevel} disabled={!gameDoc.dirty} title="Save (Ctrl+S)">SAVE</button>
-          <button type="button" onClick={() => importRef.current?.click()}>IMPORT…</button>
-          <button type="button" onClick={exportLevel} title="The game as a .json document">EXPORT</button>
-          <button type="button" onClick={() => void exportPlayable()} title="The game as a folder that plays: engine, player, levels and music">PLAYABLE…</button>
-          <button type="button" onClick={() => void shareLevel()}>SHARE LINK</button>
-          <input ref={musicImportRef} className="hidden-input" type="file" accept="audio/*,.mp3,.ogg,.wav,.m4a,.flac" onChange={(event) => { const file = event.target.files?.[0]; if (file) void importMusic(file); event.target.value = ""; }} />
-          <input ref={importRef} className="hidden-input" type="file" accept="application/json,.json" onChange={(event) => { const file = event.target.files?.[0]; if (file) void importLevel(file); event.target.value = ""; }} />
-        </div>
-      </section>
-
-      <section className={`workspace ${mode !== "build" ? "is-playing" : ""}`} id="workspace" style={{ position: "relative", "--palette-w": `${paletteWidth}px`, "--inspector-w": `${inspectorWidth}px` } as CSSProperties}>
-        <PanelResizer side="palette" width={paletteWidth} other={inspectorWidth} onResize={setPaletteWidth} onCommit={(next) => { setPaletteWidth(next); editorSettings.set("paletteWidth", next); }} />
-        <PanelResizer side="inspector" width={inspectorWidth} other={paletteWidth} onResize={setInspectorWidth} onCommit={(next) => { setInspectorWidth(next); editorSettings.set("inspectorWidth", next); }} />
-        <aside className="palette-panel">
-          <div className="panel-heading"><span>FOUNDRY PALETTE</span><small>{level.items.length} PLACED</small>{sectionControls("palette")}</div>
-          {/* LEVELS above the tabs rather than inside one: which level you are
-              editing is a different axis from what you are placing into it, and
-              it has to be reachable from every tab. */}
-          <div className="level-list">
-            <div className="level-list-head">
-              <span>LEVELS</span>
-              <input
-                className="level-name-field"
-                value={level.name}
-                onChange={(event) => updateLevel((current) => ({ ...current, name: event.target.value }), true, "level-name")}
-                aria-label="Name of the level being edited"
-              />
-            </div>
-            <div className="level-list-items">
-              {game.levels.map((entry, index) => <button
-                type="button"
-                key={index}
-                className={index === levelIndex ? "active" : ""}
-                onClick={() => { if (index !== levelIndex) openLevelAt(index); }}
-                title={`${entry.name} — ${entry.items.length} placed`}
-              ><b>{index + 1}</b><span>{index === levelIndex ? level.name : entry.name}</span><em>{(index === levelIndex ? level.items : entry.items).length}</em></button>)}
-            </div>
-            <div className="level-list-actions">
-              <button type="button" onClick={() => addLevel()} title="Add an empty level to this game">+ LEVEL</button>
-              <button type="button" onClick={() => addLevel(levelRef.current)} title="Copy the level being edited">COPY</button>
-              <button type="button" onClick={() => removeLevelAt(levelIndex)} disabled={game.levels.length <= 1} title="Delete the level being edited">DELETE</button>
-            </div>
-          </div>
-          <div className="tool-strip">
-            {(["select", "scroll", "erase"] as Tool[]).map((value) => <button type="button" className={tool === value ? "active" : ""} onClick={() => { setTool(value); toolRef.current = value; }} key={value}><b>{value === "select" ? "↖" : value === "scroll" ? "↔" : "⌫"}</b>{value.toUpperCase()}</button>)}
-          </div>
-          {/* The OBJECTS / COMPONENTS / ASSETS switch is ElectricBlazor's
-              tabbed card in its bare form, moved below the player card and
-              tools so the strip sits directly on the list it switches — which
-              is also what lets the list live inside the tab panel it belongs
-              to. The third tab arrived with the Components split; equal-width
-              tabs went with it, since ENHANCEMENTS does not fit a third of a
-              214px column. */}
-          <EbTabbedCard<PaletteTab>
-            items={[{ value: "objects", label: "OBJECTS" }, { value: "components", label: "COMPONENTS" }, { value: "assets", label: "ASSETS" }]}
-            value={paletteTab}
-            onValueChange={setPaletteTab}
-            ariaLabel="Palette tabs"
-            appearance="bare"
-            tabStyle="segmented"
-            className="palette-tabs"
-            panelContent={(tab) => <EbAccordion allowMultiple={sectionMode === "multiple"} className="palette-list">
-            {tab === "objects" ? ["ENEMIES", "TERRAIN", "GROUPS", "POWERUPS", "UPGRADES", "DECORATIONS"].map((category) => section(category, category,
-              <div className="palette-category-items">
-                {palette.filter((entry) => entry.category === category).map((entry) => <button type="button" className={`palette-card ${tool === entry.key ? "active" : ""}`} onClick={() => { setTool(entry.key); toolRef.current = entry.key; setInspectPlayer(false); }} key={entry.key}>
-                  <span className={`sprite-icon ${entry.sprite}`} /><span><strong>{entry.label}</strong><small>{entry.meta}</small></span><b>+</b>
-                </button>)}
-              </div>, "palette",
-              // The eye rides in the header rather than beside the section,
-              // because the thing it hides is the thing the section places.
-              // stopPropagation: the header is also the collapse control.
-              <span className="palette-head">
-                <button
-                  type="button"
-                  className="category-eye"
-                  aria-pressed={!hiddenCategories[category]}
-                  title={hiddenCategories[category] ? `Show ${category.toLowerCase()}` : `Hide ${category.toLowerCase()} while editing`}
-                  onClick={(event) => { event.stopPropagation(); event.preventDefault(); setHiddenCategories((current) => ({ ...current, [category]: !current[category] })); }}
-                  onPointerDown={(event) => event.stopPropagation()}
-                ><EyeIcon open={!hiddenCategories[category]} /></button>
-                <span>{category}</span>
-              </span>)) : tab === "components" ? <>
-              {componentSections(shelf, "COMP", componentCategories)}
-              {!shelf.some((component) => componentCategories.includes(componentCategory(component))) && <p className="palette-empty">Nothing here yet. Select an Object and choose SAVE AS COMPONENT to keep it.</p>}
-            </> : <>
-              <div className="asset-actions">{/* The level's default explosions by role -- spark, impact, blast -- as
-                  distinct from + EXPLOSION, which authors one saved explosion. Here rather than
-                  in the top bar, with the other editors. */}<button type="button" onClick={() => setDesigningBursts(true)}>✳ DEFAULT EXPLOSIONS</button><button type="button" onClick={() => setEditingAsset({ id: uid(), name: "New Pixel Art", kind: "raster", width: 16, height: 16, pixels: Array(256).fill("") })}>+ PIXEL ART</button><button type="button" onClick={() => setEditingAsset({ id: uid(), name: "New Vector", kind: "vector", width: 256, height: 256, shapes: [] })}>+ VECTOR SPRITE</button>{/* An image asset is defined by carrying real bytes, so a blank one is a
-                  real transparent PNG rather than an empty string -- which is what
-                  blankImageAsset exists for, and what normalizeAssets would drop. */}<button type="button" onClick={() => setEditingAsset(blankImageAsset(uid(), "New Image", 256, 256))}>+ IMAGE</button><button type="button" onClick={() => setEditingExplosion({ id: `component-${uid()}`, name: "New Explosion", burst: { ...createBurstPreset("Blast"), name: "New Explosion" } })}>+ EXPLOSION</button><button type="button" onClick={() => setEditingSound({ id: `component-${uid()}`, sound: { ...createSfxPreset("Explosion"), name: "New Sound" } })}>+ SOUND</button></div>
-              {/* Ready-made artwork for the fourteen shapes the Foundry draws by
-                  hand. Above the user's own sprites because it is where someone
-                  with nothing drawn yet should start, and because what it adds
-                  lands in the list underneath it. */}
-              {section("PACKS", "SPRITE PACKS", <div className="palette-category-items">{SPRITE_PACKS.map((pack) => {
-                const here = pack.sprites.filter((asset) => level.assets.some((entry) => entry.id === asset.id)).length;
-                const complete = here === pack.sprites.length;
-                return <div className="component-card-row" key={pack.id}>
-                  <button className={`palette-card pack-card ${complete ? "active" : ""}`} type="button" onClick={() => addSpritePack(pack)} title={pack.blurb}>
-                    <PackPreview pack={pack} />
-                    <strong>{pack.name}</strong>
-                    <b>{complete ? "✓" : "ADD"}</b>
-                    <small>{complete ? `ALL ${pack.sprites.length} SPRITES ARE IN THIS LEVEL` : here ? `${here} OF ${pack.sprites.length} HERE` : pack.blurb}</small>
-                  </button>
-                  {here > 0 && <button className="component-delete" type="button" onClick={() => removeSpritePack(pack)} title={`Remove ${pack.name}`}>×</button>}
-                </div>;
-              })}</div>, "palette")}
-              {level.assets.length > 0 && section("SPRITES", "SPRITES", <div className="palette-category-items">{level.assets.map((asset) => <div className="component-card-row" key={asset.id}><button className="palette-card" type="button" onClick={() => setEditingAsset(structuredClone(asset))}><SpriteAssetPreview asset={asset} /><span><strong>{asset.name}</strong><small>{asset.kind.toUpperCase()} / {asset.width}×{asset.height}</small></span><b>EDIT</b></button><button className="component-delete" type="button" onClick={() => deleteSpriteAsset(asset.id)} title="Delete sprite">×</button></div>)}</div>, "palette")}
-              {componentSections(shelf, "ASSET", assetCategories)}
-              {/* The audio lives beside the levels rather than in one, so this
-                  shelf is the game's and every level names a piece from it. */}
-              {section("MUSIC", "MUSIC", <div className="palette-category-items">
-                {musicShelf.map((piece) => {
-                  const inUse = level.music === piece.id;
-                  return <div className="component-card-row music-row" key={piece.id}>
-                    <button
-                      className={`palette-card ${inUse ? "active" : ""}`}
-                      type="button"
-                      title={inUse ? "Playing over this level" : "Play this over this level"}
-                      onClick={() => updateLevel((current) => ({ ...current, music: inUse ? undefined : piece.id }))}
-                    >
-                      <span className="sprite-icon music-note">♪</span>
-                      <span><strong>{piece.name}</strong><small>{(piece.bytes / 1048576).toFixed(1)} MB{inUse ? " / THIS LEVEL" : ""}</small></span>
-                      <b>{inUse ? "IN USE" : "USE"}</b>
-                    </button>
-                    <button className="component-save" type="button" onClick={() => previewMusic(piece.id)} title={playingPiece === piece.id ? "Stop" : "Listen"}>{playingPiece === piece.id ? "■" : "▶"}</button>
-                    <button className="component-delete" type="button" onClick={() => deleteMusic(piece.id)} title="Delete track">×</button>
-                  </div>;
-                })}
-                <div className="asset-actions">
-                  <button type="button" onClick={() => musicImportRef.current?.click()}>+ MUSIC…</button>
-                  {level.music && <button type="button" onClick={() => updateLevel((current) => ({ ...current, music: undefined }))}>SILENCE THIS LEVEL</button>}
-                </div>
-                {!musicShelf.length && <p className="palette-empty">No music yet. Import an MP3, OGG, WAV, M4A or FLAC; it is kept in this browser beside your levels, not inside them.</p>}
-              </div>, "palette")}
-            </>}
-          </EbAccordion>}
+  // The construction-set shell's frame (GameBase docs/SHELL.md): the bar with the
+  // game's document bar and the mode buttons, the rails either side of the
+  // stage, the status line, and presenting. Inside the rails and on the stage,
+  // everything is Starline's own. The rails are dropped while flying rather
+  // than the stage moved, so the canvases the loop holds stay mounted.
+  const paletteRail = (
+    <div className="palette-panel">
+      <div className="panel-heading"><span>FOUNDRY PALETTE</span><small>{level.items.length} PLACED</small>{sectionControls("palette")}</div>
+      {/* LEVELS above the tabs rather than inside one: which level you are
+          editing is a different axis from what you are placing into it, and
+          it has to be reachable from every tab. */}
+      <div className="level-list">
+        <div className="level-list-head">
+          <span>LEVELS</span>
+          <input
+            className="level-name-field"
+            value={level.name}
+            onChange={(event) => updateLevel((current) => ({ ...current, name: event.target.value }), true, "level-name")}
+            aria-label="Name of the level being edited"
           />
-          <p className="palette-hint">{paletteTab === "objects" ? "Choose an object, then click the playfield to place it." : paletteTab === "components" ? "Things that go in the level. Pick a saved Object to tune it in the Inspector and arm it for placing, or apply a weapon, armor or satellite to the selection." : "What things are made of. Author a sprite, explosion, sound or pattern here, then point an object at it."}</p>
-        </aside>
-
-        <section className="stage-panel">
-          <div className="stage-toolbar">
-            <div><span>SECTOR POSITION</span><strong>{Math.round(camera).toString().padStart(5, "0")} — {Math.round(Math.min(level.length, camera + VIEW_W)).toString().padStart(5, "0")}</strong></div>
-            <div className="camera-controls"><button type="button" onClick={() => setCameraSafe(camera - VIEW_W * .7)}>◀</button><input type="range" min="0" max={Math.max(0, level.length - VIEW_W)} value={camera} onChange={(event) => setCameraSafe(Number(event.target.value))} aria-label="Horizontal level position" /><button type="button" onClick={() => setCameraSafe(camera + VIEW_W * .7)}>▶</button></div>
-            <div className="zoom-controls" aria-label="Stage zoom">
-              <button type="button" onClick={() => setZoom(zoomRef.current / 1.25)} title="Zoom out (Ctrl + wheel)">−</button>
-              <span>{Math.round(viewZoom * 100)}%</span>
-              <button type="button" onClick={() => setZoom(zoomRef.current * 1.25)} title="Zoom in (Ctrl + wheel)">+</button>
-              <button type="button" onClick={() => { panRef.current = 0; setZoom(1); }} title="Back to the fit">FIT</button>
+        </div>
+          <div className="level-props">
+              <label className="length-control"><span>END LEVEL</span><input type="number" min="1600" step="250" value={level.length} onChange={(event) => {
+                const length = Math.max(1600, Number(event.target.value) || 1600);
+                updateLevel((current) => ({ ...current, length }), true, "level-length"); setCameraSafe(Math.min(editorCameraRef.current, length - VIEW_W));
+              }} /><em>u</em></label>
+              <label className="length-control"><span>MODE</span><select value={level.mode} aria-label="Level mode" onChange={(event) => updateLevel((current) => ({ ...current, mode: event.target.value as LevelMode }), true, "level-mode")}>
+                <option value="horizontal">HORIZONTAL</option>
+                <option value="vertical">VERTICAL</option>
+                <option value="arena">ARENA</option>
+              </select></label>
+          </div>
+        <div className="level-list-items">
+          {game.levels.map((entry, index) => <button
+            type="button"
+            key={index}
+            className={index === levelIndex ? "active" : ""}
+            onClick={() => { if (index !== levelIndex) openLevelAt(index); }}
+            title={`${entry.name} — ${entry.items.length} placed`}
+          ><b>{index + 1}</b><span>{index === levelIndex ? level.name : entry.name}</span><em>{(index === levelIndex ? level.items : entry.items).length}</em></button>)}
+        </div>
+        <div className="level-list-actions">
+          <button type="button" onClick={() => addLevel()} title="Add an empty level to this game">+ LEVEL</button>
+          <button type="button" onClick={() => addLevel(levelRef.current)} title="Copy the level being edited">COPY</button>
+          <button type="button" onClick={() => removeLevelAt(levelIndex)} disabled={game.levels.length <= 1} title="Delete the level being edited">DELETE</button>
+        </div>
+      </div>
+      <div className="tool-strip">
+        {(["select", "scroll", "erase"] as Tool[]).map((value) => <button type="button" className={tool === value ? "active" : ""} onClick={() => { setTool(value); toolRef.current = value; }} key={value}><b>{value === "select" ? "↖" : value === "scroll" ? "↔" : "⌫"}</b>{value.toUpperCase()}</button>)}
+      </div>
+      {/* The OBJECTS / COMPONENTS / ASSETS switch is ElectricBlazor's
+          tabbed card in its bare form, moved below the player card and
+          tools so the strip sits directly on the list it switches — which
+          is also what lets the list live inside the tab panel it belongs
+          to. The third tab arrived with the Components split; equal-width
+          tabs went with it, since ENHANCEMENTS does not fit a third of a
+          214px column. */}
+      <EbTabbedCard<PaletteTab>
+        items={[{ value: "objects", label: "OBJECTS" }, { value: "components", label: "COMPONENTS" }, { value: "assets", label: "ASSETS" }]}
+        value={paletteTab}
+        onValueChange={setPaletteTab}
+        ariaLabel="Palette tabs"
+        appearance="bare"
+        tabStyle="segmented"
+        className="palette-tabs"
+        panelContent={(tab) => <EbAccordion allowMultiple={sectionMode === "multiple"} className="palette-list">
+        {tab === "objects" ? ["ENEMIES", "TERRAIN", "GROUPS", "POWERUPS", "UPGRADES", "DECORATIONS"].map((category) => section(category, category,
+          <div className="palette-category-items">
+            {palette.filter((entry) => entry.category === category).map((entry) => <button type="button" className={`palette-card ${tool === entry.key ? "active" : ""}`} onClick={() => { setTool(entry.key); toolRef.current = entry.key; setInspectPlayer(false); }} key={entry.key}>
+              <span className={`sprite-icon ${entry.sprite}`} /><span><strong>{entry.label}</strong><small>{entry.meta}</small></span><b>+</b>
+            </button>)}
+          </div>, "palette",
+          // The eye rides in the header rather than beside the section,
+          // because the thing it hides is the thing the section places.
+          // stopPropagation: the header is also the collapse control.
+          <span className="palette-head">
+            <button
+              type="button"
+              className="category-eye"
+              aria-pressed={!hiddenCategories[category]}
+              title={hiddenCategories[category] ? `Show ${category.toLowerCase()}` : `Hide ${category.toLowerCase()} while editing`}
+              onClick={(event) => { event.stopPropagation(); event.preventDefault(); setHiddenCategories((current) => ({ ...current, [category]: !current[category] })); }}
+              onPointerDown={(event) => event.stopPropagation()}
+            ><EyeIcon open={!hiddenCategories[category]} /></button>
+            <span>{category}</span>
+          </span>)) : tab === "components" ? <>
+          {componentSections(shelf, "COMP", componentCategories)}
+          {!shelf.some((component) => componentCategories.includes(componentCategory(component))) && <p className="palette-empty">Nothing here yet. Select an Object and choose SAVE AS COMPONENT to keep it.</p>}
+        </> : <>
+          <div className="asset-actions">{/* The level's default explosions by role -- spark, impact, blast -- as
+              distinct from + EXPLOSION, which authors one saved explosion. Here rather than
+              in the top bar, with the other editors. */}<button type="button" onClick={() => setDesigningBursts(true)}>✳ DEFAULT EXPLOSIONS</button><button type="button" onClick={() => setEditingAsset({ id: uid(), name: "New Pixel Art", kind: "raster", width: 16, height: 16, pixels: Array(256).fill("") })}>+ PIXEL ART</button><button type="button" onClick={() => setEditingAsset({ id: uid(), name: "New Vector", kind: "vector", width: 256, height: 256, shapes: [] })}>+ VECTOR SPRITE</button>{/* An image asset is defined by carrying real bytes, so a blank one is a
+              real transparent PNG rather than an empty string -- which is what
+              blankImageAsset exists for, and what normalizeAssets would drop. */}<button type="button" onClick={() => setEditingAsset(blankImageAsset(uid(), "New Image", 256, 256))}>+ IMAGE</button><button type="button" onClick={() => setEditingExplosion({ id: `component-${uid()}`, name: "New Explosion", burst: { ...createBurstPreset("Blast"), name: "New Explosion" } })}>+ EXPLOSION</button><button type="button" onClick={() => setEditingSound({ id: `component-${uid()}`, sound: { ...createSfxPreset("Explosion"), name: "New Sound" } })}>+ SOUND</button></div>
+          {/* Ready-made artwork for the fourteen shapes the Foundry draws by
+              hand. Above the user's own sprites because it is where someone
+              with nothing drawn yet should start, and because what it adds
+              lands in the list underneath it. */}
+          {section("PACKS", "SPRITE PACKS", <div className="palette-category-items">{SPRITE_PACKS.map((pack) => {
+            const here = pack.sprites.filter((asset) => level.assets.some((entry) => entry.id === asset.id)).length;
+            const complete = here === pack.sprites.length;
+            return <div className="component-card-row" key={pack.id}>
+              <button className={`palette-card pack-card ${complete ? "active" : ""}`} type="button" onClick={() => addSpritePack(pack)} title={pack.blurb}>
+                <PackPreview pack={pack} />
+                <strong>{pack.name}</strong>
+                <b>{complete ? "✓" : "ADD"}</b>
+                <small>{complete ? `ALL ${pack.sprites.length} SPRITES ARE IN THIS LEVEL` : here ? `${here} OF ${pack.sprites.length} HERE` : pack.blurb}</small>
+              </button>
+              {here > 0 && <button className="component-delete" type="button" onClick={() => removeSpritePack(pack)} title={`Remove ${pack.name}`}>×</button>}
+            </div>;
+          })}</div>, "palette")}
+          {level.assets.length > 0 && section("SPRITES", "SPRITES", <div className="palette-category-items">{level.assets.map((asset) => <div className="component-card-row" key={asset.id}><button className="palette-card" type="button" onClick={() => setEditingAsset(structuredClone(asset))}><SpriteAssetPreview asset={asset} /><span><strong>{asset.name}</strong><small>{asset.kind.toUpperCase()} / {asset.width}×{asset.height}</small></span><b>EDIT</b></button><button className="component-delete" type="button" onClick={() => deleteSpriteAsset(asset.id)} title="Delete sprite">×</button></div>)}</div>, "palette")}
+          {componentSections(shelf, "ASSET", assetCategories)}
+          {/* The audio lives beside the levels rather than in one, so this
+              shelf is the game's and every level names a piece from it. */}
+          {section("MUSIC", "MUSIC", <div className="palette-category-items">
+            {musicShelf.map((piece) => {
+              const inUse = level.music === piece.id;
+              return <div className="component-card-row music-row" key={piece.id}>
+                <button
+                  className={`palette-card ${inUse ? "active" : ""}`}
+                  type="button"
+                  title={inUse ? "Playing over this level" : "Play this over this level"}
+                  onClick={() => updateLevel((current) => ({ ...current, music: inUse ? undefined : piece.id }))}
+                >
+                  <span className="sprite-icon music-note">♪</span>
+                  <span><strong>{piece.name}</strong><small>{(piece.bytes / 1048576).toFixed(1)} MB{inUse ? " / THIS LEVEL" : ""}</small></span>
+                  <b>{inUse ? "IN USE" : "USE"}</b>
+                </button>
+                <button className="component-save" type="button" onClick={() => previewMusic(piece.id)} title={playingPiece === piece.id ? "Stop" : "Listen"}>{playingPiece === piece.id ? "■" : "▶"}</button>
+                <button className="component-delete" type="button" onClick={() => deleteMusic(piece.id)} title="Delete track">×</button>
+              </div>;
+            })}
+            <div className="asset-actions">
+              <button type="button" onClick={() => musicImportRef.current?.click()}>+ MUSIC…</button>
+              {level.music && <button type="button" onClick={() => updateLevel((current) => ({ ...current, music: undefined }))}>SILENCE THIS LEVEL</button>}
             </div>
-          </div>
-          {/* While a placement tool is active the sprite under the pointer IS the
-              pointer, so the native arrow is hidden (.placing). */}
-          <div className={`stage-canvas-wrap${tool !== "select" && tool !== "scroll" && tool !== "erase" ? " placing" : ""}`}>
-            <canvas
-              ref={mainCanvasRef}
-              onPointerDown={onCanvasDown}
-              onPointerMove={onCanvasMove}
-              onPointerUp={finishCanvasDrag}
-              onPointerCancel={finishCanvasDrag}
-              onPointerLeave={() => { hoverRef.current = null; }}
-              onContextMenu={(event) => event.preventDefault()}
-              aria-label={mode === "build" ? "Scrollable level editing playfield" : "Playable Starline level"}
-            />
-            {/* The presenter draws here, over the frame above, while a filter is on.
-                Pointer events pass through to the canvas underneath. */}
-            <canvas ref={presentCanvasRef} className="present-canvas" aria-hidden="true" hidden />
-            {mode !== "build" && <div className="play-hud">
-              <div><span>SCORE</span><strong>{score.toString().padStart(6, "0")}</strong></div>
-              <div className="play-progress"><span>SECTOR CLEARANCE</span><i><b style={{ width: `${progress}%` }} /></i></div>
-              <div><span>HULL {lives}/{hullMax}{level.player.armor.type === "forcefield" ? ` // SHIELD ${shield}` : ""}</span><strong className="hull-pips">{Array.from({ length: hullMax }, (_, life) => <i className={life < lives ? "live" : ""} key={life} />)}</strong></div>
-            </div>}
-            {(mode === "paused" || mode === "gameover" || mode === "victory") && <div className="play-overlay">
-              <span>{mode === "paused" ? "FLIGHT SUSPENDED" : mode === "victory" ? "SECTOR SECURED" : "MISSION TERMINATED"}</span>
-              <h1>{mode === "paused" ? "PAUSED" : mode === "victory" ? "LEVEL CLEAR" : "SIGNAL LOST"}</h1>
-              <p>{mode === "paused" ? "Press P or Start to resume. Escape, B, or Back returns to edit." : "Press Enter to run again. Escape, B, or Back returns to the Foundry."}</p>
-              <div><button type="button" onClick={mode === "paused" ? () => { setMode("playing"); modeRef.current = "playing"; } : () => enterPlay(presenting)}>{mode === "paused" ? "RESUME" : "RETRY"}</button><button type="button" onClick={exitPlay}>RETURN TO BUILD</button></div>
-            </div>}
-            {mode === "build" && <div className="build-badge"><span /> LIVE EDITOR <b>SCROLL TO TRAVEL</b></div>}
-          </div>
-          <div className="minimap-block">
-            <div className="minimap-label"><span>LEVEL OVERVIEW</span><strong>DRAG BRACKETS TO NAVIGATE</strong></div>
-            <canvas ref={miniCanvasRef} onPointerDown={onMiniDown} onPointerMove={onMiniMove} onPointerUp={(event) => { miniDragRef.current = null; if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); }} onPointerCancel={() => { miniDragRef.current = null; }} aria-label="Full level minimap. Drag the brackets to navigate." />
-            <div className="minimap-scale"><span>00000</span><span>{Math.round(level.length / 2).toString().padStart(5, "0")}</span><span>{level.length.toString().padStart(5, "0")}</span></div>
-          </div>
-        </section>
+            {!musicShelf.length && <p className="palette-empty">No music yet. Import an MP3, OGG, WAV, M4A or FLAC; it is kept in this browser beside your levels, not inside them.</p>}
+          </div>, "palette")}
+        </>}
+      </EbAccordion>}
+      />
+      <p className="palette-hint">{paletteTab === "objects" ? "Choose an object, then click the playfield to place it." : paletteTab === "components" ? "Things that go in the level. Pick a saved Object to tune it in the Inspector and arm it for placing, or apply a weapon, armor or satellite to the selection." : "What things are made of. Author a sprite, explosion, sound or pattern here, then point an object at it."}</p>
+    </div>
+  );
+  const stagePanel = (
+    <div className="stage-panel">
+      <div className="stage-toolbar">
+        <div><span>SECTOR POSITION</span><strong>{Math.round(camera).toString().padStart(5, "0")} — {Math.round(Math.min(level.length, camera + VIEW_W)).toString().padStart(5, "0")}</strong></div>
+        <div className="camera-controls"><button type="button" onClick={() => setCameraSafe(camera - VIEW_W * .7)}>◀</button><input type="range" min="0" max={Math.max(0, level.length - VIEW_W)} value={camera} onChange={(event) => setCameraSafe(Number(event.target.value))} aria-label="Horizontal level position" /><button type="button" onClick={() => setCameraSafe(camera + VIEW_W * .7)}>▶</button></div>
+        <div className="zoom-controls" aria-label="Stage zoom">
+          <button type="button" onClick={() => setZoom(zoomRef.current / 1.25)} title="Zoom out (Ctrl + wheel)">−</button>
+          <span>{Math.round(viewZoom * 100)}%</span>
+          <button type="button" onClick={() => setZoom(zoomRef.current * 1.25)} title="Zoom in (Ctrl + wheel)">+</button>
+          <button type="button" onClick={() => { panRef.current = 0; setZoom(1); }} title="Back to the fit">FIT</button>
+        </div>
+      </div>
+      {/* While a placement tool is active the sprite under the pointer IS the
+          pointer, so the native arrow is hidden (.placing). */}
+      <div className={`stage-canvas-wrap${tool !== "select" && tool !== "scroll" && tool !== "erase" ? " placing" : ""}`}>
+        <canvas
+          ref={mainCanvasRef}
+          onPointerDown={onCanvasDown}
+          onPointerMove={onCanvasMove}
+          onPointerUp={finishCanvasDrag}
+          onPointerCancel={finishCanvasDrag}
+          onPointerLeave={() => { hoverRef.current = null; }}
+          onContextMenu={(event) => event.preventDefault()}
+          aria-label={mode === "build" ? "Scrollable level editing playfield" : "Playable Starline level"}
+        />
+        {/* The presenter draws here, over the frame above, while a filter is on.
+            Pointer events pass through to the canvas underneath. */}
+        <canvas ref={presentCanvasRef} className="present-canvas" aria-hidden="true" hidden />
+        {mode !== "build" && <div className="play-hud">
+          <div><span>SCORE</span><strong>{score.toString().padStart(6, "0")}</strong></div>
+          <div className="play-progress"><span>SECTOR CLEARANCE</span><i><b style={{ width: `${progress}%` }} /></i></div>
+          <div><span>HULL {lives}/{hullMax}{level.player.armor.type === "forcefield" ? ` // SHIELD ${shield}` : ""}</span><strong className="hull-pips">{Array.from({ length: hullMax }, (_, life) => <i className={life < lives ? "live" : ""} key={life} />)}</strong></div>
+        </div>}
+        {(mode === "paused" || mode === "gameover" || mode === "victory") && <div className="play-overlay">
+          <span>{mode === "paused" ? "FLIGHT SUSPENDED" : mode === "victory" ? "SECTOR SECURED" : "MISSION TERMINATED"}</span>
+          <h1>{mode === "paused" ? "PAUSED" : mode === "victory" ? "LEVEL CLEAR" : "SIGNAL LOST"}</h1>
+          <p>{mode === "paused" ? "Press P or Start to resume. Escape, B, or Back returns to edit." : "Press Enter to run again. Escape, B, or Back returns to the Foundry."}</p>
+          <div><button type="button" onClick={mode === "paused" ? () => { setMode("playing"); modeRef.current = "playing"; } : () => enterPlay(presenting)}>{mode === "paused" ? "RESUME" : "RETRY"}</button><button type="button" onClick={exitPlay}>RETURN TO BUILD</button></div>
+        </div>}
+        {mode === "build" && <div className="build-badge"><span /> LIVE EDITOR <b>SCROLL TO TRAVEL</b></div>}
+      </div>
+      <div className="minimap-block">
+        <div className="minimap-label"><span>LEVEL OVERVIEW</span><strong>DRAG BRACKETS TO NAVIGATE</strong></div>
+        <canvas ref={miniCanvasRef} onPointerDown={onMiniDown} onPointerMove={onMiniMove} onPointerUp={(event) => { miniDragRef.current = null; if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); }} onPointerCancel={() => { miniDragRef.current = null; }} aria-label="Full level minimap. Drag the brackets to navigate." />
+        <div className="minimap-scale"><span>00000</span><span>{Math.round(level.length / 2).toString().padStart(5, "0")}</span><span>{level.length.toString().padStart(5, "0")}</span></div>
+      </div>
+    </div>
+  );
+  const inspectorRail = (
+    <div className="inspector-panel">
+      <div className="panel-heading"><span>INSPECTOR</span>{sectionControls("inspector")}{selected && <button type="button" onClick={deleteSelected}>DELETE {selectedIds.length > 1 ? selectedIds.length : ""}</button>}</div>
+      {inspectPlayer ? <div className="inspector-form player-settings">
+        <div className="type-tag"><span>EDITING</span><strong>PLAYER SHIP</strong><span className={`player-icon ${level.player.sprite.startsWith("asset:") ? "asset-custom" : level.player.sprite}`} /></div>
+        <label className="field wide"><span>SHIP SPRITE</span><select value={level.player.sprite} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, sprite: event.target.value as PlayerSpriteChoice } }), true, "player-sprite")}><optgroup label="PLAYER SHIPS">{["dart", "raven", "nova", "striker"].map((sprite) => <option value={sprite} key={sprite}>{sprite.toUpperCase()}</option>)}</optgroup>{level.assets.length > 0 && <optgroup label="CUSTOM SPRITES">{level.assets.map((asset) => <option value={`asset:${asset.id}`} key={asset.id}>{asset.name.toUpperCase()}</option>)}</optgroup>}</select></label>
+        <RangeField name="SHIP HUE TINT" label={<>SHIP HUE TINT</>} display={`${level.player.tint}°`} min="0" max="359" value={level.player.tint} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, tint: Number(event.target.value) } }), true, "player-tint")} />
+        <RangeField name="SHIP SCALE" label={<>SHIP SCALE</>} display={`${level.player.scale.toFixed(2)}×`} min="0.05" max="8" step="0.05" value={level.player.scale} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, scale: Number(event.target.value) } }), true, "player-scale")} />
+        <p className="inspector-note">The ship is its sprite&apos;s own size; this scales it. A custom sprite drawn at 1× is drawn pixel for pixel, so scaling down stays sharp. The hitbox is the sprite, so a bigger ship really is a bigger target.</p>
+        <GlowField glow={level.player.glow} onChange={(glow) => updateLevel((current) => ({ ...current, player: { ...current.player, glow } }), true, "player-glow")} />
+        <EbAccordion allowMultiple={sectionMode === "multiple"} className="inspector-sections">
+        {section("flight", "FLIGHT", <>
+          <RangeField name="X SPEED" label={<>X SPEED</>} display={`${level.player.xSpeed}u/s`} min="100" max="800" step="10" value={level.player.xSpeed} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, xSpeed: Number(event.target.value) } }), true, "player-x-speed")} />
+          <RangeField name="Y SPEED" label={<>Y SPEED</>} display={`${level.player.ySpeed}u/s`} min="100" max="800" step="10" value={level.player.ySpeed} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, ySpeed: Number(event.target.value) } }), true, "player-y-speed")} />
+          {/* Where the ship may fly: how far in from each edge of the screen it
+              must stay. The engine keeps the box in the sector's own frame, and a
+              vertical level is turned a quarter turn, so each slider here sits
+              under the screen edge it actually guards. */}
+          {(["LEFT", "RIGHT", "TOP", "BOTTOM"] as const).map((edge) => {
+            const key = level.mode === "vertical"
+              ? ({ LEFT: "top", RIGHT: "bottom", TOP: "right", BOTTOM: "left" } as const)[edge]
+              : ({ LEFT: "left", RIGHT: "right", TOP: "top", BOTTOM: "bottom" } as const)[edge];
+            return <RangeField key={edge} name={`${edge} LIMIT`} label={<>{edge} LIMIT</>} display={`${level.player.limits[key]}%`} min="0" max={key === "right" ? 80 : 45} step="1" value={level.player.limits[key]} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, limits: { ...current.player.limits, [key]: Number(event.target.value) } } }), true, `player-limit-${key}`)} />;
+          })}
+          <p className="inspector-note">How far in from each edge of the screen the ship must stay, as a share of the screen. The arena has no nose: it ignores the far edge and mirrors the near one.</p>
+        </>)}
+        {section("fire-mods", "GLOBAL FIRE MODIFIERS", <>
+          <RangeField name="SHOT SPEED" label={<>SHOT SPEED</>} display={`${level.player.shotSpeed}u/s`} min="200" max="1600" step="25" value={level.player.shotSpeed} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, shotSpeed: Number(event.target.value) } }), true, "player-shot-speed")} />
+          <RangeField name="SHOT POWER" label={<>SHOT POWER</>} display={`${level.player.shotPower}`} min="100" max="1000" step="100" value={level.player.shotPower} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, shotPower: Number(event.target.value) } }), true, "player-shot-power")} />
+          <p className="inspector-note">Minimum player firepower is 100. Enemies at or below the current value are destroyed in one shot.</p>
+        </>)}
+        {section("slots", "WEAPON SLOTS & INVENTORY", <>
+          <RangeField name="ACTIVE SLOTS" label={<>ACTIVE SLOTS</>} display={`${level.player.weaponSlots.length}`} min="1" max="4" value={level.player.weaponSlots.length} onChange={(event) => updateLevel((current) => { const count = Number(event.target.value); const slots = current.player.weaponSlots.slice(0, count); while (slots.length < count) slots.push({ id: uid(), name: `SLOT ${slots.length + 1}`, accepts: "standard", weaponId: current.player.inventory[0] ?? "weapon-pulse" }); return { ...current, player: { ...current.player, weaponSlots: slots } }; }, true, "player-slot-count")} />
+          <RangeField name="INVENTORY LIMIT" label={<>INVENTORY LIMIT</>} display={`${level.player.inventoryLimit}`} min="1" max="12" value={level.player.inventoryLimit} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, inventoryLimit: Number(event.target.value), inventory: current.player.inventory.slice(0, Number(event.target.value)) } }), true, "player-inventory-limit")} />
+          {level.player.weaponSlots.map((slot, index) => <div className="equipment-slot" key={slot.id}><strong>{slot.name}</strong><label className="field"><span>ACCEPTS</span><select value={slot.accepts} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, weaponSlots: current.player.weaponSlots.map((entry) => entry.id === slot.id ? { ...entry, accepts: event.target.value } : entry) } }))}><option value="any">ANY</option><option value="standard">STANDARD</option><option value="light">LIGHT</option><option value="heavy">HEAVY</option><option value="satellite">SATELLITE</option></select></label><label className="field"><span>WEAPON</span><select value={slot.weaponId} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, weaponSlots: current.player.weaponSlots.map((entry) => entry.id === slot.id ? { ...entry, weaponId: event.target.value } : entry) } }))}>{level.components.filter((component) => component.kind === "weapon" && weaponFitsSlot(component, slot.accepts)).map((component) => <option value={component.id} key={component.id}>{component.name.toUpperCase()}</option>)}</select></label>{(() => { const weaponComponent = level.components.find((component) => component.id === slot.weaponId); if (!weaponComponent?.weapon) return null; return <>
+          {/* Where each slot's gun sits on the ship, forward and across in world units.
+              The defaults are where the slots have always fired from -- the nose, fanned
+              nine units apart -- and the sights on the playfield show the spots while the
+              ship is selected. */}
+          {level.player.weaponSlots.map((slot, index) => <div className="field-grid" key={`mount-${slot.id}`}>
+            <RangeField name={`${slot.name} MOUNT FWD`} label={<>{slot.name} MOUNT FWD</>} display={`${slot.mount ? `${slot.mount.x}u` : "NOSE"}`} min="-60" max="120" step="1" value={slot.mount?.x ?? 29} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, weaponSlots: current.player.weaponSlots.map((entry, i) => entry.id === slot.id ? { ...entry, mount: { x: Number(event.target.value), y: entry.mount?.y ?? Math.round((i - (current.player.weaponSlots.length - 1) / 2) * 9) } } : entry) } }), true, "slot-mount")} />
+            <RangeField name={`${slot.name} MOUNT ACROSS`} label={<>{slot.name} MOUNT ACROSS</>} display={`${slot.mount ? `${slot.mount.y}u` : "FANNED"}`} min="-80" max="80" step="1" value={slot.mount?.y ?? Math.round((index - (level.player.weaponSlots.length - 1) / 2) * 9)} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, weaponSlots: current.player.weaponSlots.map((entry) => entry.id === slot.id ? { ...entry, mount: { x: entry.mount?.x ?? 29, y: Number(event.target.value) } } : entry) } }), true, "slot-mount")} />
+          </div>)}
+            {/* The pattern belongs to the WEAPON Component, not to the slot,
+                so every slot carrying this weapon changes together. That is
+                the data model rather than a shortcut: a weapon is one saved
+                thing, and two mounts firing the same gun differently would
+                be two guns. */}
+            <BulletPatternField components={patternComponents} pattern={weaponComponent.weapon.pattern} onApply={(next) => updateLevel((current) => ({ ...current, components: current.components.map((entry) => entry.id === weaponComponent.id ? { ...entry, weapon: entry.weapon ? { ...entry.weapon, pattern: next } : entry.weapon } : entry) }))} />
+            <button className="inspector-action" type="button" onClick={() => setEditingPattern({ pattern: structuredClone(weaponComponent.weapon!.pattern ?? createPatternPreset("Pendulum Sweep")), target: { kind: "weapon", id: weaponComponent.id } })}>{weaponComponent.weapon.pattern ? "EDIT THIS PATTERN" : "DESIGN A PATTERN"}</button>
+          </>; })()}<small>Fires simultaneously from mount {index + 1}.</small></div>)}
+          <div className="inventory-grid">{level.components.filter((component) => component.kind === "weapon").map((component) => { const carried = level.player.inventory.includes(component.id); return <button type="button" className={carried ? "active" : ""} onClick={() => updateLevel((current) => { const inventory = carried ? current.player.inventory.filter((id) => id !== component.id) : [...current.player.inventory, component.id].slice(0, current.player.inventoryLimit); return { ...current, player: { ...current.player, inventory } }; })} key={component.id}>{carried ? "✓ " : "+ "}{component.name}</button>; })}</div>
+        </>)}
+        {section("armor", "ARMOR & FORCE FIELD", <>
+          <label className="field wide"><span>ARMOR TYPE</span><select value={level.player.armor.type} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, armor: defaultArmor(event.target.value as ArmorType) } }))}>{["none", "standard", "heavy", "ablative", "forcefield"].map((type) => <option value={type} key={type}>{type.toUpperCase()}</option>)}</select></label>
+          <RangeField name={`${level.player.armor.type === "forcefield" ? "SHIELD CAPACITY" : "ARMOR CAPACITY"}`} label={<>{level.player.armor.type === "forcefield" ? "SHIELD CAPACITY" : "ARMOR CAPACITY"}</>} display={`${level.player.armor.capacity}`} min="1" max={level.player.armor.type === "forcefield" ? 1000 : 12} step={level.player.armor.type === "forcefield" ? 25 : 1} value={level.player.armor.capacity} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, armor: { ...current.player.armor, capacity: Number(event.target.value) } } }))} />
+          <RangeField name="DAMAGE TAKEN" label={<>DAMAGE TAKEN</>} display={`${Math.round(level.player.armor.damageMultiplier * 100)}%`} scale={100} min="0.1" max="1" step="0.05" value={level.player.armor.damageMultiplier} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, armor: { ...current.player.armor, damageMultiplier: Number(event.target.value) } } }))} />
+          {level.player.armor.type === "forcefield" && <><RangeField name="RECHARGE DELAY" label={<>RECHARGE DELAY</>} display={`${level.player.armor.rechargeDelay.toFixed(1)}s`} min="0" max="8" step="0.25" value={level.player.armor.rechargeDelay} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, armor: { ...current.player.armor, rechargeDelay: Number(event.target.value) } } }))} /><RangeField name="RECHARGE RATE" label={<>RECHARGE RATE</>} display={`${level.player.armor.rechargeRate}/s`} min="0" max="250" step="5" value={level.player.armor.rechargeRate} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, armor: { ...current.player.armor, rechargeRate: Number(event.target.value) } } }))} /></>}
+          <button className="inspector-action" type="button" onClick={() => saveArmorComponent(level.player.armor)}>SAVE AS ARMOR COMPONENT</button>
+        </>)}
+        {section("satellite", "SATELLITE SHIP", <>
+          <label className="toggle-row"><span>ENABLED</span><input type="checkbox" checked={level.player.satellite.enabled} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, satellite: { ...current.player.satellite, enabled: event.target.checked } } }))} /><i /></label>
+          <label className="field wide"><span>CONTROL MODE</span><select value={level.player.satellite.mode} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, satellite: { ...current.player.satellite, mode: event.target.value as SatelliteMode } } }))}><option value="orbit">ORBIT</option><option value="tether">TETHERED FREE MOVE</option><option value="aim">AIM ON RADIUS</option></select></label>
+          <RangeField name="RANGE" label={<>RANGE</>} display={`${level.player.satellite.range}u`} min="50" max="280" value={level.player.satellite.range} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, satellite: { ...current.player.satellite, range: Number(event.target.value) } } }))} />
+          <RangeField name="SPEED" label={<>SPEED</>} display={`${level.player.satellite.speed}u/s`} min="100" max="800" step="10" value={level.player.satellite.speed} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, satellite: { ...current.player.satellite, speed: Number(event.target.value) } } }))} />
+          <label className="field wide"><span>SATELLITE WEAPON</span><select value={level.player.satellite.weaponId} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, satellite: { ...current.player.satellite, weaponId: event.target.value } } }))}>{level.components.filter((component) => component.kind === "weapon").map((component) => <option value={component.id} key={component.id}>{component.name.toUpperCase()}</option>)}</select></label>
+          {/* The satellite carries a Weapon Component like any mount, so its
+              pattern is reachable the same way rather than only through the
+              designer. Editing it edits that weapon everywhere it is used. */}
+          {(() => { const satWeapon = level.components.find((component) => component.id === level.player.satellite.weaponId); if (!satWeapon?.weapon) return null; return <BulletPatternField components={patternComponents} pattern={satWeapon.weapon.pattern} onApply={(next) => updateLevel((current) => ({ ...current, components: current.components.map((entry) => entry.id === satWeapon.id ? { ...entry, weapon: entry.weapon ? { ...entry.weapon, pattern: next } : entry.weapon } : entry) }))} />; })()}
+          <label className="field wide"><span>SATELLITE ARMOR</span><select value={level.player.satellite.armor.type} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, satellite: { ...current.player.satellite, armor: defaultArmor(event.target.value as ArmorType) } } }))}>{["none", "standard", "heavy", "ablative", "forcefield"].map((type) => <option value={type} key={type}>{type.toUpperCase()}</option>)}</select></label>
+          <RangeField name={`${level.player.satellite.armor.type === "forcefield" ? "SATELLITE SHIELD" : "SATELLITE HULL"}`} label={<>{level.player.satellite.armor.type === "forcefield" ? "SATELLITE SHIELD" : "SATELLITE HULL"}</>} display={`${level.player.satellite.armor.capacity}`} min="1" max={level.player.satellite.armor.type === "forcefield" ? 600 : 10} step={level.player.satellite.armor.type === "forcefield" ? 25 : 1} value={level.player.satellite.armor.capacity} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, satellite: { ...current.player.satellite, armor: { ...current.player.satellite.armor, capacity: Number(event.target.value) } } } }))} />
+          <button className="inspector-action" type="button" onClick={() => saveSatelliteComponent(level.player.satellite)}>SAVE AS SATELLITE COMPONENT</button>
+        </>)}
+        </EbAccordion>
+      </div> : editingEquipment ? <div className="inspector-form">
+        {/* The three Components that bolt onto something rather than being
+            placed. One Component is one saved thing, so an edit here reaches
+            every object it has been applied to and every slot it is equipped
+            in -- which is the whole reason for saving one. */}
+        <div className="multi-selection-note"><strong>EDITING THE COMPONENT</strong><span>Changes reach everything carrying <b>{editingEquipment.name}</b>, and are saved to the palette rather than to any one object.</span></div>
+        <label className="field wide"><span>NAME</span><input value={editingEquipment.name} onChange={(event) => writeComponent(editingEquipment.id, (component) => ({ ...component, name: event.target.value }))} /></label>
+        <div className="type-tag"><span>TYPE</span><strong>{editingEquipment.kind.toUpperCase()}</strong><i className={`sprite-icon ${editingEquipment.kind === "weapon" ? "turret" : editingEquipment.kind === "armor" ? "energy" : "upgrade"}`} /></div>
+        <EbAccordion allowMultiple={sectionMode === "multiple"} className="inspector-sections">
+        {equipWeapon && <>
+          {section("comp-weapon", "FIRE", <>
+            <RangeField name="POWER" label={<>POWER</>} display={`${equipWeapon.power}`} min="10" max="600" step="5" value={equipWeapon.power} onChange={(event) => writeEquipWeapon({ power: Number(event.target.value) })} />
+            <p className="inspector-note">A hundred is what the built-in cannons do. Put on an enemy it becomes {Math.max(1, Math.round(equipWeapon.power / 100))} hit{Math.max(1, Math.round(equipWeapon.power / 100)) === 1 ? "" : "s"} of damage, which is the scale an object&apos;s own gun is authored in.</p>
+            <RangeField name="RATE" label={<>RATE</>} display={`${equipWeapon.shotsPerSecond.toFixed(1)}/s`} min="0.5" max="20" step="0.1" value={equipWeapon.shotsPerSecond} onChange={(event) => writeEquipWeapon({ shotsPerSecond: Number(event.target.value) })} />
+            <RangeField name="COOLDOWN" label={<>COOLDOWN</>} display={equipWeapon.cooldown ? `+${equipWeapon.cooldown.toFixed(2)}s` : "NONE"} min="0" max="3" step="0.05" value={equipWeapon.cooldown} onChange={(event) => writeEquipWeapon({ cooldown: Number(event.target.value) })} />
+            <RangeField name="SPREAD" label={<>SPREAD</>} display={`${equipWeapon.spread} SHOT${equipWeapon.spread === 1 ? "" : "S"}`} min="1" max="5" step="1" value={equipWeapon.spread} onChange={(event) => writeEquipWeapon({ spread: Number(event.target.value) })} />
+          </>)}
+          {section("comp-bullet", "PROJECTILE", <>
+            <div className="field-grid">
+              <label className="field"><span>SPRITE</span><select value={equipWeapon.projectile} onChange={(event) => writeEquipWeapon({ projectile: event.target.value })}><option value="bolt">BOLT</option><option value="plasma">PLASMA</option></select></label>
+              <label className="field"><span>MOTION</span><select value={equipWeapon.projectileMovement} onChange={(event) => writeEquipWeapon({ projectileMovement: event.target.value as "straight" | "sine" })}><option value="straight">STRAIGHT</option><option value="sine">SINE</option></select></label>
+            </div>
+            <RangeField name="PROJECTILE SPEED" label={<>PROJECTILE SPEED</>} display={`${equipWeapon.projectileSpeed}u/s`} min="100" max="1600" step="20" value={equipWeapon.projectileSpeed} onChange={(event) => writeEquipWeapon({ projectileSpeed: Number(event.target.value) })} />
+            <label className="field wide"><span>BULLET COLOUR</span><input type="color" value={equipWeapon.color} onChange={(event) => writeEquipWeapon({ color: event.target.value })} /></label>
+            <BulletPatternField components={patternComponents} pattern={equipWeapon.pattern} onApply={(next) => writeEquipWeapon({ pattern: next })} />
+            <button className="inspector-action pattern-designer-button" type="button" onClick={() => setEditingPattern({ pattern: structuredClone(equipWeapon.pattern ?? createPatternPreset("Pendulum Sweep")), target: { kind: "weapon", id: equipId } })}>{equipWeapon.pattern ? "EDIT THIS PATTERN" : "DESIGN A PATTERN"}</button>
+          </>)}
+          {section("comp-fit", "HOW IT IS CARRIED", <>
+            {/* `tag` decides which slots will take it and `gun` is the firing
+                model the world uses. Neither means anything to an enemy,
+                which fires whatever it is handed. */}
+            <div className="field-grid">
+              <label className="field"><span>FITS SLOTS</span><select value={equipWeapon.tag} onChange={(event) => writeEquipWeapon({ tag: event.target.value })}>{["standard", "light", "heavy", "satellite"].map((tag) => <option value={tag} key={tag}>{tag.toUpperCase()}</option>)}</select></label>
+              <label className="field"><span>FIRING MODEL</span><select value={equipWeapon.gun} onChange={(event) => writeEquipWeapon({ gun: event.target.value as GunType })}>{["pulse", "spread", "rapid"].map((kind) => <option value={kind} key={kind}>{kind.toUpperCase()}</option>)}</select></label>
+            </div>
+            <p className="inspector-note">A slot takes a weapon whose FITS SLOTS matches what that slot accepts, or anything at all if it accepts ANY.</p>
+          </>)}
+        </>}
+        {equipArmor && <>
+          {section("comp-armor", "PROTECTION", <>
+            <label className="field wide"><span>ARMOR TYPE</span><select value={equipArmor.type} onChange={(event) => writeComponent(equipId, (component) => ({ ...component, armor: defaultArmor(event.target.value as ArmorType) }))}>{["none", "standard", "heavy", "ablative", "forcefield"].map((type) => <option value={type} key={type}>{type.toUpperCase()}</option>)}</select></label>
+            <RangeField name={equipArmor.type === "forcefield" ? "SHIELD" : "HULL"} label={<>{equipArmor.type === "forcefield" ? "SHIELD" : "HULL"}</>} display={`${equipArmor.capacity}`} min="1" max={equipArmor.type === "forcefield" ? 1000 : 10} step={equipArmor.type === "forcefield" ? 25 : 1} value={equipArmor.capacity} onChange={(event) => writeEquipArmor({ capacity: Number(event.target.value) })} />
+            <RangeField name="DAMAGE TAKEN" label={<>DAMAGE TAKEN</>} display={`${Math.round(equipArmor.damageMultiplier * 100)}%`} scale={100} min="0" max="2" step="0.05" value={equipArmor.damageMultiplier} onChange={(event) => writeEquipArmor({ damageMultiplier: Number(event.target.value) })} />
+            {equipArmor.type === "forcefield" && <><RangeField name="RECHARGE DELAY" label={<>RECHARGE DELAY</>} display={`${equipArmor.rechargeDelay.toFixed(2)}s`} min="0" max="6" step="0.1" value={equipArmor.rechargeDelay} onChange={(event) => writeEquipArmor({ rechargeDelay: Number(event.target.value) })} />
+            <RangeField name="RECHARGE RATE" label={<>RECHARGE RATE</>} display={`${equipArmor.rechargeRate}/s`} min="0" max="250" step="5" value={equipArmor.rechargeRate} onChange={(event) => writeEquipArmor({ rechargeRate: Number(event.target.value) })} /></>}
+            <p className="inspector-note">{equipArmor.type === "forcefield" ? "A force field absorbs damage and comes back after the delay. The hull underneath is untouched until the field is down." : "Hull pips. There is nothing to recharge, so the delay and rate do not apply."}</p>
+          </>)}
+        </>}
+        {equipSatellite && <>
+          {section("comp-satellite", "SATELLITE", <>
+            <label className="field wide"><span>CONTROL MODE</span><select value={equipSatellite.mode} onChange={(event) => writeEquipSatellite({ mode: event.target.value as SatelliteMode })}><option value="orbit">ORBIT</option><option value="tether">TETHER</option><option value="aim">AIM</option></select></label>
+            <RangeField name="RANGE" label={<>RANGE</>} display={`${equipSatellite.range}u`} min="50" max="280" value={equipSatellite.range} onChange={(event) => writeEquipSatellite({ range: Number(event.target.value) })} />
+            <RangeField name="SPEED" label={<>SPEED</>} display={`${equipSatellite.speed}u/s`} min="100" max="800" step="10" value={equipSatellite.speed} onChange={(event) => writeEquipSatellite({ speed: Number(event.target.value) })} />
+            <label className="field wide"><span>WEAPON</span><select value={equipSatellite.weaponId} onChange={(event) => writeEquipSatellite({ weaponId: event.target.value })}>{level.components.filter((component) => component.kind === "weapon").map((component) => <option value={component.id} key={component.id}>{component.name.toUpperCase()}</option>)}</select></label>
+            <label className="field wide"><span>SATELLITE ARMOR</span><select value={equipSatellite.armor.type} onChange={(event) => writeEquipSatellite({ armor: defaultArmor(event.target.value as ArmorType) })}>{["none", "standard", "heavy", "ablative", "forcefield"].map((type) => <option value={type} key={type}>{type.toUpperCase()}</option>)}</select></label>
+            <RangeField name={equipSatellite.armor.type === "forcefield" ? "SATELLITE SHIELD" : "SATELLITE HULL"} label={<>{equipSatellite.armor.type === "forcefield" ? "SATELLITE SHIELD" : "SATELLITE HULL"}</>} display={`${equipSatellite.armor.capacity}`} min="1" max={equipSatellite.armor.type === "forcefield" ? 600 : 10} step={equipSatellite.armor.type === "forcefield" ? 25 : 1} value={equipSatellite.armor.capacity} onChange={(event) => writeEquipSatellite({ armor: { ...equipSatellite.armor, capacity: Number(event.target.value) } })} />
+            <p className="inspector-note">The satellite is held a little off the far edge of the screen, so a long range does not put it out past where the ship may fly.</p>
+          </>)}
+        </>}
+        </EbAccordion>
+        {/* The equipping that clicking this card used to do by itself.
+            Said out loud, because changing the player's loadout is not what
+            "open this for editing" should quietly mean. */}
+        <button className="inspector-action" type="button" onClick={() => equipToPlayer(editingEquipment)}>{editingEquipment.kind === "weapon" ? "ADD TO INVENTORY & EQUIP" : "EQUIP TO PLAYER SHIP"}</button>
+        <p className="inspector-note">To put this on an enemy instead, select the enemy and click this Component in the palette.</p>
+      </div> : !subject ? <div className="empty-inspector"><b>NO OBJECT SELECTED</b><p>Use the Select tool and choose an object to tune its behavior, or pick a saved Component from the palette to tune the Component itself. The player ship is in the palette too.</p></div> : <div className="inspector-form">
+        {/* Which of the two this form is editing. A Component's template has
+            no place in the sector, so its edits reach every future
+            placement rather than one object -- which is worth saying
+            plainly, because the form underneath is otherwise identical. */}
+        {editingComponent && <div className="multi-selection-note"><strong>EDITING THE COMPONENT</strong><span>Changes are saved to <b>{editingComponent.name}</b> in the palette, not to anything already placed. Click the playfield to place one.</span></div>}
+        {subjectIds.length > 1 && <div className="multi-selection-note"><strong>{subjectIds.length} OBJECTS SELECTED</strong><span>Move, duplicate, delete, rotate, or scale them together. The Inspector edits the primary Object.</span></div>}
+        {!editingComponent && <div className="component-actions"><button type="button" onClick={() => saveObjectComponent(false)}>SAVE AS COMPONENT</button>{subject.componentId && <button type="button" onClick={() => saveObjectComponent(true)}>UPDATE COMPONENT</button>}</div>}
+        <label className="field wide"><span>NAME</span><input value={subject.name} onChange={(event) => writeOne((item) => ({ ...item, name: event.target.value }))} /></label>
+        <div className="type-tag"><span>TYPE</span><strong>{subject.type.toUpperCase()}</strong><i className={`sprite-icon ${subject.sprite.startsWith("asset:") ? "asset-custom" : subject.sprite}`} /></div>
+        {/* A template is not anywhere, so it has no position to edit. */}
+        {!editingComponent && <div className="field-grid">
+          <div className="field"><EbNumericInput label="POSITION X" sliderEnabled={false} min={0} max={level.length} value={Math.round(subject.x)} onValueChange={(x) => writeOne((item) => ({ ...item, x }))} /></div>
+          <div className="field"><EbNumericInput label="POSITION Y" sliderEnabled={false} min={0} max={VIEW_H} value={Math.round(subject.y)} onValueChange={(y) => writeOne((item) => ({ ...item, y }))} /></div>
+        </div>}
+        <label className="field wide"><span>SPRITE{subjectIds.length > 1 ? " (APPLY TO ALL)" : ""}</span><select value={subject.sprite} onChange={(event) => writeAll((item) => ({ ...item, sprite: event.target.value as Sprite }), "selection-sprite")}><optgroup label="BUILT-IN">{["orb", "blade", "diamond", "turret", "raider", "wraith", "carrier", "asteroid", "energy", "upgrade", "planet", "nebula", "wreck", "comet"].map((sprite) => <option value={sprite} key={sprite}>{sprite.toUpperCase()}</option>)}</optgroup>{level.assets.length > 0 && <optgroup label="CUSTOM SPRITES">{level.assets.map((asset) => <option value={`asset:${asset.id}`} key={asset.id}>{asset.name.toUpperCase()} ({asset.kind.toUpperCase()})</option>)}</optgroup>}</select></label>
+        <RangeField name={`HUE TINT${subjectIds.length > 1 ? " / ALL" : ""}`} label={<>HUE TINT{subjectIds.length > 1 ? " / ALL" : ""}</>} display={`${Math.round(subject.tint)}°`} min="0" max="359" value={subject.tint} onChange={(event) => writeAll((item) => ({ ...item, tint: Number(event.target.value) }), "selection-tint")} />
+        <button className="mini-reset" type="button" onClick={() => writeAll((item) => ({ ...item, tint: 0 }), "selection-tint")}>RESET TINT</button>
+        <RangeField name={`SIZE${subjectIds.length > 1 ? " / ALL" : ""}`} label={<>SIZE{subjectIds.length > 1 ? " / ALL" : ""}</>} display={`${subject.size}px`} min="12" max="220" value={subject.size} onChange={(event) => writeAll((item) => ({ ...item, size: Number(event.target.value) }), "selection-size")} />
+        <EbAccordion allowMultiple={sectionMode === "multiple"} className="inspector-sections">
+        {section("transform", "TRANSFORM", <>
+          <RangeField name={`SCALE${subjectIds.length > 1 ? " / ALL" : ""}`} label={<>SCALE{subjectIds.length > 1 ? " / ALL" : ""}</>} display={`${subject.scale.toFixed(2)}×`} min="0.25" max="4" step="0.05" value={subject.scale} onChange={(event) => writeAll((item) => ({ ...item, scale: Number(event.target.value) }), "selection-scale")} />
+          <RangeField name={`ROTATION${subjectIds.length > 1 ? " / ALL" : ""}`} label={<>ROTATION{subjectIds.length > 1 ? " / ALL" : ""}</>} display={`${Math.round(subject.rotation)}°`} min="-180" max="180" step="1" value={subject.rotation} onChange={(event) => writeAll((item) => ({ ...item, rotation: Number(event.target.value) }), "selection-rotation")} />
+          {/* How far the sprite turns to face the way it flies. LEVEL is the
+              bob every sprite had before this; a rocket on a sine wave wants
+              something near 100%. Zero is stored as absent, so a level that
+              never touched this saves exactly as it did. */}
+          <RangeField name="FACE DIRECTION OF TRAVEL" label={<>FACE DIRECTION OF TRAVEL</>} display={`${subject.heading?.follow ? Math.round(subject.heading.follow * 100) + "%" : "LEVEL"}`} scale={100} min="0" max="1" step="0.05" value={subject.heading?.follow ?? 0} onChange={(event) => writeAll((item) => ({ ...item, heading: Number(event.target.value) > 0 ? { follow: Number(event.target.value) } : undefined }), "selection-heading")} />
+          <GlowField glow={subject.glow} onChange={(glow) => writeAll((item) => ({ ...item, glow }), "item-glow")} />
+          <DepthField depth={subject.depth} onChange={(depth) => writeAll((item) => ({ ...item, depth }), "item-depth")} />
+        </>)}
 
-        <aside className="inspector-panel">
-          <div className="panel-heading"><span>INSPECTOR</span>{sectionControls("inspector")}{selected && <button type="button" onClick={deleteSelected}>DELETE {selectedIds.length > 1 ? selectedIds.length : ""}</button>}</div>
-          {inspectPlayer ? <div className="inspector-form player-settings">
-            <div className="type-tag"><span>EDITING</span><strong>PLAYER SHIP</strong><span className={`player-icon ${level.player.sprite.startsWith("asset:") ? "asset-custom" : level.player.sprite}`} /></div>
-            <label className="field wide"><span>SHIP SPRITE</span><select value={level.player.sprite} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, sprite: event.target.value as PlayerSpriteChoice } }), true, "player-sprite")}><optgroup label="PLAYER SHIPS">{["dart", "raven", "nova", "striker"].map((sprite) => <option value={sprite} key={sprite}>{sprite.toUpperCase()}</option>)}</optgroup>{level.assets.length > 0 && <optgroup label="CUSTOM SPRITES">{level.assets.map((asset) => <option value={`asset:${asset.id}`} key={asset.id}>{asset.name.toUpperCase()}</option>)}</optgroup>}</select></label>
-            <RangeField name="SHIP HUE TINT" label={<>SHIP HUE TINT</>} display={`${level.player.tint}°`} min="0" max="359" value={level.player.tint} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, tint: Number(event.target.value) } }), true, "player-tint")} />
-            <RangeField name="SHIP SCALE" label={<>SHIP SCALE</>} display={`${level.player.scale.toFixed(2)}×`} min="0.05" max="8" step="0.05" value={level.player.scale} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, scale: Number(event.target.value) } }), true, "player-scale")} />
-            <p className="inspector-note">The ship is its sprite&apos;s own size; this scales it. A custom sprite drawn at 1× is drawn pixel for pixel, so scaling down stays sharp. The hitbox is the sprite, so a bigger ship really is a bigger target.</p>
-            <GlowField glow={level.player.glow} onChange={(glow) => updateLevel((current) => ({ ...current, player: { ...current.player, glow } }), true, "player-glow")} />
-            <EbAccordion allowMultiple={sectionMode === "multiple"} className="inspector-sections">
-            {section("flight", "FLIGHT", <>
-              <RangeField name="X SPEED" label={<>X SPEED</>} display={`${level.player.xSpeed}u/s`} min="100" max="800" step="10" value={level.player.xSpeed} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, xSpeed: Number(event.target.value) } }), true, "player-x-speed")} />
-              <RangeField name="Y SPEED" label={<>Y SPEED</>} display={`${level.player.ySpeed}u/s`} min="100" max="800" step="10" value={level.player.ySpeed} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, ySpeed: Number(event.target.value) } }), true, "player-y-speed")} />
-              {/* Where the ship may fly: how far in from each edge of the screen it
-                  must stay. The engine keeps the box in the sector's own frame, and a
-                  vertical level is turned a quarter turn, so each slider here sits
-                  under the screen edge it actually guards. */}
-              {(["LEFT", "RIGHT", "TOP", "BOTTOM"] as const).map((edge) => {
-                const key = level.mode === "vertical"
-                  ? ({ LEFT: "top", RIGHT: "bottom", TOP: "right", BOTTOM: "left" } as const)[edge]
-                  : ({ LEFT: "left", RIGHT: "right", TOP: "top", BOTTOM: "bottom" } as const)[edge];
-                return <RangeField key={edge} name={`${edge} LIMIT`} label={<>{edge} LIMIT</>} display={`${level.player.limits[key]}%`} min="0" max={key === "right" ? 80 : 45} step="1" value={level.player.limits[key]} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, limits: { ...current.player.limits, [key]: Number(event.target.value) } } }), true, `player-limit-${key}`)} />;
-              })}
-              <p className="inspector-note">How far in from each edge of the screen the ship must stay, as a share of the screen. The arena has no nose: it ignores the far edge and mirrors the near one.</p>
-            </>)}
-            {section("fire-mods", "GLOBAL FIRE MODIFIERS", <>
-              <RangeField name="SHOT SPEED" label={<>SHOT SPEED</>} display={`${level.player.shotSpeed}u/s`} min="200" max="1600" step="25" value={level.player.shotSpeed} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, shotSpeed: Number(event.target.value) } }), true, "player-shot-speed")} />
-              <RangeField name="SHOT POWER" label={<>SHOT POWER</>} display={`${level.player.shotPower}`} min="100" max="1000" step="100" value={level.player.shotPower} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, shotPower: Number(event.target.value) } }), true, "player-shot-power")} />
-              <p className="inspector-note">Minimum player firepower is 100. Enemies at or below the current value are destroyed in one shot.</p>
-            </>)}
-            {section("slots", "WEAPON SLOTS & INVENTORY", <>
-              <RangeField name="ACTIVE SLOTS" label={<>ACTIVE SLOTS</>} display={`${level.player.weaponSlots.length}`} min="1" max="4" value={level.player.weaponSlots.length} onChange={(event) => updateLevel((current) => { const count = Number(event.target.value); const slots = current.player.weaponSlots.slice(0, count); while (slots.length < count) slots.push({ id: uid(), name: `SLOT ${slots.length + 1}`, accepts: "standard", weaponId: current.player.inventory[0] ?? "weapon-pulse" }); return { ...current, player: { ...current.player, weaponSlots: slots } }; }, true, "player-slot-count")} />
-              <RangeField name="INVENTORY LIMIT" label={<>INVENTORY LIMIT</>} display={`${level.player.inventoryLimit}`} min="1" max="12" value={level.player.inventoryLimit} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, inventoryLimit: Number(event.target.value), inventory: current.player.inventory.slice(0, Number(event.target.value)) } }), true, "player-inventory-limit")} />
-              {level.player.weaponSlots.map((slot, index) => <div className="equipment-slot" key={slot.id}><strong>{slot.name}</strong><label className="field"><span>ACCEPTS</span><select value={slot.accepts} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, weaponSlots: current.player.weaponSlots.map((entry) => entry.id === slot.id ? { ...entry, accepts: event.target.value } : entry) } }))}><option value="any">ANY</option><option value="standard">STANDARD</option><option value="light">LIGHT</option><option value="heavy">HEAVY</option><option value="satellite">SATELLITE</option></select></label><label className="field"><span>WEAPON</span><select value={slot.weaponId} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, weaponSlots: current.player.weaponSlots.map((entry) => entry.id === slot.id ? { ...entry, weaponId: event.target.value } : entry) } }))}>{level.components.filter((component) => component.kind === "weapon" && weaponFitsSlot(component, slot.accepts)).map((component) => <option value={component.id} key={component.id}>{component.name.toUpperCase()}</option>)}</select></label>{(() => { const weaponComponent = level.components.find((component) => component.id === slot.weaponId); if (!weaponComponent?.weapon) return null; return <>
-              {/* Where each slot's gun sits on the ship, forward and across in world units.
-                  The defaults are where the slots have always fired from -- the nose, fanned
-                  nine units apart -- and the sights on the playfield show the spots while the
-                  ship is selected. */}
-              {level.player.weaponSlots.map((slot, index) => <div className="field-grid" key={`mount-${slot.id}`}>
-                <RangeField name={`${slot.name} MOUNT FWD`} label={<>{slot.name} MOUNT FWD</>} display={`${slot.mount ? `${slot.mount.x}u` : "NOSE"}`} min="-60" max="120" step="1" value={slot.mount?.x ?? 29} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, weaponSlots: current.player.weaponSlots.map((entry, i) => entry.id === slot.id ? { ...entry, mount: { x: Number(event.target.value), y: entry.mount?.y ?? Math.round((i - (current.player.weaponSlots.length - 1) / 2) * 9) } } : entry) } }), true, "slot-mount")} />
-                <RangeField name={`${slot.name} MOUNT ACROSS`} label={<>{slot.name} MOUNT ACROSS</>} display={`${slot.mount ? `${slot.mount.y}u` : "FANNED"}`} min="-80" max="80" step="1" value={slot.mount?.y ?? Math.round((index - (level.player.weaponSlots.length - 1) / 2) * 9)} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, weaponSlots: current.player.weaponSlots.map((entry) => entry.id === slot.id ? { ...entry, mount: { x: entry.mount?.x ?? 29, y: Number(event.target.value) } } : entry) } }), true, "slot-mount")} />
-              </div>)}
-                {/* The pattern belongs to the WEAPON Component, not to the slot,
-                    so every slot carrying this weapon changes together. That is
-                    the data model rather than a shortcut: a weapon is one saved
-                    thing, and two mounts firing the same gun differently would
-                    be two guns. */}
-                <BulletPatternField components={patternComponents} pattern={weaponComponent.weapon.pattern} onApply={(next) => updateLevel((current) => ({ ...current, components: current.components.map((entry) => entry.id === weaponComponent.id ? { ...entry, weapon: entry.weapon ? { ...entry.weapon, pattern: next } : entry.weapon } : entry) }))} />
-                <button className="inspector-action" type="button" onClick={() => setEditingPattern({ pattern: structuredClone(weaponComponent.weapon!.pattern ?? createPatternPreset("Pendulum Sweep")), target: { kind: "weapon", id: weaponComponent.id } })}>{weaponComponent.weapon.pattern ? "EDIT THIS PATTERN" : "DESIGN A PATTERN"}</button>
-              </>; })()}<small>Fires simultaneously from mount {index + 1}.</small></div>)}
-              <div className="inventory-grid">{level.components.filter((component) => component.kind === "weapon").map((component) => { const carried = level.player.inventory.includes(component.id); return <button type="button" className={carried ? "active" : ""} onClick={() => updateLevel((current) => { const inventory = carried ? current.player.inventory.filter((id) => id !== component.id) : [...current.player.inventory, component.id].slice(0, current.player.inventoryLimit); return { ...current, player: { ...current.player, inventory } }; })} key={component.id}>{carried ? "✓ " : "+ "}{component.name}</button>; })}</div>
-            </>)}
-            {section("armor", "ARMOR & FORCE FIELD", <>
-              <label className="field wide"><span>ARMOR TYPE</span><select value={level.player.armor.type} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, armor: defaultArmor(event.target.value as ArmorType) } }))}>{["none", "standard", "heavy", "ablative", "forcefield"].map((type) => <option value={type} key={type}>{type.toUpperCase()}</option>)}</select></label>
-              <RangeField name={`${level.player.armor.type === "forcefield" ? "SHIELD CAPACITY" : "ARMOR CAPACITY"}`} label={<>{level.player.armor.type === "forcefield" ? "SHIELD CAPACITY" : "ARMOR CAPACITY"}</>} display={`${level.player.armor.capacity}`} min="1" max={level.player.armor.type === "forcefield" ? 1000 : 12} step={level.player.armor.type === "forcefield" ? 25 : 1} value={level.player.armor.capacity} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, armor: { ...current.player.armor, capacity: Number(event.target.value) } } }))} />
-              <RangeField name="DAMAGE TAKEN" label={<>DAMAGE TAKEN</>} display={`${Math.round(level.player.armor.damageMultiplier * 100)}%`} scale={100} min="0.1" max="1" step="0.05" value={level.player.armor.damageMultiplier} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, armor: { ...current.player.armor, damageMultiplier: Number(event.target.value) } } }))} />
-              {level.player.armor.type === "forcefield" && <><RangeField name="RECHARGE DELAY" label={<>RECHARGE DELAY</>} display={`${level.player.armor.rechargeDelay.toFixed(1)}s`} min="0" max="8" step="0.25" value={level.player.armor.rechargeDelay} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, armor: { ...current.player.armor, rechargeDelay: Number(event.target.value) } } }))} /><RangeField name="RECHARGE RATE" label={<>RECHARGE RATE</>} display={`${level.player.armor.rechargeRate}/s`} min="0" max="250" step="5" value={level.player.armor.rechargeRate} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, armor: { ...current.player.armor, rechargeRate: Number(event.target.value) } } }))} /></>}
-              <button className="inspector-action" type="button" onClick={() => saveArmorComponent(level.player.armor)}>SAVE AS ARMOR COMPONENT</button>
-            </>)}
-            {section("satellite", "SATELLITE SHIP", <>
-              <label className="toggle-row"><span>ENABLED</span><input type="checkbox" checked={level.player.satellite.enabled} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, satellite: { ...current.player.satellite, enabled: event.target.checked } } }))} /><i /></label>
-              <label className="field wide"><span>CONTROL MODE</span><select value={level.player.satellite.mode} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, satellite: { ...current.player.satellite, mode: event.target.value as SatelliteMode } } }))}><option value="orbit">ORBIT</option><option value="tether">TETHERED FREE MOVE</option><option value="aim">AIM ON RADIUS</option></select></label>
-              <RangeField name="RANGE" label={<>RANGE</>} display={`${level.player.satellite.range}u`} min="50" max="280" value={level.player.satellite.range} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, satellite: { ...current.player.satellite, range: Number(event.target.value) } } }))} />
-              <RangeField name="SPEED" label={<>SPEED</>} display={`${level.player.satellite.speed}u/s`} min="100" max="800" step="10" value={level.player.satellite.speed} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, satellite: { ...current.player.satellite, speed: Number(event.target.value) } } }))} />
-              <label className="field wide"><span>SATELLITE WEAPON</span><select value={level.player.satellite.weaponId} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, satellite: { ...current.player.satellite, weaponId: event.target.value } } }))}>{level.components.filter((component) => component.kind === "weapon").map((component) => <option value={component.id} key={component.id}>{component.name.toUpperCase()}</option>)}</select></label>
-              {/* The satellite carries a Weapon Component like any mount, so its
-                  pattern is reachable the same way rather than only through the
-                  designer. Editing it edits that weapon everywhere it is used. */}
-              {(() => { const satWeapon = level.components.find((component) => component.id === level.player.satellite.weaponId); if (!satWeapon?.weapon) return null; return <BulletPatternField components={patternComponents} pattern={satWeapon.weapon.pattern} onApply={(next) => updateLevel((current) => ({ ...current, components: current.components.map((entry) => entry.id === satWeapon.id ? { ...entry, weapon: entry.weapon ? { ...entry.weapon, pattern: next } : entry.weapon } : entry) }))} />; })()}
-              <label className="field wide"><span>SATELLITE ARMOR</span><select value={level.player.satellite.armor.type} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, satellite: { ...current.player.satellite, armor: defaultArmor(event.target.value as ArmorType) } } }))}>{["none", "standard", "heavy", "ablative", "forcefield"].map((type) => <option value={type} key={type}>{type.toUpperCase()}</option>)}</select></label>
-              <RangeField name={`${level.player.satellite.armor.type === "forcefield" ? "SATELLITE SHIELD" : "SATELLITE HULL"}`} label={<>{level.player.satellite.armor.type === "forcefield" ? "SATELLITE SHIELD" : "SATELLITE HULL"}</>} display={`${level.player.satellite.armor.capacity}`} min="1" max={level.player.satellite.armor.type === "forcefield" ? 600 : 10} step={level.player.satellite.armor.type === "forcefield" ? 25 : 1} value={level.player.satellite.armor.capacity} onChange={(event) => updateLevel((current) => ({ ...current, player: { ...current.player, satellite: { ...current.player.satellite, armor: { ...current.player.satellite.armor, capacity: Number(event.target.value) } } } }))} />
-              <button className="inspector-action" type="button" onClick={() => saveSatelliteComponent(level.player.satellite)}>SAVE AS SATELLITE COMPONENT</button>
-            </>)}
-            </EbAccordion>
-          </div> : editingEquipment ? <div className="inspector-form">
-            {/* The three Components that bolt onto something rather than being
-                placed. One Component is one saved thing, so an edit here reaches
-                every object it has been applied to and every slot it is equipped
-                in -- which is the whole reason for saving one. */}
-            <div className="multi-selection-note"><strong>EDITING THE COMPONENT</strong><span>Changes reach everything carrying <b>{editingEquipment.name}</b>, and are saved to the palette rather than to any one object.</span></div>
-            <label className="field wide"><span>NAME</span><input value={editingEquipment.name} onChange={(event) => writeComponent(editingEquipment.id, (component) => ({ ...component, name: event.target.value }))} /></label>
-            <div className="type-tag"><span>TYPE</span><strong>{editingEquipment.kind.toUpperCase()}</strong><i className={`sprite-icon ${editingEquipment.kind === "weapon" ? "turret" : editingEquipment.kind === "armor" ? "energy" : "upgrade"}`} /></div>
-            <EbAccordion allowMultiple={sectionMode === "multiple"} className="inspector-sections">
-            {equipWeapon && <>
-              {section("comp-weapon", "FIRE", <>
-                <RangeField name="POWER" label={<>POWER</>} display={`${equipWeapon.power}`} min="10" max="600" step="5" value={equipWeapon.power} onChange={(event) => writeEquipWeapon({ power: Number(event.target.value) })} />
-                <p className="inspector-note">A hundred is what the built-in cannons do. Put on an enemy it becomes {Math.max(1, Math.round(equipWeapon.power / 100))} hit{Math.max(1, Math.round(equipWeapon.power / 100)) === 1 ? "" : "s"} of damage, which is the scale an object&apos;s own gun is authored in.</p>
-                <RangeField name="RATE" label={<>RATE</>} display={`${equipWeapon.shotsPerSecond.toFixed(1)}/s`} min="0.5" max="20" step="0.1" value={equipWeapon.shotsPerSecond} onChange={(event) => writeEquipWeapon({ shotsPerSecond: Number(event.target.value) })} />
-                <RangeField name="COOLDOWN" label={<>COOLDOWN</>} display={equipWeapon.cooldown ? `+${equipWeapon.cooldown.toFixed(2)}s` : "NONE"} min="0" max="3" step="0.05" value={equipWeapon.cooldown} onChange={(event) => writeEquipWeapon({ cooldown: Number(event.target.value) })} />
-                <RangeField name="SPREAD" label={<>SPREAD</>} display={`${equipWeapon.spread} SHOT${equipWeapon.spread === 1 ? "" : "S"}`} min="1" max="5" step="1" value={equipWeapon.spread} onChange={(event) => writeEquipWeapon({ spread: Number(event.target.value) })} />
-              </>)}
-              {section("comp-bullet", "PROJECTILE", <>
-                <div className="field-grid">
-                  <label className="field"><span>SPRITE</span><select value={equipWeapon.projectile} onChange={(event) => writeEquipWeapon({ projectile: event.target.value })}><option value="bolt">BOLT</option><option value="plasma">PLASMA</option></select></label>
-                  <label className="field"><span>MOTION</span><select value={equipWeapon.projectileMovement} onChange={(event) => writeEquipWeapon({ projectileMovement: event.target.value as "straight" | "sine" })}><option value="straight">STRAIGHT</option><option value="sine">SINE</option></select></label>
-                </div>
-                <RangeField name="PROJECTILE SPEED" label={<>PROJECTILE SPEED</>} display={`${equipWeapon.projectileSpeed}u/s`} min="100" max="1600" step="20" value={equipWeapon.projectileSpeed} onChange={(event) => writeEquipWeapon({ projectileSpeed: Number(event.target.value) })} />
-                <label className="field wide"><span>BULLET COLOUR</span><input type="color" value={equipWeapon.color} onChange={(event) => writeEquipWeapon({ color: event.target.value })} /></label>
-                <BulletPatternField components={patternComponents} pattern={equipWeapon.pattern} onApply={(next) => writeEquipWeapon({ pattern: next })} />
-                <button className="inspector-action pattern-designer-button" type="button" onClick={() => setEditingPattern({ pattern: structuredClone(equipWeapon.pattern ?? createPatternPreset("Pendulum Sweep")), target: { kind: "weapon", id: equipId } })}>{equipWeapon.pattern ? "EDIT THIS PATTERN" : "DESIGN A PATTERN"}</button>
-              </>)}
-              {section("comp-fit", "HOW IT IS CARRIED", <>
-                {/* `tag` decides which slots will take it and `gun` is the firing
-                    model the world uses. Neither means anything to an enemy,
-                    which fires whatever it is handed. */}
-                <div className="field-grid">
-                  <label className="field"><span>FITS SLOTS</span><select value={equipWeapon.tag} onChange={(event) => writeEquipWeapon({ tag: event.target.value })}>{["standard", "light", "heavy", "satellite"].map((tag) => <option value={tag} key={tag}>{tag.toUpperCase()}</option>)}</select></label>
-                  <label className="field"><span>FIRING MODEL</span><select value={equipWeapon.gun} onChange={(event) => writeEquipWeapon({ gun: event.target.value as GunType })}>{["pulse", "spread", "rapid"].map((kind) => <option value={kind} key={kind}>{kind.toUpperCase()}</option>)}</select></label>
-                </div>
-                <p className="inspector-note">A slot takes a weapon whose FITS SLOTS matches what that slot accepts, or anything at all if it accepts ANY.</p>
-              </>)}
+        {(subject.type === "enemy" || subject.type === "terrain" || subject.type === "group") && section("durability", "DURABILITY", <>
+          {/* The scroll waits for this one. Only a body that can die may
+              hold, so it is offered beside the hit points and hidden for a
+              formation, which would be `count` hold lines rather than one.
+              Hidden for an indestructible body too, and cleared the moment
+              that is ticked: hiding a control is not a guard, because the
+              field would stay in the file where nobody could see or reach
+              it, and a camera waiting on a body that cannot die is a level
+              that cannot be finished. The normalizer refuses the pair as
+              well; this is what stops the editor from ever offering it. */}
+          {(subject.type === "enemy" || subject.type === "terrain") && !subject.indestructible && <>
+            <label className="toggle-row"><span>SCREEN BLOCKER</span><input type="checkbox" checked={Boolean(subject.blocker)} onChange={(event) => writeOne((item) => ({ ...item, blocker: event.target.checked ? { station: 72 } : undefined }))} /><i /></label>
+            {subject.blocker && blocker && <>
+              <RangeField name="STATION" label={<>STATION</>} display={`${Math.round(subject.blocker.station)}% IN`} min="25" max="90" step="1" value={subject.blocker.station} onChange={(event) => writeOne((item) => ({ ...item, blocker: { station: Number(event.target.value) } }))} />
+              <p className={`inspector-note${level.mode !== "arena" && blocker.unreachable ? " warn" : ""}`}>{level.mode === "arena"
+                ? "The arena has no scroll to hold: its camera is the wave clock, so this is ignored there."
+                : blocker.unreachable
+                  ? `Never holds: the scroll can only reach ${Math.round(blocker.sectorEnd)}, and from there this sits off the far edge of the view where nothing could shoot it. Move it back toward the start, or push END LEVEL out.`
+                  : editingComponent
+                    ? `Wherever you place one, the scroll stops ${Math.round(blocker.alongSpan - blocker.alongSpan * subject.blocker.station / 100)} short of it and waits until it is destroyed. Pinned where placed, so its flight becomes a bob on the spot.`
+                    : `The scroll stops at ${Math.round(blocker.park)} and waits until this is destroyed. Pinned where you placed it, so its flight becomes a bob on the spot.`}</p>
+              {level.mode !== "arena" && !blocker.unreachable && (blocker.rammed || blocker.grazed) && <p className="inspector-note warn">{blocker.rammed && blocker.grazed ? "Both the ship and its satellite can touch it" : blocker.rammed ? "The ship can touch it" : "The satellite can reach it"} where it parks, and contact destroys outright — its {subject.hitPoints} hit points would never be spent. Raise STATION, or pull the FORWARD flight limit{blocker.grazed && !blocker.rammed ? " or the satellite RANGE" : ""} back.</p>}
             </>}
-            {equipArmor && <>
-              {section("comp-armor", "PROTECTION", <>
-                <label className="field wide"><span>ARMOR TYPE</span><select value={equipArmor.type} onChange={(event) => writeComponent(equipId, (component) => ({ ...component, armor: defaultArmor(event.target.value as ArmorType) }))}>{["none", "standard", "heavy", "ablative", "forcefield"].map((type) => <option value={type} key={type}>{type.toUpperCase()}</option>)}</select></label>
-                <RangeField name={equipArmor.type === "forcefield" ? "SHIELD" : "HULL"} label={<>{equipArmor.type === "forcefield" ? "SHIELD" : "HULL"}</>} display={`${equipArmor.capacity}`} min="1" max={equipArmor.type === "forcefield" ? 1000 : 10} step={equipArmor.type === "forcefield" ? 25 : 1} value={equipArmor.capacity} onChange={(event) => writeEquipArmor({ capacity: Number(event.target.value) })} />
-                <RangeField name="DAMAGE TAKEN" label={<>DAMAGE TAKEN</>} display={`${Math.round(equipArmor.damageMultiplier * 100)}%`} scale={100} min="0" max="2" step="0.05" value={equipArmor.damageMultiplier} onChange={(event) => writeEquipArmor({ damageMultiplier: Number(event.target.value) })} />
-                {equipArmor.type === "forcefield" && <><RangeField name="RECHARGE DELAY" label={<>RECHARGE DELAY</>} display={`${equipArmor.rechargeDelay.toFixed(2)}s`} min="0" max="6" step="0.1" value={equipArmor.rechargeDelay} onChange={(event) => writeEquipArmor({ rechargeDelay: Number(event.target.value) })} />
-                <RangeField name="RECHARGE RATE" label={<>RECHARGE RATE</>} display={`${equipArmor.rechargeRate}/s`} min="0" max="250" step="5" value={equipArmor.rechargeRate} onChange={(event) => writeEquipArmor({ rechargeRate: Number(event.target.value) })} /></>}
-                <p className="inspector-note">{equipArmor.type === "forcefield" ? "A force field absorbs damage and comes back after the delay. The hull underneath is untouched until the field is down." : "Hull pips. There is nothing to recharge, so the delay and rate do not apply."}</p>
-              </>)}
-            </>}
-            {equipSatellite && <>
-              {section("comp-satellite", "SATELLITE", <>
-                <label className="field wide"><span>CONTROL MODE</span><select value={equipSatellite.mode} onChange={(event) => writeEquipSatellite({ mode: event.target.value as SatelliteMode })}><option value="orbit">ORBIT</option><option value="tether">TETHER</option><option value="aim">AIM</option></select></label>
-                <RangeField name="RANGE" label={<>RANGE</>} display={`${equipSatellite.range}u`} min="50" max="280" value={equipSatellite.range} onChange={(event) => writeEquipSatellite({ range: Number(event.target.value) })} />
-                <RangeField name="SPEED" label={<>SPEED</>} display={`${equipSatellite.speed}u/s`} min="100" max="800" step="10" value={equipSatellite.speed} onChange={(event) => writeEquipSatellite({ speed: Number(event.target.value) })} />
-                <label className="field wide"><span>WEAPON</span><select value={equipSatellite.weaponId} onChange={(event) => writeEquipSatellite({ weaponId: event.target.value })}>{level.components.filter((component) => component.kind === "weapon").map((component) => <option value={component.id} key={component.id}>{component.name.toUpperCase()}</option>)}</select></label>
-                <label className="field wide"><span>SATELLITE ARMOR</span><select value={equipSatellite.armor.type} onChange={(event) => writeEquipSatellite({ armor: defaultArmor(event.target.value as ArmorType) })}>{["none", "standard", "heavy", "ablative", "forcefield"].map((type) => <option value={type} key={type}>{type.toUpperCase()}</option>)}</select></label>
-                <RangeField name={equipSatellite.armor.type === "forcefield" ? "SATELLITE SHIELD" : "SATELLITE HULL"} label={<>{equipSatellite.armor.type === "forcefield" ? "SATELLITE SHIELD" : "SATELLITE HULL"}</>} display={`${equipSatellite.armor.capacity}`} min="1" max={equipSatellite.armor.type === "forcefield" ? 600 : 10} step={equipSatellite.armor.type === "forcefield" ? 25 : 1} value={equipSatellite.armor.capacity} onChange={(event) => writeEquipSatellite({ armor: { ...equipSatellite.armor, capacity: Number(event.target.value) } })} />
-                <p className="inspector-note">The satellite is held a little off the far edge of the screen, so a long range does not put it out past where the ship may fly.</p>
-              </>)}
-            </>}
-            </EbAccordion>
-            {/* The equipping that clicking this card used to do by itself.
-                Said out loud, because changing the player's loadout is not what
-                "open this for editing" should quietly mean. */}
-            <button className="inspector-action" type="button" onClick={() => equipToPlayer(editingEquipment)}>{editingEquipment.kind === "weapon" ? "ADD TO INVENTORY & EQUIP" : "EQUIP TO PLAYER SHIP"}</button>
-            <p className="inspector-note">To put this on an enemy instead, select the enemy and click this Component in the palette.</p>
-          </div> : !subject ? <div className="empty-inspector"><b>NO OBJECT SELECTED</b><p>Use the Select tool and choose an object to tune its behavior, or pick a saved Component from the palette to tune the Component itself. The player ship is in the palette too.</p></div> : <div className="inspector-form">
-            {/* Which of the two this form is editing. A Component's template has
-                no place in the sector, so its edits reach every future
-                placement rather than one object -- which is worth saying
-                plainly, because the form underneath is otherwise identical. */}
-            {editingComponent && <div className="multi-selection-note"><strong>EDITING THE COMPONENT</strong><span>Changes are saved to <b>{editingComponent.name}</b> in the palette, not to anything already placed. Click the playfield to place one.</span></div>}
-            {subjectIds.length > 1 && <div className="multi-selection-note"><strong>{subjectIds.length} OBJECTS SELECTED</strong><span>Move, duplicate, delete, rotate, or scale them together. The Inspector edits the primary Object.</span></div>}
-            {!editingComponent && <div className="component-actions"><button type="button" onClick={() => saveObjectComponent(false)}>SAVE AS COMPONENT</button>{subject.componentId && <button type="button" onClick={() => saveObjectComponent(true)}>UPDATE COMPONENT</button>}</div>}
-            <label className="field wide"><span>NAME</span><input value={subject.name} onChange={(event) => writeOne((item) => ({ ...item, name: event.target.value }))} /></label>
-            <div className="type-tag"><span>TYPE</span><strong>{subject.type.toUpperCase()}</strong><i className={`sprite-icon ${subject.sprite.startsWith("asset:") ? "asset-custom" : subject.sprite}`} /></div>
-            {/* A template is not anywhere, so it has no position to edit. */}
-            {!editingComponent && <div className="field-grid">
-              <div className="field"><EbNumericInput label="POSITION X" sliderEnabled={false} min={0} max={level.length} value={Math.round(subject.x)} onValueChange={(x) => writeOne((item) => ({ ...item, x }))} /></div>
-              <div className="field"><EbNumericInput label="POSITION Y" sliderEnabled={false} min={0} max={VIEW_H} value={Math.round(subject.y)} onValueChange={(y) => writeOne((item) => ({ ...item, y }))} /></div>
-            </div>}
-            <label className="field wide"><span>SPRITE{subjectIds.length > 1 ? " (APPLY TO ALL)" : ""}</span><select value={subject.sprite} onChange={(event) => writeAll((item) => ({ ...item, sprite: event.target.value as Sprite }), "selection-sprite")}><optgroup label="BUILT-IN">{["orb", "blade", "diamond", "turret", "raider", "wraith", "carrier", "asteroid", "energy", "upgrade", "planet", "nebula", "wreck", "comet"].map((sprite) => <option value={sprite} key={sprite}>{sprite.toUpperCase()}</option>)}</optgroup>{level.assets.length > 0 && <optgroup label="CUSTOM SPRITES">{level.assets.map((asset) => <option value={`asset:${asset.id}`} key={asset.id}>{asset.name.toUpperCase()} ({asset.kind.toUpperCase()})</option>)}</optgroup>}</select></label>
-            <RangeField name={`HUE TINT${subjectIds.length > 1 ? " / ALL" : ""}`} label={<>HUE TINT{subjectIds.length > 1 ? " / ALL" : ""}</>} display={`${Math.round(subject.tint)}°`} min="0" max="359" value={subject.tint} onChange={(event) => writeAll((item) => ({ ...item, tint: Number(event.target.value) }), "selection-tint")} />
-            <button className="mini-reset" type="button" onClick={() => writeAll((item) => ({ ...item, tint: 0 }), "selection-tint")}>RESET TINT</button>
-            <RangeField name={`SIZE${subjectIds.length > 1 ? " / ALL" : ""}`} label={<>SIZE{subjectIds.length > 1 ? " / ALL" : ""}</>} display={`${subject.size}px`} min="12" max="220" value={subject.size} onChange={(event) => writeAll((item) => ({ ...item, size: Number(event.target.value) }), "selection-size")} />
-            <EbAccordion allowMultiple={sectionMode === "multiple"} className="inspector-sections">
-            {section("transform", "TRANSFORM", <>
-              <RangeField name={`SCALE${subjectIds.length > 1 ? " / ALL" : ""}`} label={<>SCALE{subjectIds.length > 1 ? " / ALL" : ""}</>} display={`${subject.scale.toFixed(2)}×`} min="0.25" max="4" step="0.05" value={subject.scale} onChange={(event) => writeAll((item) => ({ ...item, scale: Number(event.target.value) }), "selection-scale")} />
-              <RangeField name={`ROTATION${subjectIds.length > 1 ? " / ALL" : ""}`} label={<>ROTATION{subjectIds.length > 1 ? " / ALL" : ""}</>} display={`${Math.round(subject.rotation)}°`} min="-180" max="180" step="1" value={subject.rotation} onChange={(event) => writeAll((item) => ({ ...item, rotation: Number(event.target.value) }), "selection-rotation")} />
-              {/* How far the sprite turns to face the way it flies. LEVEL is the
-                  bob every sprite had before this; a rocket on a sine wave wants
-                  something near 100%. Zero is stored as absent, so a level that
-                  never touched this saves exactly as it did. */}
-              <RangeField name="FACE DIRECTION OF TRAVEL" label={<>FACE DIRECTION OF TRAVEL</>} display={`${subject.heading?.follow ? Math.round(subject.heading.follow * 100) + "%" : "LEVEL"}`} scale={100} min="0" max="1" step="0.05" value={subject.heading?.follow ?? 0} onChange={(event) => writeAll((item) => ({ ...item, heading: Number(event.target.value) > 0 ? { follow: Number(event.target.value) } : undefined }), "selection-heading")} />
-              <GlowField glow={subject.glow} onChange={(glow) => writeAll((item) => ({ ...item, glow }), "item-glow")} />
-              <DepthField depth={subject.depth} onChange={(depth) => writeAll((item) => ({ ...item, depth }), "item-depth")} />
-            </>)}
+          </>}
+          {/* Takes no damage and is never destroyed; shots still spark and stop on it.
+              Only ever true or absent, so a level that never set it saves as it did. */}
+          <label className="toggle-row"><span>INDESTRUCTIBLE</span><input type="checkbox" checked={Boolean(subject.indestructible)} onChange={(event) => writeOne((item) => ({ ...item, indestructible: event.target.checked ? true : undefined, blocker: event.target.checked ? undefined : item.blocker }))} /><i /></label>
+          {!subject.indestructible && <RangeField name="HIT POINTS" label={<>HIT POINTS</>} display={`${subject.hitPoints} HP`} min="50" max="2000" step="50" value={subject.hitPoints} onChange={(event) => writeOne((item) => ({ ...item, hitPoints: Number(event.target.value) }))} />}
+          <label className="field wide"><span>ARMOR TYPE</span><select value={subject.armor?.type ?? "none"} onChange={(event) => writeOne((item) => ({ ...item, armor: defaultArmor(event.target.value as ArmorType) }))}>{["none", "standard", "heavy", "ablative", "forcefield"].map((type) => <option value={type} key={type}>{type.toUpperCase()}</option>)}</select></label>
+          {(subject.armor?.type === "forcefield") && <><RangeField name="SHIELD CAPACITY" label={<>SHIELD CAPACITY</>} display={`${subject.armor.capacity}`} min="25" max="1000" step="25" value={subject.armor.capacity} onChange={(event) => writeOne((item) => ({ ...item, armor: { ...(item.armor ?? defaultArmor("forcefield")), capacity: Number(event.target.value) } }))} /><RangeField name="RECHARGE RATE" label={<>RECHARGE RATE</>} display={`${subject.armor.rechargeRate}/s`} min="0" max="250" step="5" value={subject.armor.rechargeRate} onChange={(event) => writeOne((item) => ({ ...item, armor: { ...(item.armor ?? defaultArmor("forcefield")), rechargeRate: Number(event.target.value) } }))} /></>}
+          <p className="inspector-note">{Math.max(1, Math.ceil(subject.hitPoints / level.player.shotPower))} hit{Math.ceil(subject.hitPoints / level.player.shotPower) === 1 ? "" : "s"} at base power {level.player.shotPower}.</p>
+          {subject.armor && subject.armor.type !== "none" && <button className="inspector-action" type="button" onClick={() => saveArmorComponent(subject.armor!)}>SAVE ARMOR COMPONENT</button>}
+        </>)}
 
-            {(subject.type === "enemy" || subject.type === "terrain" || subject.type === "group") && section("durability", "DURABILITY", <>
-              {/* The scroll waits for this one. Only a body that can die may
-                  hold, so it is offered beside the hit points and hidden for a
-                  formation, which would be `count` hold lines rather than one.
-                  Hidden for an indestructible body too, and cleared the moment
-                  that is ticked: hiding a control is not a guard, because the
-                  field would stay in the file where nobody could see or reach
-                  it, and a camera waiting on a body that cannot die is a level
-                  that cannot be finished. The normalizer refuses the pair as
-                  well; this is what stops the editor from ever offering it. */}
-              {(subject.type === "enemy" || subject.type === "terrain") && !subject.indestructible && <>
-                <label className="toggle-row"><span>SCREEN BLOCKER</span><input type="checkbox" checked={Boolean(subject.blocker)} onChange={(event) => writeOne((item) => ({ ...item, blocker: event.target.checked ? { station: 72 } : undefined }))} /><i /></label>
-                {subject.blocker && blocker && <>
-                  <RangeField name="STATION" label={<>STATION</>} display={`${Math.round(subject.blocker.station)}% IN`} min="25" max="90" step="1" value={subject.blocker.station} onChange={(event) => writeOne((item) => ({ ...item, blocker: { station: Number(event.target.value) } }))} />
-                  <p className={`inspector-note${level.mode !== "arena" && blocker.unreachable ? " warn" : ""}`}>{level.mode === "arena"
-                    ? "The arena has no scroll to hold: its camera is the wave clock, so this is ignored there."
-                    : blocker.unreachable
-                      ? `Never holds: the scroll can only reach ${Math.round(blocker.sectorEnd)}, and from there this sits off the far edge of the view where nothing could shoot it. Move it back toward the start, or push END LEVEL out.`
-                      : editingComponent
-                        ? `Wherever you place one, the scroll stops ${Math.round(blocker.alongSpan - blocker.alongSpan * subject.blocker.station / 100)} short of it and waits until it is destroyed. Pinned where placed, so its flight becomes a bob on the spot.`
-                        : `The scroll stops at ${Math.round(blocker.park)} and waits until this is destroyed. Pinned where you placed it, so its flight becomes a bob on the spot.`}</p>
-                  {level.mode !== "arena" && !blocker.unreachable && (blocker.rammed || blocker.grazed) && <p className="inspector-note warn">{blocker.rammed && blocker.grazed ? "Both the ship and its satellite can touch it" : blocker.rammed ? "The ship can touch it" : "The satellite can reach it"} where it parks, and contact destroys outright — its {subject.hitPoints} hit points would never be spent. Raise STATION, or pull the FORWARD flight limit{blocker.grazed && !blocker.rammed ? " or the satellite RANGE" : ""} back.</p>}
-                </>}
-              </>}
-              {/* Takes no damage and is never destroyed; shots still spark and stop on it.
-                  Only ever true or absent, so a level that never set it saves as it did. */}
-              <label className="toggle-row"><span>INDESTRUCTIBLE</span><input type="checkbox" checked={Boolean(subject.indestructible)} onChange={(event) => writeOne((item) => ({ ...item, indestructible: event.target.checked ? true : undefined, blocker: event.target.checked ? undefined : item.blocker }))} /><i /></label>
-              {!subject.indestructible && <RangeField name="HIT POINTS" label={<>HIT POINTS</>} display={`${subject.hitPoints} HP`} min="50" max="2000" step="50" value={subject.hitPoints} onChange={(event) => writeOne((item) => ({ ...item, hitPoints: Number(event.target.value) }))} />}
-              <label className="field wide"><span>ARMOR TYPE</span><select value={subject.armor?.type ?? "none"} onChange={(event) => writeOne((item) => ({ ...item, armor: defaultArmor(event.target.value as ArmorType) }))}>{["none", "standard", "heavy", "ablative", "forcefield"].map((type) => <option value={type} key={type}>{type.toUpperCase()}</option>)}</select></label>
-              {(subject.armor?.type === "forcefield") && <><RangeField name="SHIELD CAPACITY" label={<>SHIELD CAPACITY</>} display={`${subject.armor.capacity}`} min="25" max="1000" step="25" value={subject.armor.capacity} onChange={(event) => writeOne((item) => ({ ...item, armor: { ...(item.armor ?? defaultArmor("forcefield")), capacity: Number(event.target.value) } }))} /><RangeField name="RECHARGE RATE" label={<>RECHARGE RATE</>} display={`${subject.armor.rechargeRate}/s`} min="0" max="250" step="5" value={subject.armor.rechargeRate} onChange={(event) => writeOne((item) => ({ ...item, armor: { ...(item.armor ?? defaultArmor("forcefield")), rechargeRate: Number(event.target.value) } }))} /></>}
-              <p className="inspector-note">{Math.max(1, Math.ceil(subject.hitPoints / level.player.shotPower))} hit{Math.ceil(subject.hitPoints / level.player.shotPower) === 1 ? "" : "s"} at base power {level.player.shotPower}.</p>
-              {subject.armor && subject.armor.type !== "none" && <button className="inspector-action" type="button" onClick={() => saveArmorComponent(subject.armor!)}>SAVE ARMOR COMPONENT</button>}
-            </>)}
+        {/* The shape it is struck within. None is the circle the engine has
+            always used; DEBUG on the toolbar shows whichever is in force. */}
+        {(subject.type === "enemy" || subject.type === "terrain" || subject.type === "group" || subject.type === "powerup" || subject.type === "upgrade") && section("hitbox", "HITBOX", <>
+          <p className="inspector-note">{subject.hitbox ? `${describeHitbox(subject.hitbox)}, in the sprite's own frame. Turns with the sprite; SIZE and SCALE keep it on the art.` : "The default circle. Read a shape off the art, or draw one."}</p>
+          <div className="component-actions hitbox-actions">
+            <button type="button" onClick={() => deriveHitbox(subject, "outline", writeOne)} title="Trace the art's outline as polygons">AUTO OUTLINE</button>
+            <button type="button" onClick={() => deriveHitbox(subject, "circles", writeOne)} title="Cover the art with circles that stay inside it">AUTO CIRCLES</button>
+            <button type="button" onClick={() => setEditingHitbox(editingComponent ? { kind: "component", id: editingComponent.id } : { kind: "item", id: subject.id })}>{subject.hitbox ? "EDIT…" : "DRAW…"}</button>
+            {subject.hitbox && <button type="button" onClick={() => { writeOne((item) => ({ ...item, hitbox: undefined })); flash("HITBOX REMOVED"); }}>USE CIRCLE</button>}
+          </div>
+        </>)}
 
-            {/* The shape it is struck within. None is the circle the engine has
-                always used; DEBUG on the toolbar shows whichever is in force. */}
-            {(subject.type === "enemy" || subject.type === "terrain" || subject.type === "group" || subject.type === "powerup" || subject.type === "upgrade") && section("hitbox", "HITBOX", <>
-              <p className="inspector-note">{subject.hitbox ? `${describeHitbox(subject.hitbox)}, in the sprite's own frame. Turns with the sprite; SIZE and SCALE keep it on the art.` : "The default circle. Read a shape off the art, or draw one."}</p>
-              <div className="component-actions hitbox-actions">
-                <button type="button" onClick={() => deriveHitbox(subject, "outline", writeOne)} title="Trace the art's outline as polygons">AUTO OUTLINE</button>
-                <button type="button" onClick={() => deriveHitbox(subject, "circles", writeOne)} title="Cover the art with circles that stay inside it">AUTO CIRCLES</button>
-                <button type="button" onClick={() => setEditingHitbox(editingComponent ? { kind: "component", id: editingComponent.id } : { kind: "item", id: subject.id })}>{subject.hitbox ? "EDIT…" : "DRAW…"}</button>
-                {subject.hitbox && <button type="button" onClick={() => { writeOne((item) => ({ ...item, hitbox: undefined })); flash("HITBOX REMOVED"); }}>USE CIRCLE</button>}
-              </div>
-            </>)}
+        {subject.type === "group" && section("formation", "FORMATION", <>
+          <div className="field-grid"><label className="field"><span>FORMATION</span><select value={subject.group?.pattern} onChange={(event) => writeOne((item) => ({ ...item, group: { ...(item.group ?? { count: 5, spacing: 60, pattern: "line" }), pattern: event.target.value as GroupPattern } }))}><option value="line">LINE</option><option value="column">COLUMN</option><option value="vee">VEE</option><option value="wedge">WEDGE</option><option value="crescent">CRESCENT</option><option value="ring">RING</option><option value="cluster">CLUSTER</option><option value="block">BLOCK</option><option value="ladder">LADDER</option></select></label><div className="field"><EbNumericInput label="COUNT" sliderEnabled={false} min={2} max={16} value={subject.group?.count ?? 5} onValueChange={(count) => writeOne((item) => ({ ...item, group: { ...(item.group ?? { pattern: "line", spacing: 60, count: 5 }), count } }))} /></div></div>
+          <RangeField name="PEEL" label={<>PEEL</>} display={subject.group?.peel ? `${subject.group.peel.toFixed(1)}s APART` : "TOGETHER"} min="0" max="4" step="0.1" value={subject.group?.peel ?? 0} onChange={(event) => writeOne((item) => ({ ...item, group: { ...(item.group ?? { pattern: "vee", spacing: 60, count: 5 }), peel: Number(event.target.value) || undefined } }))} />
+          {(subject.group?.peel ?? 0) > 0 && <p className="inspector-note">They leave one at a time, front of the flight first. Give them a STALL under MOVEMENT and the formation holds together before it breaks up.</p>}
+          <RangeField name="SPACING" label={<>SPACING</>} display={`${subject.group?.spacing ?? 60}u`} min="30" max="140" value={subject.group?.spacing ?? 60} onChange={(event) => writeOne((item) => ({ ...item, group: { ...(item.group ?? { pattern: "line", spacing: 60, count: 5 }), spacing: Number(event.target.value) } }))} />
+        </>)}
 
-            {subject.type === "group" && section("formation", "FORMATION", <>
-              <div className="field-grid"><label className="field"><span>FORMATION</span><select value={subject.group?.pattern} onChange={(event) => writeOne((item) => ({ ...item, group: { ...(item.group ?? { count: 5, spacing: 60, pattern: "line" }), pattern: event.target.value as GroupPattern } }))}><option value="line">LINE</option><option value="column">COLUMN</option><option value="vee">VEE</option><option value="wedge">WEDGE</option><option value="crescent">CRESCENT</option><option value="ring">RING</option><option value="cluster">CLUSTER</option><option value="block">BLOCK</option><option value="ladder">LADDER</option></select></label><div className="field"><EbNumericInput label="COUNT" sliderEnabled={false} min={2} max={16} value={subject.group?.count ?? 5} onValueChange={(count) => writeOne((item) => ({ ...item, group: { ...(item.group ?? { pattern: "line", spacing: 60, count: 5 }), count } }))} /></div></div>
-              <RangeField name="PEEL" label={<>PEEL</>} display={subject.group?.peel ? `${subject.group.peel.toFixed(1)}s APART` : "TOGETHER"} min="0" max="4" step="0.1" value={subject.group?.peel ?? 0} onChange={(event) => writeOne((item) => ({ ...item, group: { ...(item.group ?? { pattern: "vee", spacing: 60, count: 5 }), peel: Number(event.target.value) || undefined } }))} />
-              {(subject.group?.peel ?? 0) > 0 && <p className="inspector-note">They leave one at a time, front of the flight first. Give them a STALL under MOVEMENT and the formation holds together before it breaks up.</p>}
-              <RangeField name="SPACING" label={<>SPACING</>} display={`${subject.group?.spacing ?? 60}u`} min="30" max="140" value={subject.group?.spacing ?? 60} onChange={(event) => writeOne((item) => ({ ...item, group: { ...(item.group ?? { pattern: "line", spacing: 60, count: 5 }), spacing: Number(event.target.value) } }))} />
-            </>)}
+        {section("movement", subject.type === "decoration" ? "DECORATION MOTION" : "MOVEMENT", <>
+          <label className="field wide"><span>MOVEMENT</span><select value={subject.movement.pattern} onChange={(event) => writeOne((item) => ({ ...item, movement: { ...item.movement, pattern: event.target.value as MovePattern } }))}><optgroup label="LINES AND WAVES"><option value="straight">STRAIGHT</option><option value="sine">SINE WAVE</option><option value="zigzag">ZIGZAG</option><option value="lane">LANE HOLD</option><option value="figureEight">FIGURE EIGHT</option></optgroup><optgroup label="TURNS"><option value="arc">ARC</option><option value="arcWeave">ARC WEAVE</option><option value="bezier">BEZIER</option></optgroup><optgroup label="CHANGES OF SPEED"><option value="surge">SURGE</option><option value="charge">CHARGE</option><option value="dart">DART</option><option value="plunge">BALLISTIC</option></optgroup><option value="stationary">STATIONARY</option></select></label>
+          <RangeField name="SPEED" label={<>SPEED</>} display={`${subject.movement.speed}u/s`} min="0" max="720" step="5" value={subject.movement.speed} onChange={(event) => writeOne((item) => ({ ...item, movement: { ...item.movement, speed: Number(event.target.value) } }))} />
+          {/* Which way the whole path points. LEFT is the flight every level
+              already had; positive turns toward the top of the screen. The
+              dashed preview redraws as this moves, from the world's own path
+              function, so what is shown is what will fly. */}
+          {subject.movement.pattern !== "stationary" && <RangeField name="PATH ANGLE" label={<>PATH ANGLE</>} display={`${describeAngle(subject.movement.angle ?? 0)}`} min="-180" max="180" step="5" value={subject.movement.angle ?? 0} onChange={(event) => writeOne((item) => ({ ...item, movement: { ...item.movement, angle: Number(event.target.value) } }))} />}
+          {/* How fast an arc turns its heading. Radius is speed over this:
+              a slow, gentle curve or a tight dive are both here. */}
+          {(subject.movement.pattern === "arc" || subject.movement.pattern === "arcWeave") && <RangeField name="CURVE" label={<>CURVE</>} display={`${describeAngle(subject.movement.curve ?? 0, "/s")}`} min="-180" max="180" step="5" value={subject.movement.curve ?? 0} onChange={(event) => writeOne((item) => ({ ...item, movement: { ...item.movement, curve: Number(event.target.value) } }))} />}
+          {/* A turn while it flies, in degrees per second: a tumbling rock, a
+              spinning mine. TRANSFORM's ROTATION is where the sprite starts;
+              this is how fast it keeps turning. Zero is stored as absent, so a
+              level that never touched it saves as it did. */}
+          <RangeField name="ROTATION" label={<>ROTATION</>} display={`${subject.movement.spin ? `${Math.round(subject.movement.spin * 1000) / 1000}°/s` : "NONE"}`} min="-360" max="360" step="0.1" value={subject.movement.spin ?? 0} onChange={(event) => writeOne((item) => ({ ...item, movement: { ...item.movement, spin: Number(event.target.value) === 0 ? undefined : Number(event.target.value) } }))} />
+          {/* The curve's three points as numbers, for exactness; the cyan
+              handles on the playfield are the way to shape it by eye. Offsets
+              from the object in the path's own frame, before PATH ANGLE. */}
+          {subject.movement.pattern === "bezier" && <>
+            {(subject.movement.points ?? defaultBezierPoints()).map((point, index) => <label className="field wide" key={index}><span>{index === 2 ? "END POINT" : `CONTROL POINT ${index + 1}`}</span>
+              <span className="bezier-xy">
+                <input type="number" step="10" value={Math.round(point.x)} aria-label={`${index === 2 ? "End point" : `Control point ${index + 1}`} X`} onChange={(event) => writeOne((item) => ({ ...item, movement: { ...item.movement, points: (item.movement.points ?? defaultBezierPoints()).map((entry, i) => (i === index ? { ...entry, x: Number(event.target.value) } : entry)) as LevelItem["movement"]["points"] } }))} />
+                <input type="number" step="10" value={Math.round(point.y)} aria-label={`${index === 2 ? "End point" : `Control point ${index + 1}`} Y`} onChange={(event) => writeOne((item) => ({ ...item, movement: { ...item.movement, points: (item.movement.points ?? defaultBezierPoints()).map((entry, i) => (i === index ? { ...entry, y: Number(event.target.value) } : entry)) as LevelItem["movement"]["points"] } }))} />
+              </span>
+            </label>)}
+            <p className="inspector-note">Drag the cyan handles on the playfield to shape the curve. Past the end point it flies straight on.</p>
+          </>}
+          {WAVING.has(subject.movement.pattern) && <><RangeField name="AMPLITUDE" label={<>AMPLITUDE</>} display={`${subject.movement.amplitude}u`} min="10" max="200" value={subject.movement.amplitude} onChange={(event) => writeOne((item) => ({ ...item, movement: { ...item.movement, amplitude: Number(event.target.value) } }))} /></>}
+          {/* Its own gate: a surge, a charge and a dart have no width to
+              set, but frequency is their whole rhythm -- pulses, gain and
+              lunges per second. */}
+          {TIMED.has(subject.movement.pattern) && <RangeField name="FREQUENCY" label={<>FREQUENCY</>} display={`${subject.movement.frequency.toFixed(2)}Hz`} min="0.1" max="1.5" step="0.05" value={subject.movement.frequency} onChange={(event) => writeOne((item) => ({ ...item, movement: { ...item.movement, frequency: Number(event.target.value) } }))} />}
+          {/* The wait, and what it aims at. Not shown for a thing that never
+              flies: a stationary sprite has no path to delay, and a lock
+              authored under it would slide in play with nothing drawn. */}
+          {subject.movement.pattern !== "stationary" && <>
+            <RangeField name="STALL" label={<>STALL</>} display={subject.movement.stall ? `${subject.movement.stall.toFixed(1)}s` : "NONE"} min="0" max="8" step="0.1" value={subject.movement.stall ?? 0} onChange={(event) => writeOne((item) => ({ ...item, movement: { ...item.movement, stall: Number(event.target.value) || undefined } }))} />
+            {(subject.movement.stall ?? 0) > 0 && <RangeField name="LOCK ON" label={<>LOCK ON</>} display={subject.movement.lock ? `${Math.round(subject.movement.lock * 100)}%` : "OFF"} scale={100} min="0" max="1" step="0.05" value={subject.movement.lock ?? 0} onChange={(event) => writeOne((item) => ({ ...item, movement: { ...item.movement, lock: Number(event.target.value) || undefined } }))} />}
+            <p className="inspector-note">{(subject.movement.stall ?? 0) > 0
+              ? `Waits ${subject.movement.stall!.toFixed(1)}s once it is on screen, then flies${subject.movement.lock ? " at where the ship was standing" : ""}.`
+              : "Waits where you placed it before flying, timed from the moment it comes into view."}</p>
+          </>}
+          {/* A plunge is the one path with a fall rate rather than a width. */}
+          {subject.movement.pattern === "plunge" && <RangeField name="FALL" label={<>FALL</>} display={`${subject.movement.gravity ?? 240}u/s²`} min="0" max="1200" step="20" value={subject.movement.gravity ?? 240} onChange={(event) => writeOne((item) => ({ ...item, movement: { ...item.movement, gravity: Number(event.target.value) } }))} />}
+        </>)}
 
-            {section("movement", subject.type === "decoration" ? "DECORATION MOTION" : "MOVEMENT", <>
-              <label className="field wide"><span>MOVEMENT</span><select value={subject.movement.pattern} onChange={(event) => writeOne((item) => ({ ...item, movement: { ...item.movement, pattern: event.target.value as MovePattern } }))}><optgroup label="LINES AND WAVES"><option value="straight">STRAIGHT</option><option value="sine">SINE WAVE</option><option value="zigzag">ZIGZAG</option><option value="lane">LANE HOLD</option><option value="figureEight">FIGURE EIGHT</option></optgroup><optgroup label="TURNS"><option value="arc">ARC</option><option value="arcWeave">ARC WEAVE</option><option value="bezier">BEZIER</option></optgroup><optgroup label="CHANGES OF SPEED"><option value="surge">SURGE</option><option value="charge">CHARGE</option><option value="dart">DART</option><option value="plunge">BALLISTIC</option></optgroup><option value="stationary">STATIONARY</option></select></label>
-              <RangeField name="SPEED" label={<>SPEED</>} display={`${subject.movement.speed}u/s`} min="0" max="720" step="5" value={subject.movement.speed} onChange={(event) => writeOne((item) => ({ ...item, movement: { ...item.movement, speed: Number(event.target.value) } }))} />
-              {/* Which way the whole path points. LEFT is the flight every level
-                  already had; positive turns toward the top of the screen. The
-                  dashed preview redraws as this moves, from the world's own path
-                  function, so what is shown is what will fly. */}
-              {subject.movement.pattern !== "stationary" && <RangeField name="PATH ANGLE" label={<>PATH ANGLE</>} display={`${describeAngle(subject.movement.angle ?? 0)}`} min="-180" max="180" step="5" value={subject.movement.angle ?? 0} onChange={(event) => writeOne((item) => ({ ...item, movement: { ...item.movement, angle: Number(event.target.value) } }))} />}
-              {/* How fast an arc turns its heading. Radius is speed over this:
-                  a slow, gentle curve or a tight dive are both here. */}
-              {(subject.movement.pattern === "arc" || subject.movement.pattern === "arcWeave") && <RangeField name="CURVE" label={<>CURVE</>} display={`${describeAngle(subject.movement.curve ?? 0, "/s")}`} min="-180" max="180" step="5" value={subject.movement.curve ?? 0} onChange={(event) => writeOne((item) => ({ ...item, movement: { ...item.movement, curve: Number(event.target.value) } }))} />}
-              {/* A turn while it flies, in degrees per second: a tumbling rock, a
-                  spinning mine. TRANSFORM's ROTATION is where the sprite starts;
-                  this is how fast it keeps turning. Zero is stored as absent, so a
-                  level that never touched it saves as it did. */}
-              <RangeField name="ROTATION" label={<>ROTATION</>} display={`${subject.movement.spin ? `${Math.round(subject.movement.spin * 1000) / 1000}°/s` : "NONE"}`} min="-360" max="360" step="0.1" value={subject.movement.spin ?? 0} onChange={(event) => writeOne((item) => ({ ...item, movement: { ...item.movement, spin: Number(event.target.value) === 0 ? undefined : Number(event.target.value) } }))} />
-              {/* The curve's three points as numbers, for exactness; the cyan
-                  handles on the playfield are the way to shape it by eye. Offsets
-                  from the object in the path's own frame, before PATH ANGLE. */}
-              {subject.movement.pattern === "bezier" && <>
-                {(subject.movement.points ?? defaultBezierPoints()).map((point, index) => <label className="field wide" key={index}><span>{index === 2 ? "END POINT" : `CONTROL POINT ${index + 1}`}</span>
-                  <span className="bezier-xy">
-                    <input type="number" step="10" value={Math.round(point.x)} aria-label={`${index === 2 ? "End point" : `Control point ${index + 1}`} X`} onChange={(event) => writeOne((item) => ({ ...item, movement: { ...item.movement, points: (item.movement.points ?? defaultBezierPoints()).map((entry, i) => (i === index ? { ...entry, x: Number(event.target.value) } : entry)) as LevelItem["movement"]["points"] } }))} />
-                    <input type="number" step="10" value={Math.round(point.y)} aria-label={`${index === 2 ? "End point" : `Control point ${index + 1}`} Y`} onChange={(event) => writeOne((item) => ({ ...item, movement: { ...item.movement, points: (item.movement.points ?? defaultBezierPoints()).map((entry, i) => (i === index ? { ...entry, y: Number(event.target.value) } : entry)) as LevelItem["movement"]["points"] } }))} />
-                  </span>
-                </label>)}
-                <p className="inspector-note">Drag the cyan handles on the playfield to shape the curve. Past the end point it flies straight on.</p>
-              </>}
-              {WAVING.has(subject.movement.pattern) && <><RangeField name="AMPLITUDE" label={<>AMPLITUDE</>} display={`${subject.movement.amplitude}u`} min="10" max="200" value={subject.movement.amplitude} onChange={(event) => writeOne((item) => ({ ...item, movement: { ...item.movement, amplitude: Number(event.target.value) } }))} /></>}
-              {/* Its own gate: a surge, a charge and a dart have no width to
-                  set, but frequency is their whole rhythm -- pulses, gain and
-                  lunges per second. */}
-              {TIMED.has(subject.movement.pattern) && <RangeField name="FREQUENCY" label={<>FREQUENCY</>} display={`${subject.movement.frequency.toFixed(2)}Hz`} min="0.1" max="1.5" step="0.05" value={subject.movement.frequency} onChange={(event) => writeOne((item) => ({ ...item, movement: { ...item.movement, frequency: Number(event.target.value) } }))} />}
-              {/* The wait, and what it aims at. Not shown for a thing that never
-                  flies: a stationary sprite has no path to delay, and a lock
-                  authored under it would slide in play with nothing drawn. */}
-              {subject.movement.pattern !== "stationary" && <>
-                <RangeField name="STALL" label={<>STALL</>} display={subject.movement.stall ? `${subject.movement.stall.toFixed(1)}s` : "NONE"} min="0" max="8" step="0.1" value={subject.movement.stall ?? 0} onChange={(event) => writeOne((item) => ({ ...item, movement: { ...item.movement, stall: Number(event.target.value) || undefined } }))} />
-                {(subject.movement.stall ?? 0) > 0 && <RangeField name="LOCK ON" label={<>LOCK ON</>} display={subject.movement.lock ? `${Math.round(subject.movement.lock * 100)}%` : "OFF"} scale={100} min="0" max="1" step="0.05" value={subject.movement.lock ?? 0} onChange={(event) => writeOne((item) => ({ ...item, movement: { ...item.movement, lock: Number(event.target.value) || undefined } }))} />}
-                <p className="inspector-note">{(subject.movement.stall ?? 0) > 0
-                  ? `Waits ${subject.movement.stall!.toFixed(1)}s once it is on screen, then flies${subject.movement.lock ? " at where the ship was standing" : ""}.`
-                  : "Waits where you placed it before flying, timed from the moment it comes into view."}</p>
-              </>}
-              {/* A plunge is the one path with a fall rate rather than a width. */}
-              {subject.movement.pattern === "plunge" && <RangeField name="FALL" label={<>FALL</>} display={`${subject.movement.gravity ?? 240}u/s²`} min="0" max="1200" step="20" value={subject.movement.gravity ?? 240} onChange={(event) => writeOne((item) => ({ ...item, movement: { ...item.movement, gravity: Number(event.target.value) } }))} />}
-            </>)}
+        {subject.type === "decoration" && section("decoration", "DECORATION", <>
+          <label className="field wide"><span>DRAW LAYER</span><select value={subject.decoration?.layer ?? "background"} onChange={(event) => writeOne((item) => ({ ...item, decoration: { ...(item.decoration ?? { layer: "background", opacity: .5, parallax: .5 }), layer: event.target.value as DecorationLayer } }))}><option value="background">BACKGROUND</option><option value="foreground">FOREGROUND</option></select></label>
+          <RangeField name="OPACITY" label={<>OPACITY</>} display={`${Math.round((subject.decoration?.opacity ?? .5) * 100)}%`} scale={100} min="0.1" max="1" step="0.05" value={subject.decoration?.opacity ?? .5} onChange={(event) => writeOne((item) => ({ ...item, decoration: { ...(item.decoration ?? { layer: "background", opacity: .5, parallax: .5 }), opacity: Number(event.target.value) } }))} />
+          <RangeField name="PARALLAX" label={<>PARALLAX</>} display={`${(subject.decoration?.parallax ?? .5).toFixed(2)}x`} min="0.1" max="2" step="0.05" value={subject.decoration?.parallax ?? .5} onChange={(event) => writeOne((item) => ({ ...item, decoration: { ...(item.decoration ?? { layer: "background", opacity: .5, parallax: .5 }), parallax: Number(event.target.value) } }))} />
+        </>)}
 
-            {subject.type === "decoration" && section("decoration", "DECORATION", <>
-              <label className="field wide"><span>DRAW LAYER</span><select value={subject.decoration?.layer ?? "background"} onChange={(event) => writeOne((item) => ({ ...item, decoration: { ...(item.decoration ?? { layer: "background", opacity: .5, parallax: .5 }), layer: event.target.value as DecorationLayer } }))}><option value="background">BACKGROUND</option><option value="foreground">FOREGROUND</option></select></label>
-              <RangeField name="OPACITY" label={<>OPACITY</>} display={`${Math.round((subject.decoration?.opacity ?? .5) * 100)}%`} scale={100} min="0.1" max="1" step="0.05" value={subject.decoration?.opacity ?? .5} onChange={(event) => writeOne((item) => ({ ...item, decoration: { ...(item.decoration ?? { layer: "background", opacity: .5, parallax: .5 }), opacity: Number(event.target.value) } }))} />
-              <RangeField name="PARALLAX" label={<>PARALLAX</>} display={`${(subject.decoration?.parallax ?? .5).toFixed(2)}x`} min="0.1" max="2" step="0.05" value={subject.decoration?.parallax ?? .5} onChange={(event) => writeOne((item) => ({ ...item, decoration: { ...(item.decoration ?? { layer: "background", opacity: .5, parallax: .5 }), parallax: Number(event.target.value) } }))} />
-            </>)}
+        {(subject.type === "powerup" || subject.type === "upgrade") && section("pickup", subject.type === "powerup" ? "TIMED POWERUP" : "PERMANENT UPGRADE", <>
+          {subject.type === "powerup" && <RangeField name="DURATION" label={<>DURATION</>} display={`${subject.pickup?.duration ?? 8}s`} min="1" max="30" value={subject.pickup?.duration ?? 8} onChange={(event) => writeOne((item) => ({ ...item, pickup: { ...(item.pickup ?? { duration: 8, xSpeedBoost: 0, ySpeedBoost: 0, shotSpeedBoost: 0, shotPowerBoost: 100, gun: "none" }), duration: Number(event.target.value) } }))} />}
+          <div className="field-grid"><div className="field"><EbNumericInput label="X SPEED +" sliderEnabled={false} min={0} max={800} step={10} value={subject.pickup?.xSpeedBoost ?? 0} onValueChange={(xSpeedBoost) => writeOne((item) => ({ ...item, pickup: { ...(item.pickup ?? { duration: 8, xSpeedBoost: 0, ySpeedBoost: 0, shotSpeedBoost: 0, shotPowerBoost: 100, gun: "none" }), xSpeedBoost } }))} /></div><div className="field"><EbNumericInput label="Y SPEED +" sliderEnabled={false} min={0} max={800} step={10} value={subject.pickup?.ySpeedBoost ?? 0} onValueChange={(ySpeedBoost) => writeOne((item) => ({ ...item, pickup: { ...(item.pickup ?? { duration: 8, xSpeedBoost: 0, ySpeedBoost: 0, shotSpeedBoost: 0, shotPowerBoost: 100, gun: "none" }), ySpeedBoost } }))} /></div></div>
+          <div className="field-grid"><div className="field"><EbNumericInput label="SHOT SPEED +" sliderEnabled={false} min={0} max={1600} step={25} value={subject.pickup?.shotSpeedBoost ?? 0} onValueChange={(shotSpeedBoost) => writeOne((item) => ({ ...item, pickup: { ...(item.pickup ?? { duration: 8, xSpeedBoost: 0, ySpeedBoost: 0, shotSpeedBoost: 0, shotPowerBoost: 100, gun: "none" }), shotSpeedBoost } }))} /></div><div className="field"><EbNumericInput label="SHOT POWER +" sliderEnabled={false} min={0} max={1000} step={100} value={subject.pickup?.shotPowerBoost ?? 0} onValueChange={(shotPowerBoost) => writeOne((item) => ({ ...item, pickup: { ...(item.pickup ?? { duration: 8, xSpeedBoost: 0, ySpeedBoost: 0, shotSpeedBoost: 0, shotPowerBoost: 100, gun: "none" }), shotPowerBoost } }))} /></div></div>
+          <label className="field wide"><span>GRANT GUN</span><select value={subject.pickup?.gun ?? "none"} onChange={(event) => writeOne((item) => ({ ...item, pickup: { ...(item.pickup ?? { duration: 8, xSpeedBoost: 0, ySpeedBoost: 0, shotSpeedBoost: 0, shotPowerBoost: 100, gun: "none" }), gun: event.target.value as GunType | "none" } }))}><option value="none">NO NEW GUN</option><option value="pulse">PULSE</option><option value="spread">SPREAD</option><option value="rapid">RAPID</option></select></label>
+        </>)}
 
-            {(subject.type === "powerup" || subject.type === "upgrade") && section("pickup", subject.type === "powerup" ? "TIMED POWERUP" : "PERMANENT UPGRADE", <>
-              {subject.type === "powerup" && <RangeField name="DURATION" label={<>DURATION</>} display={`${subject.pickup?.duration ?? 8}s`} min="1" max="30" value={subject.pickup?.duration ?? 8} onChange={(event) => writeOne((item) => ({ ...item, pickup: { ...(item.pickup ?? { duration: 8, xSpeedBoost: 0, ySpeedBoost: 0, shotSpeedBoost: 0, shotPowerBoost: 100, gun: "none" }), duration: Number(event.target.value) } }))} />}
-              <div className="field-grid"><div className="field"><EbNumericInput label="X SPEED +" sliderEnabled={false} min={0} max={800} step={10} value={subject.pickup?.xSpeedBoost ?? 0} onValueChange={(xSpeedBoost) => writeOne((item) => ({ ...item, pickup: { ...(item.pickup ?? { duration: 8, xSpeedBoost: 0, ySpeedBoost: 0, shotSpeedBoost: 0, shotPowerBoost: 100, gun: "none" }), xSpeedBoost } }))} /></div><div className="field"><EbNumericInput label="Y SPEED +" sliderEnabled={false} min={0} max={800} step={10} value={subject.pickup?.ySpeedBoost ?? 0} onValueChange={(ySpeedBoost) => writeOne((item) => ({ ...item, pickup: { ...(item.pickup ?? { duration: 8, xSpeedBoost: 0, ySpeedBoost: 0, shotSpeedBoost: 0, shotPowerBoost: 100, gun: "none" }), ySpeedBoost } }))} /></div></div>
-              <div className="field-grid"><div className="field"><EbNumericInput label="SHOT SPEED +" sliderEnabled={false} min={0} max={1600} step={25} value={subject.pickup?.shotSpeedBoost ?? 0} onValueChange={(shotSpeedBoost) => writeOne((item) => ({ ...item, pickup: { ...(item.pickup ?? { duration: 8, xSpeedBoost: 0, ySpeedBoost: 0, shotSpeedBoost: 0, shotPowerBoost: 100, gun: "none" }), shotSpeedBoost } }))} /></div><div className="field"><EbNumericInput label="SHOT POWER +" sliderEnabled={false} min={0} max={1000} step={100} value={subject.pickup?.shotPowerBoost ?? 0} onValueChange={(shotPowerBoost) => writeOne((item) => ({ ...item, pickup: { ...(item.pickup ?? { duration: 8, xSpeedBoost: 0, ySpeedBoost: 0, shotSpeedBoost: 0, shotPowerBoost: 100, gun: "none" }), shotPowerBoost } }))} /></div></div>
-              <label className="field wide"><span>GRANT GUN</span><select value={subject.pickup?.gun ?? "none"} onChange={(event) => writeOne((item) => ({ ...item, pickup: { ...(item.pickup ?? { duration: 8, xSpeedBoost: 0, ySpeedBoost: 0, shotSpeedBoost: 0, shotPowerBoost: 100, gun: "none" }), gun: event.target.value as GunType | "none" } }))}><option value="none">NO NEW GUN</option><option value="pulse">PULSE</option><option value="spread">SPREAD</option><option value="rapid">RAPID</option></select></label>
-            </>)}
+        {subject.type !== "decoration" && section("effects", "EXPLOSION & SOUND", <>
+          <EffectField label="EXPLOSION" kind="explosion" components={level.components} value={subject.fx?.explosionId}
+            onChange={(next) => writeAll((item) => ({ ...item, fx: withEffect(item.fx, "explosionId", next) }), "item-explosion")} />
+          <EffectField label="DEATH SOUND" kind="sound" components={level.components} value={subject.fx?.deathSoundId}
+            onChange={(next) => writeAll((item) => ({ ...item, fx: withEffect(item.fx, "deathSoundId", next) }), "item-death-sound")} />
+          {(subject.type === "enemy" || subject.type === "group") && <EffectField label="FIRE SOUND" kind="sound" components={level.components} value={subject.fx?.fireSoundId}
+            onChange={(next) => writeAll((item) => ({ ...item, fx: withEffect(item.fx, "fireSoundId", next) }), "item-fire-sound")} />}
+          <p className="inspector-note">Designed in the palette under COMPONENTS. Several objects can point at one explosion or sound; editing it reaches all of them.</p>
+        </>)}
 
-            {subject.type !== "decoration" && section("effects", "EXPLOSION & SOUND", <>
-              <EffectField label="EXPLOSION" kind="explosion" components={level.components} value={subject.fx?.explosionId}
-                onChange={(next) => writeAll((item) => ({ ...item, fx: withEffect(item.fx, "explosionId", next) }), "item-explosion")} />
-              <EffectField label="DEATH SOUND" kind="sound" components={level.components} value={subject.fx?.deathSoundId}
-                onChange={(next) => writeAll((item) => ({ ...item, fx: withEffect(item.fx, "deathSoundId", next) }), "item-death-sound")} />
-              {(subject.type === "enemy" || subject.type === "group") && <EffectField label="FIRE SOUND" kind="sound" components={level.components} value={subject.fx?.fireSoundId}
-                onChange={(next) => writeAll((item) => ({ ...item, fx: withEffect(item.fx, "fireSoundId", next) }), "item-fire-sound")} />}
-              <p className="inspector-note">Designed in the palette under COMPONENTS. Several objects can point at one explosion or sound; editing it reaches all of them.</p>
-            </>)}
+        {(subject.type === "enemy" || subject.type === "group") && section("weapon", "WEAPON", <>
+          <label className="toggle-row"><span>WEAPON ENABLED</span><input type="checkbox" checked={subject.weapon.enabled} onChange={(event) => writeOne((item) => ({ ...item, weapon: { ...item.weapon, enabled: event.target.checked } }))} /><i /></label>
+          {subject.weapon.enabled && <><div className="field-grid"><label className="field"><span>PROJECTILE</span><select value={subject.weapon.projectile} onChange={(event) => writeOne((item) => ({ ...item, weapon: { ...item.weapon, projectile: event.target.value as ProjectileSprite } }))}><option value="bolt">BOLT</option><option value="plasma">PLASMA</option></select></label><label className="field"><span>MOTION</span><select value={subject.weapon.projectileMovement} onChange={(event) => writeOne((item) => ({ ...item, weapon: { ...item.weapon, projectileMovement: event.target.value as "straight" | "sine" } }))}><option value="straight">STRAIGHT</option><option value="sine">SINE</option></select></label></div>
+            <RangeField name="SHOTS / SEC" label={<>SHOTS / SEC</>} display={`${subject.weapon.shotsPerSecond.toFixed(1)}`} min="0.1" max="4" step="0.1" value={subject.weapon.shotsPerSecond} onChange={(event) => writeOne((item) => ({ ...item, weapon: { ...item.weapon, shotsPerSecond: Number(event.target.value) } }))} />
+            <RangeField name="COOLDOWN" label={<>COOLDOWN</>} display={`${subject.weapon.cooldown.toFixed(1)}s`} min="0" max="4" step="0.1" value={subject.weapon.cooldown} onChange={(event) => writeOne((item) => ({ ...item, weapon: { ...item.weapon, cooldown: Number(event.target.value) } }))} />
+            <RangeField name="PROJECTILE SPEED" label={<>PROJECTILE SPEED</>} display={`${subject.weapon.projectileSpeed}u/s`} min="100" max="700" step="10" value={subject.weapon.projectileSpeed} onChange={(event) => writeOne((item) => ({ ...item, weapon: { ...item.weapon, projectileSpeed: Number(event.target.value) } }))} />
+            <RangeField name="POWER" label={<>POWER</>} display={`${subject.weapon.power}`} min="1" max="3" value={subject.weapon.power} onChange={(event) => writeOne((item) => ({ ...item, weapon: { ...item.weapon, power: Number(event.target.value) } }))} />
+            {/* Where the gun sits on the ship, forward along the way it faces and across it,
+                in world units. NOSE and CENTRE are where every weapon fired from before there
+                was a choice; the sight on the playfield shows the spot. */}
+            <RangeField name="MOUNT FORWARD" label={<>MOUNT FORWARD</>} display={`${subject.weapon.mount ? `${subject.weapon.mount.x}u` : "NOSE"}`} min="-120" max="120" step="2" value={subject.weapon.mount?.x ?? Math.round(subject.size * subject.scale)} onChange={(event) => writeOne((item) => ({ ...item, weapon: { ...item.weapon, mount: { x: Number(event.target.value), y: item.weapon.mount?.y ?? 0 } } }))} />
+            <RangeField name="MOUNT ACROSS" label={<>MOUNT ACROSS</>} display={`${subject.weapon.mount ? `${subject.weapon.mount.y}u` : "CENTRE"}`} min="-120" max="120" step="2" value={subject.weapon.mount?.y ?? 0} onChange={(event) => writeOne((item) => ({ ...item, weapon: { ...item.weapon, mount: { x: item.weapon.mount?.x ?? Math.round(item.size * item.scale), y: Number(event.target.value) } } }))} />
+            <button className="inspector-action" type="button" onClick={() => saveWeaponComponent(subject.weapon, `${subject.name} Weapon`)}>SAVE WEAPON COMPONENT</button>
+            {/* The dropdown covers removal too, as NONE, so the separate
+                "remove pattern" button it replaced is gone rather than
+                sitting beside a control that already does its job. */}
+            <BulletPatternField components={patternComponents} pattern={subject.weapon.pattern} onApply={(next) => writeOne((item) => ({ ...item, weapon: { ...item.weapon, enabled: true, pattern: next } }))} />
+            <button className="inspector-action pattern-designer-button" type="button" onClick={() => setEditingPattern({ pattern: structuredClone(subject.weapon.pattern ?? createPatternPreset("Pendulum Sweep")), target: editingComponent ? { kind: "object", id: editingComponent.id } : { kind: "item", id: subject.id } })}>{subject.weapon.pattern ? "EDIT THIS PATTERN" : "DESIGN A PATTERN"}</button>
+          </>}
+        </>)}
+        </EbAccordion>
+      </div>}
+    </div>
+  );
+  const building = mode === "build" && !presenting;
+  const modes = (
+    <>
+      <span className={`controller-status ${controllerName ? "connected" : ""}`} title={controllerName || "Connect a game controller"}><i />{controllerName ? "CONTROLLER" : "NO GAMEPAD"}</span>
+      {showFps && (
+        <span className="fps-readout" aria-live="off">
+          {(["current", "min", "median"] as const).map((key) => (
+            <span key={key}>
+              {key === "median" ? "med" : key === "current" ? "now" : key}{" "}
+              <b>{fpsStats?.[key] == null ? "—" : Math.round(fpsStats[key] as number)}</b>
+            </span>
+          ))}
+        </span>
+      )}
+      {mode === "build" && <>
+        <button className="fullscreen-button" type="button" onClick={() => applyHistory(-1)} disabled={!canUndo} aria-keyshortcuts="Control+Z">↶ UNDO</button>
+        <button className="fullscreen-button" type="button" onClick={() => applyHistory(1)} disabled={!canRedo} aria-keyshortcuts="Control+Shift+Z">↷ REDO</button>
+      </>}
+      <button className="fullscreen-button" type="button" onClick={() => { setShowHits((value) => { showHitsRef.current = !value; return !value; }); }} aria-pressed={showHits} title="Outline what the simulation collides against"><b>◎</b> DEBUG</button>
+      <button className="fullscreen-button" type="button" onClick={() => void toggleFullscreen()} aria-pressed={isFullscreen} aria-keyshortcuts="F">{isFullscreen ? "EXIT FULL" : "FULLSCREEN"}</button>
+      {mode === "build" ? <>
+        {/* `() => enterPlay()` rather than `onClick={enterPlay}`: the handler
+            would otherwise hand the click event in as `presented`, and an
+            event object is truthy, so TEST RUN would silently present. */}
+        <button className="test-button" type="button" onClick={() => enterPlay()} aria-keyshortcuts="T">TEST RUN <b>▶</b></button>
+        <button className="fullscreen-button present-button" type="button" onClick={() => enterPlay(true)} aria-keyshortcuts="Shift+T"><b>▣</b> PRESENT</button>
+      </> : <button className="exit-button" type="button" onClick={exitPlay} aria-keyshortcuts="Escape">RETURN TO BUILD</button>}
+      <button className="fullscreen-button" type="button" onClick={() => setShowHelp(true)} aria-keyshortcuts="F1">HELP</button>
+      <button className="fullscreen-button settings-button" type="button" onClick={() => setShowSettings(true)}><b>⚙</b> SETTINGS</button>
+    </>
+  );
 
-            {(subject.type === "enemy" || subject.type === "group") && section("weapon", "WEAPON", <>
-              <label className="toggle-row"><span>WEAPON ENABLED</span><input type="checkbox" checked={subject.weapon.enabled} onChange={(event) => writeOne((item) => ({ ...item, weapon: { ...item.weapon, enabled: event.target.checked } }))} /><i /></label>
-              {subject.weapon.enabled && <><div className="field-grid"><label className="field"><span>PROJECTILE</span><select value={subject.weapon.projectile} onChange={(event) => writeOne((item) => ({ ...item, weapon: { ...item.weapon, projectile: event.target.value as ProjectileSprite } }))}><option value="bolt">BOLT</option><option value="plasma">PLASMA</option></select></label><label className="field"><span>MOTION</span><select value={subject.weapon.projectileMovement} onChange={(event) => writeOne((item) => ({ ...item, weapon: { ...item.weapon, projectileMovement: event.target.value as "straight" | "sine" } }))}><option value="straight">STRAIGHT</option><option value="sine">SINE</option></select></label></div>
-                <RangeField name="SHOTS / SEC" label={<>SHOTS / SEC</>} display={`${subject.weapon.shotsPerSecond.toFixed(1)}`} min="0.1" max="4" step="0.1" value={subject.weapon.shotsPerSecond} onChange={(event) => writeOne((item) => ({ ...item, weapon: { ...item.weapon, shotsPerSecond: Number(event.target.value) } }))} />
-                <RangeField name="COOLDOWN" label={<>COOLDOWN</>} display={`${subject.weapon.cooldown.toFixed(1)}s`} min="0" max="4" step="0.1" value={subject.weapon.cooldown} onChange={(event) => writeOne((item) => ({ ...item, weapon: { ...item.weapon, cooldown: Number(event.target.value) } }))} />
-                <RangeField name="PROJECTILE SPEED" label={<>PROJECTILE SPEED</>} display={`${subject.weapon.projectileSpeed}u/s`} min="100" max="700" step="10" value={subject.weapon.projectileSpeed} onChange={(event) => writeOne((item) => ({ ...item, weapon: { ...item.weapon, projectileSpeed: Number(event.target.value) } }))} />
-                <RangeField name="POWER" label={<>POWER</>} display={`${subject.weapon.power}`} min="1" max="3" value={subject.weapon.power} onChange={(event) => writeOne((item) => ({ ...item, weapon: { ...item.weapon, power: Number(event.target.value) } }))} />
-                {/* Where the gun sits on the ship, forward along the way it faces and across it,
-                    in world units. NOSE and CENTRE are where every weapon fired from before there
-                    was a choice; the sight on the playfield shows the spot. */}
-                <RangeField name="MOUNT FORWARD" label={<>MOUNT FORWARD</>} display={`${subject.weapon.mount ? `${subject.weapon.mount.x}u` : "NOSE"}`} min="-120" max="120" step="2" value={subject.weapon.mount?.x ?? Math.round(subject.size * subject.scale)} onChange={(event) => writeOne((item) => ({ ...item, weapon: { ...item.weapon, mount: { x: Number(event.target.value), y: item.weapon.mount?.y ?? 0 } } }))} />
-                <RangeField name="MOUNT ACROSS" label={<>MOUNT ACROSS</>} display={`${subject.weapon.mount ? `${subject.weapon.mount.y}u` : "CENTRE"}`} min="-120" max="120" step="2" value={subject.weapon.mount?.y ?? 0} onChange={(event) => writeOne((item) => ({ ...item, weapon: { ...item.weapon, mount: { x: item.weapon.mount?.x ?? Math.round(item.size * item.scale), y: Number(event.target.value) } } }))} />
-                <button className="inspector-action" type="button" onClick={() => saveWeaponComponent(subject.weapon, `${subject.name} Weapon`)}>SAVE WEAPON COMPONENT</button>
-                {/* The dropdown covers removal too, as NONE, so the separate
-                    "remove pattern" button it replaced is gone rather than
-                    sitting beside a control that already does its job. */}
-                <BulletPatternField components={patternComponents} pattern={subject.weapon.pattern} onApply={(next) => writeOne((item) => ({ ...item, weapon: { ...item.weapon, enabled: true, pattern: next } }))} />
-                <button className="inspector-action pattern-designer-button" type="button" onClick={() => setEditingPattern({ pattern: structuredClone(subject.weapon.pattern ?? createPatternPreset("Pendulum Sweep")), target: editingComponent ? { kind: "object", id: editingComponent.id } : { kind: "item", id: subject.id } })}>{subject.weapon.pattern ? "EDIT THIS PATTERN" : "DESIGN A PATTERN"}</button>
-              </>}
-            </>)}
-            </EbAccordion>
-          </div>}
-        </aside>
-      </section>
-
-      {presenting && <div className="present-exit-hint">ESC TO RETURN TO THE EDITOR</div>}
-      <footer className="shortcut-bar"><span><kbd>T</kbd> PLAYTEST</span><span><kbd>SHIFT T</kbd> PRESENT</span><span><kbd>ESC</kbd> SELECT / BUILD</span><span><kbd>S</kbd> SCROLL</span><span><kbd>D</kbd> DUPLICATE</span><span><kbd>Q / E</kbd> ROTATE</span><span><kbd>CTRL / SHIFT</kbd> MULTI-SELECT</span><span><kbd>1–9</kbd> EQUIP</span><span><kbd>CTRL Z</kbd> UNDO</span><span className="gamepad-shortcut">GAMEPAD: <kbd>LS</kbd> MOVE <kbd>RS</kbd> SATELLITE <kbd>Y</kbd> CYCLE WEAPON <kbd>A / RT</kbd> FIRE</span><strong>THE FATE OF THE GALAXY IS IN YOUR HANDS.</strong></footer>
+  return (
+    <>
+      <Shell
+        className="starline-shell"
+        home={home ?? undefined}
+        title={<span className="brand" aria-label="Starline Foundry"><span className="brand-mark">S</span><span>STARLINE <i>FOUNDRY</i></span></span>}
+        bar={<DocumentBar
+          session={gameSession}
+          describe={describeGame}
+          samples={GAME_SAMPLES}
+          notify={say}
+          transport={<button type="button" onClick={() => void exportPlayable()} title="The game as a folder that plays: engine, player, levels and music">PLAYABLE…</button>}
+        />}
+        modes={modes}
+        presenting={presenting}
+        playing={mode !== "build"}
+        status={notice}
+        textScale={preferences.textScale}
+        presentingHint="ESC TO RETURN TO THE EDITOR"
+      >
+        <Workspace
+          settings={editorSettings}
+          limits={STARLINE_RAILS}
+          stageMin={STAGE_MIN_WIDTH}
+          prerendered
+          palette={building ? paletteRail : undefined}
+          inspector={building ? inspectorRail : undefined}
+        >
+          {stagePanel}
+        </Workspace>
+        <input ref={musicImportRef} className="hidden-input" type="file" accept="audio/*,.mp3,.ogg,.wav,.m4a,.flac" onChange={(event) => { const file = event.target.files?.[0]; if (file) void importMusic(file); event.target.value = ""; }} />
+      </Shell>
       {editingAsset && <SpriteStudio asset={editingAsset} onSave={saveSpriteAsset} onCancel={() => setEditingAsset(null)} />}
       {editingHitboxItem && <HitboxEditor
         paint={editingHitboxPaint}
@@ -4126,26 +3909,14 @@ A game exported from the Starline Foundry.
         {pendingConfirm.alternate && <button type="button" onClick={() => { const act = pendingConfirm.alternate!.action; setPendingConfirm(null); act(); }}>{pendingConfirm.alternate.label}</button>}
         <button type="button" className="confirm-commit" onClick={() => { const act = pendingConfirm.action; setPendingConfirm(null); act(); }}>{pendingConfirm.confirmLabel ?? "CONFIRM"}</button>
       </>}><p>{pendingConfirm.message}</p></EbDialog>}
-      {showSettings && <EbDialog visible title="EDITOR SETTINGS" onVisibleChange={(open) => { if (!open) setShowSettings(false); }} className="settings-dialog" footerContent={<button type="button" onClick={() => setShowSettings(false)}>DONE</button>}>
-        <label className="field wide"><span>TOOLBAR BEHAVIOR</span><select value={sectionMode} onChange={(event) => applySectionMode(event.target.value as SectionMode)}><option value="multiple">SEVERAL SECTIONS OPEN</option><option value="single">ONE SECTION AT A TIME</option></select></label>
-        <p className="inspector-note">Governs the collapsible sections in the palette and the Inspector alike. Kept in this browser rather than in the level.</p>
-        <label className="field wide"><span>DISPLAY FILTER</span><select value={displayPrefs.pixelFilter} onChange={(event) => applyDisplayPref("pixelFilter", event.target.value as DisplayFilter)}><option value="none">NONE</option><option value="display-scanlines">SCANLINES</option><option value="lcd-grid">LCD GRID</option><option value="crt">CRT TUBE</option></select></label>
-        {displayPrefs.pixelFilter === "display-scanlines" && <>
-          <RangeField name="LINE BRIGHTNESS" label={<>LINE BRIGHTNESS</>} display={`${Math.round(displayPrefs.lineBrightness * 100)}%`} scale={100} min="0" max="1" step="0.02" value={displayPrefs.lineBrightness} onChange={(event) => applyDisplayPref("lineBrightness", Number(event.target.value))} />
-          <RangeField name="BAND ROWS" label={<>BAND ROWS</>} display={`${displayPrefs.bandRows}`} min="1" max="6" step="1" value={displayPrefs.bandRows} onChange={(event) => applyDisplayPref("bandRows", Number(event.target.value))} />
-        </>}
-        {displayPrefs.pixelFilter === "lcd-grid" && <RangeField name="GRID THICKNESS" label={<>GRID THICKNESS</>} display={`${displayPrefs.gridThickness.toFixed(1)}px`} min="0" max="4" step="0.5" value={displayPrefs.gridThickness} onChange={(event) => applyDisplayPref("gridThickness", Number(event.target.value))} />}
-        {displayPrefs.pixelFilter === "crt" && <>
-          <RangeField name="TUBE" label={<>TUBE</>} display={`${Math.round(displayPrefs.crtAmount * 100)}%`} scale={100} min="0" max="1" step="0.02" value={displayPrefs.crtAmount} onChange={(event) => applyDisplayPref("crtAmount", Number(event.target.value))} />
-          <RangeField name="GLOW" label={<>GLOW</>} display={`${Math.round(displayPrefs.crtGlow * 100)}%`} scale={100} min="0" max="1" step="0.02" value={displayPrefs.crtGlow} onChange={(event) => applyDisplayPref("crtGlow", Number(event.target.value))} />
-          <RangeField name="NOISE" label={<>NOISE</>} display={`${Math.round(displayPrefs.crtNoise * 100)}%`} scale={100} min="0" max="1" step="0.02" value={displayPrefs.crtNoise} onChange={(event) => applyDisplayPref("crtNoise", Number(event.target.value))} />
-        </>}
-        <p className="inspector-note">{displayPrefs.pixelFilter === "none" ? "The played picture, as drawn." : "Applied while playing and presenting; the editor stays as drawn. Kept in this browser."}</p>
-      </EbDialog>}
+      {showHelp && <HelpSheet bindings={HELP_BINDINGS} prepend={SHELL_DOCUMENT_SHORTCUTS} groups={[{ title: "Flying", rows: FLIGHT_KEYS }]} onClose={() => setShowHelp(false)} />}
+      {/* Every control the old settings dialog had was a standard preference, so
+          the sheet is the shell's whole. Sound is left out: nothing here reads it. */}
+      {showSettings && <SettingsSheet settings={editorSettings} title="EDITOR SETTINGS" sound={false} onClose={() => setShowSettings(false)} />}
       {editingPattern && <BulletPatternStudio pattern={editingPattern.pattern} onApply={applyPatternEditor} onSaveComponent={savePatternComponent} onCancel={() => setEditingPattern(null)} />}
       {editingSound && <SfxStudio sound={editingSound.sound} onApply={saveSoundComponent} onCancel={() => setEditingSound(null)} />}
       {editingExplosion && <BurstDesigner explosions={explosions} single={{ name: editingExplosion.name, burst: editingExplosion.burst }} onSaveSingle={saveExplosionComponent} onApply={() => setEditingExplosion(null)} onCancel={() => setEditingExplosion(null)} />}
       {designingBursts && <BurstDesigner explosions={explosions} onCancel={() => setDesigningBursts(false)} onApply={(next) => { setExplosions(next); saveExplosions(next); setDesigningBursts(false); flash("EXPLOSIONS SAVED"); }} />}
-    </main>
+    </>
   );
 }

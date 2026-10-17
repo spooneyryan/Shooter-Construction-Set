@@ -45,31 +45,46 @@ button, input, select { font: inherit; }
 button, select { color: inherit; }
 button { cursor: pointer; }
 
-.editor-app { height: 100dvh; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
-.topbar {
-  height: 58px;
-  flex: 0 0 auto;
-  padding: 0 clamp(14px, 2vw, 28px);
-  display: grid;
-  grid-template-columns: 1fr auto 1fr;
-  align-items: center;
-  border-bottom: 1px solid var(--line);
-  background: rgba(5, 11, 16, .94);
+/* The construction-set shell's frame (GameBase docs/SHELL.md). @ccllc/studio
+   draws the bar, the rails and their handles, the status line and the sheets
+   in the skin contract's tokens; here those tokens are Starline's palette,
+   and the bar's controls wear the editor's mono, uppercase look. */
+.starline-shell {
+  height: 100dvh;
+  --game-surface-canvas: var(--deep);
+  --game-surface-panel: #081119;
+  --game-surface-raised: #0d1921;
+  --game-border-default: var(--line);
+  --game-text-primary: var(--ink);
+  --game-text-muted: var(--muted);
+  --game-status-warning: #7d939d;
+  --studio-confirm: var(--lime);
+  --studio-accent: var(--cyan);
   font-family: var(--font-mono), monospace;
 }
-/* The way home when Starline is a room under the GameBase app: beside the brand, in the cell the brand had. */
-.topbar-start { display: inline-flex; align-items: center; gap: 14px; min-width: 0; }
-.topbar-home { color: var(--muted); text-decoration: none; font-size: 11px; font-weight: 700; letter-spacing: .13em; text-transform: uppercase; white-space: nowrap; }
-.topbar-home::after { content: "\203A"; margin-left: 10px; }
-.topbar-home:hover, .topbar-home:focus-visible { color: var(--ink); }
+.starline-shell .shell-bar { align-items: center; padding: 10px clamp(14px, 2vw, 28px); background: rgba(5, 11, 16, .94); }
+.starline-shell .shell-status { font-size: 9px; letter-spacing: .1em; }
+.starline-shell .document-bar { align-items: center; }
+.starline-shell .document-bar input, .starline-shell .document-bar select, .starline-shell .document-bar button { height: 31px; border: 1px solid #2a3c46; background: #0e1a22; color: #cfdee4; outline: 0; font-family: var(--font-mono); font-size: 10px; letter-spacing: .06em; }
+.starline-shell .document-bar input { padding: 0 10px; }
+.starline-shell .document-bar input:focus { border-color: var(--cyan); }
+.starline-shell .document-bar button { padding: 0 10px; text-transform: uppercase; }
+.starline-shell .document-bar button:hover:not(:disabled) { color: var(--lime); border-color: var(--lime); }
+.starline-shell .document-bar button:disabled { opacity: .35; cursor: default; }
+/* The rails are the shell's; inside them the panels are as they were, minus
+   the scrolling and the border the rail now owns. */
+.starline-shell .shell-rail { padding: 0; gap: 0; background: var(--panel); }
+.starline-shell .shell-rail > .palette-panel, .starline-shell .shell-rail > .inspector-panel { min-height: 100%; overflow: visible; border: 0; }
+.starline-shell .shell-stage > .stage-panel { height: 100%; }
+/* The level's own length and mode, under its name above the list of levels. */
+.level-props { display: flex; flex-wrap: wrap; gap: 6px 10px; padding: 6px 0 8px; }
+.level-props label { display: flex; align-items: center; gap: 6px; }
+.level-props label > span { color: var(--muted); font-size: 9px; letter-spacing: .12em; }
+.level-props input, .level-props select { height: 26px; border: 1px solid #263944; background: #0d1921; color: #c2d3d9; outline: 0; font-family: var(--font-mono); font-size: 10px; }
+.level-props input:focus, .level-props select:focus { border-color: var(--cyan); }
 .brand { display: inline-flex; width: fit-content; align-items: center; gap: 11px; color: var(--ink); text-decoration: none; font-size: 13px; font-weight: 800; letter-spacing: .13em; }
 .brand i { color: var(--muted); font-size: 10px; font-style: normal; }
 .brand-mark { width: 28px; height: 28px; display: grid; place-items: center; color: #081015; background: var(--lime); font-family: var(--font-display); font-size: 15px; font-weight: 800; letter-spacing: 0; transform: skew(-8deg); }
-.mode-chip { display: flex; align-items: center; gap: 9px; color: #b7c9d0; font-size: 10px; letter-spacing: .16em; }
-.cyan-dot, .lime-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--cyan); box-shadow: 0 0 10px var(--cyan); }
-.lime-dot { background: var(--lime); box-shadow: 0 0 10px var(--lime); }
-.top-actions { justify-self: end; display: flex; align-items: center; gap: 16px; }
-.autosave-state { color: #526b77; font-size: 9px; letter-spacing: .1em; }
 .controller-status { max-width: 120px; display: flex; align-items: center; gap: 6px; overflow: hidden; color: #475f6a; font-size: 9px; letter-spacing: .08em; white-space: nowrap; }
 .controller-status i { width: 6px; height: 6px; flex: 0 0 auto; border: 1px solid #49616c; border-radius: 50%; }
 .controller-status.connected { color: #92aab4; }
@@ -78,10 +93,6 @@ button { cursor: pointer; }
 .test-button b { width: 28px; height: 24px; display: grid; place-items: center; background: #0c1617; color: var(--lime); }
 .exit-button { padding: 0 12px; color: var(--ink); border: 1px solid #49606b; background: #111c23; }
 .test-button kbd, .exit-button kbd { color: inherit; border-color: rgba(0,0,0,.28); background: rgba(0,0,0,.08); }
-.history-actions { display: flex; gap: 4px; }
-.history-actions button { width: 31px; height: 31px; border: 1px solid #2b414c; background: #0d1921; color: #9bb0b8; font-size: 17px; }
-.history-actions button:hover:not(:disabled) { color: var(--cyan); border-color: var(--cyan); }
-.history-actions button:disabled { opacity: .28; cursor: default; }
 .fullscreen-button { height: 31px; padding: 0 10px; display: flex; align-items: center; gap: 7px; border: 1px solid #304752; background: #0d1921; color: #8ba1ab; font-family: var(--font-mono); font-size: 9px; letter-spacing: .08em; }
 .fullscreen-button:hover { color: var(--cyan); border-color: var(--cyan); }
 /* A toggle that is ON says so, the way an active tool does: the border and
@@ -91,57 +102,11 @@ button { cursor: pointer; }
 .fullscreen-button[aria-pressed="true"] { color: var(--cyan); border-color: var(--cyan); background: rgba(100,227,255,.07); }
 .settings-button b { font-size: 13px; font-weight: 400; line-height: 1; }
 
-.levelbar {
-  min-height: 54px;
-  flex: 0 0 auto;
-  padding: 8px clamp(14px, 2vw, 28px);
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  border-bottom: 1px solid var(--line);
-  background: #081119;
-  font-family: var(--font-mono), monospace;
-}
-.levelbar label { display: flex; align-items: center; gap: 8px; }
-.levelbar label > span { color: var(--muted); font-size: 9px; letter-spacing: .12em; }
-.levelbar input, .levelbar select, .file-actions button { height: 31px; border: 1px solid #2a3c46; background: #0e1a22; color: #cfdee4; outline: 0; font-family: var(--font-mono); font-size: 10px; letter-spacing: .04em; }
-.levelbar input:focus, .levelbar select:focus { border-color: var(--cyan); }
-.level-name input { width: clamp(130px, 16vw, 230px); padding: 0 10px; }
 .length-control { position: relative; }
 .length-control input { width: 90px; padding: 0 24px 0 9px; }
 .length-control em { position: absolute; right: 8px; color: #6d838f; font-size: 9px; font-style: normal; }
-.file-actions { margin-left: auto; display: flex; align-items: center; gap: 6px; }
-.file-actions button { padding: 0 10px; letter-spacing: .1em; }
-.file-actions button:hover:not(:disabled) { color: var(--lime); border-color: var(--lime); }
-.file-actions button:disabled { opacity: .35; cursor: default; }
-.file-actions select { min-width: 120px; max-width: 170px; padding: 0 8px; }
 .hidden-input { display: none; }
 
-/* The two side columns are custom properties so the resize handles can drive
-   them from an inline style, which wins over both the default here and the
-   narrow-window override further down. The stage keeps its own minmax floor,
-   so a panel can never squeeze it: the handles clamp against that floor rather
-   than the grid discovering it late and overflowing. */
-.workspace { --palette-w: 214px; --inspector-w: 264px; position: relative; min-height: 0; flex: 1 1 auto; display: grid; grid-template-columns: var(--palette-w) minmax(460px, 1fr) var(--inspector-w); overflow: hidden; background: #060c12; }
-
-/* Straddles the seam rather than sitting beside it, so the grab area is wider
-   than the 1px border it appears to be. Reported as a separator rather than a
-   slider: what it moves is a pane boundary, and that ARIA pattern brings the
-   arrow, Home and End keys with it.
-
-   `position`, `top` and `bottom` are deliberately NOT here -- they are set
-   inline, because this element is a child of the grid and would otherwise
-   become a grid item whenever this file has not arrived, taking a column and
-   wrapping the panels onto a second row. Everything below is appearance, which
-   can safely wait for a stylesheet. */
-.panel-resizer { z-index: 6; width: 9px; margin-left: -5px; padding: 0; border: 0; background: transparent; cursor: col-resize; touch-action: none; }
-.panel-resizer::after { content: ""; position: absolute; inset-block: 0; left: 4px; width: 1px; background: transparent; transition: background .12s ease; }
-.panel-resizer:hover::after, .panel-resizer:focus-visible::after, .panel-resizer.is-dragging::after { background: var(--cyan); box-shadow: 0 0 7px rgba(100,227,255,.55); }
-.panel-resizer:focus-visible { outline: none; }
-.inspector-resizer { margin-left: 0; margin-right: -5px; }
-/* Nothing to drag while the game is playing, and nothing to drag once the
-   columns have become rows, where a width means nothing. */
-.workspace.is-playing .panel-resizer { display: none; }
 .palette-panel, .inspector-panel { min-height: 0; background: var(--panel); }
 /* The pane scrolls as one column: the heading, player card, tool strip and
    tab strip travel with the list rather than staying pinned above it, which
@@ -189,12 +154,12 @@ button { cursor: pointer; }
    (EbAccordionItem, an EbCard underneath). The bridge in :root feeds it the
    palette; these rules re-cut the card chrome to the cockpit's density, via
    the suite's stable public class names. */
-.workspace .eb-accordion { --eb-accordion-gap: 7px; }
-.workspace .eb-card { background: rgba(9, 19, 27, .5); }
-.workspace .eb-card-header { min-height: 27px; padding: 2px 3px 2px 8px; background: rgba(11, 23, 32, .55); }
-.workspace .eb-card-header:hover .eb-card-title { color: var(--cyan); }
-.workspace .eb-card-title { font-family: var(--font-mono); font-weight: 500; }
-.workspace .eb-card-collapse-toggle { width: 23px; height: 23px; }
+.starline-shell .shell-rail .eb-accordion { --eb-accordion-gap: 7px; }
+.starline-shell .shell-rail .eb-card { background: rgba(9, 19, 27, .5); }
+.starline-shell .shell-rail .eb-card-header { min-height: 27px; padding: 2px 3px 2px 8px; background: rgba(11, 23, 32, .55); }
+.starline-shell .shell-rail .eb-card-header:hover .eb-card-title { color: var(--cyan); }
+.starline-shell .shell-rail .eb-card-title { font-family: var(--font-mono); font-weight: 500; }
+.starline-shell .shell-rail .eb-card-collapse-toggle { width: 23px; height: 23px; }
 .palette-list .eb-card-title { color: #688591; font-size: 9px; letter-spacing: .15em; }
 /* And each section scrolls on its own once it outgrows this, so one crowded
    category cannot push every sibling section past the bottom of the pane. */
@@ -368,7 +333,7 @@ button { cursor: pointer; }
 .inventory-grid button.active { border-color: rgba(234,255,98,.45); color: var(--lime); background: rgba(234,255,98,.05); }
 
 /* The destructive confirms ride ElectricBlazor's dialog. It portals to
-   <body>, outside .workspace, so the section-card compaction above does not
+   <body>, outside the rails, so the section-card compaction above does not
    reach it — these rules are its whole Starline fit. */
 .confirm-dialog { width: min(92vw, 400px); }
 .confirm-dialog .eb-card-title { color: var(--coral); font-family: var(--font-mono); font-size: 10px; letter-spacing: .11em; }
@@ -378,59 +343,30 @@ button { cursor: pointer; }
 .confirm-dialog .eb-card-footer button:hover { border-color: var(--cyan); color: var(--cyan); }
 .confirm-dialog .eb-card-footer button.confirm-commit { border-color: rgba(255,106,77,.5); background: rgba(255,106,77,.08); color: #ff8a72; }
 .confirm-dialog .eb-card-footer button.confirm-commit:hover { border-color: var(--coral); color: var(--coral); }
-.settings-dialog .eb-card-title { color: var(--cyan); font-family: var(--font-mono); font-size: 10px; letter-spacing: .11em; }
-.settings-dialog .eb-card-footer { display: flex; justify-content: flex-end; }
-.settings-dialog .eb-card-footer button { min-height: 30px; padding: 0 14px; border: 1px solid #34505d; background: #0e1c24; color: #8fa5ae; font-family: var(--font-mono); font-size: 9px; letter-spacing: .08em; }
-.settings-dialog .eb-card-footer button:hover { border-color: var(--cyan); color: var(--cyan); }
 
 /* The editors' own look ships with @ccllc/studio (see layout.tsx); these
    four hooks are all that keeps them in Starline's theme — the sprite
    editors and the bullet-pattern designer alike. */
 .studio-backdrop, .pattern-studio-backdrop { --studio-font: var(--font-mono); --studio-accent: var(--cyan); --studio-confirm: var(--lime); --studio-display: var(--font-display); }
 
-.shortcut-bar { min-height: 34px; flex: 0 0 auto; padding: 0 clamp(14px, 2vw, 28px); display: flex; align-items: center; gap: 24px; overflow-x: auto; overflow-y: hidden; border-top: 1px solid var(--line); background: #050a0f; color: #536b76; font-family: var(--font-mono); font-size: 9px; letter-spacing: .06em; white-space: nowrap; }
-.shortcut-bar > span { display: flex; align-items: center; gap: 6px; }
-.shortcut-bar strong { margin-left: auto; color: #465d68; font-size: 9px; font-weight: 500; letter-spacing: .1em; }
-.gamepad-shortcut { color: #6e858f; }
 kbd { min-width: 22px; padding: 3px 5px; display: inline-block; border: 1px solid #344a55; border-radius: 2px; background: #101b22; color: #9eb2ba; text-align: center; font-family: var(--font-mono); font-size: 9px; box-shadow: inset 0 -2px rgba(0,0,0,.28); }
 
-.workspace.is-playing { grid-template-columns: 0 minmax(500px, 1fr) 0; }
-.workspace.is-playing .palette-panel, .workspace.is-playing .inspector-panel { visibility: hidden; overflow: hidden; }
-.workspace.is-playing .stage-toolbar { visibility: hidden; height: 0; }
-.workspace.is-playing .minimap-label strong { visibility: hidden; }
+.starline-shell.is-playing .stage-toolbar { visibility: hidden; height: 0; }
+.starline-shell.is-playing .minimap-label strong { visibility: hidden; }
 
-:fullscreen .editor-app { height: 100vh; }
-:fullscreen .workspace { min-height: 0; }
+:fullscreen .starline-shell { height: 100vh; }
 
 @media (max-width: 1050px) {
-  /* The DEFAULTS narrow, not the template. A width somebody chose is an inline
-     custom property and still wins, and the handles clamp it against the stage
-     floor at this size like any other. */
-  .workspace { --palette-w: 180px; --inspector-w: 230px; }
   .palette-card { grid-template-columns: 28px 1fr auto; }
-  .topbar { grid-template-columns: 1fr auto; }
-  .mode-chip { display: none; }
-  .autosave-state { display: none; }
   .controller-status { display: none; }
   .fullscreen-button { font-size: 0; padding: 0 7px; }
   .fullscreen-button kbd { font-size: 9px; }
-  .file-actions button:nth-of-type(5), .file-actions button:nth-of-type(6) { display: none; }
 }
 
 @media (max-width: 760px) {
-  .editor-app { overflow: hidden; }
-  .topbar { position: sticky; top: 0; z-index: 20; height: 52px; }
+  .starline-shell { overflow: hidden; }
   .brand i { display: none; }
   .test-button { height: 31px; }
-  .levelbar { align-items: flex-start; flex-wrap: wrap; }
-  .level-name { flex: 1 1 170px; }
-  .level-name input { width: 100%; }
-  .file-actions { width: 100%; margin-left: 0; overflow-x: auto; }
-  .file-actions select { min-width: 115px; }
-  .workspace, .workspace.is-playing { display: flex; flex-direction: column; overflow-y: auto; }
-  /* The columns are rows here, so grid-template-columns is inert and the stored
-     widths simply stop applying. The handles go with them. */
-  .panel-resizer { display: none; }
   .palette-panel { order: 2; max-height: none; border: 0; border-top: 1px solid var(--line); overflow: visible; }
   .palette-list .eb-card-body { max-height: none; overflow: visible; }
   .inspector-panel { order: 3; max-height: none; border-left: 0; border-top: 1px solid var(--line); overflow: visible; }
@@ -439,12 +375,10 @@ kbd { min-width: 22px; padding: 3px 5px; display: inline-block; border: 1px soli
   .zoom-readout { display: none; }
   .stage-canvas-wrap { min-height: 380px; }
   .stage-canvas-wrap canvas { min-height: 380px; }
-  .workspace.is-playing .stage-panel { min-height: calc(100vh - 150px); }
-  .workspace.is-playing .stage-canvas-wrap, .workspace.is-playing .stage-canvas-wrap canvas { min-height: calc(100vh - 265px); }
-  .workspace.is-playing .palette-panel, .workspace.is-playing .inspector-panel { display: none; }
+  .starline-shell.is-playing .stage-panel { min-height: calc(100vh - 150px); }
+  .starline-shell.is-playing .stage-canvas-wrap, .starline-shell.is-playing .stage-canvas-wrap canvas { min-height: calc(100vh - 265px); }
   .play-hud { grid-template-columns: 1fr 1fr; }
   .play-progress { display: none !important; }
-  .shortcut-bar { padding-inline: 12px; gap: 16px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -540,37 +474,21 @@ kbd { min-width: 22px; padding: 3px 5px; display: inline-block; border: 1px soli
    Presentation mode
 
    Playtest with the editor taken away: the game as a player would meet it.
-   Everything hidden here is chrome that belongs to the person BUILDING the
-   level -- the topbar, the level bar, both tool panels, the stage toolbar, the
-   minimap and the shortcut bar. What is left is the playfield and the HUD the
-   game itself draws.
+   The shell hides its bar and status line and the rails go; what this file
+   hides is the rest of the chrome that belongs to the person BUILDING the
+   level -- the stage toolbar and the minimap. What is left is the playfield
+   and the HUD the game itself draws.
 
-   `display: none` rather than `visibility: hidden`, unlike the panels during
-   an ordinary playtest: those keep their space so the stage does not jump when
-   you tab in and out, whereas here the whole point is that the space is
-   reclaimed. Escape leaves, which is the same key that leaves a playtest.
+   In an ordinary playtest the stage toolbar keeps its place, hidden, so the
+   playfield does not jump as you go in and out; here `display: none` gives
+   its room to the playfield, which is the point. Escape leaves, which is the
+   same key that leaves a playtest.
    --------------------------------------------------------------------------- */
-.editor-app.is-presenting .topbar,
-.editor-app.is-presenting .levelbar,
-.editor-app.is-presenting .shortcut-bar,
-.editor-app.is-presenting .palette-panel,
-.editor-app.is-presenting .inspector-panel,
-.editor-app.is-presenting .panel-resizer,
-.editor-app.is-presenting .stage-toolbar,
-.editor-app.is-presenting .minimap-block { display: none; }
+.starline-shell.is-presenting { background: #04070b; }
+.starline-shell.is-presenting .stage-panel { min-height: 0; }
+.starline-shell.is-presenting .stage-toolbar,
+.starline-shell.is-presenting .minimap-block { display: none; }
 
-/* One column, and the stage takes the room the panels gave back. The grid is
-   restated rather than inherited because `.workspace.is-playing` sets its own
-   three-column template, and presentation is the stronger claim. */
-.editor-app.is-presenting .workspace,
-.editor-app.is-presenting .workspace.is-playing { grid-template-columns: minmax(0, 1fr); }
-.editor-app.is-presenting .stage-panel { min-height: 0; }
-.editor-app.is-presenting { background: #04070b; }
-
-/* The one piece of chrome that stays, because a mode with no visible way out
-   is a trap. It fades unless pointed at. */
-.present-exit-hint { position: fixed; right: 14px; bottom: 12px; z-index: 40; padding: 5px 11px; border: 1px solid var(--line); border-radius: 3px; background: rgba(6,12,18,.72); color: #58737e; font-family: var(--font-mono); font-size: 9px; letter-spacing: .09em; opacity: .35; transition: opacity .18s ease; pointer-events: none; }
-.editor-app.is-presenting:hover .present-exit-hint { opacity: .9; }
 .present-button b { font-size: 12px; font-weight: 400; line-height: 1; color: var(--cyan); }
 
 /* Expand All / Collapse All, in both panel headings.
@@ -588,10 +506,6 @@ kbd { min-width: 22px; padding: 3px 5px; display: inline-block; border: 1px soli
 .section-controls button:disabled { opacity: .32; cursor: default; }
 
 
-/* The document chrome the GameBase editors share (EDITOR-UX.md): the dot
- * beside the level's name while it has unsaved changes. */
-.dirty-dot { display: inline-block; width: 7px; height: 7px; margin-left: 6px; border-radius: 50%; background: var(--cyan, #64e3ff); vertical-align: middle; }
-.file-actions button:disabled { opacity: .45; }
 
 /* A bezier's points in the Inspector: X beside Y, because the pair is one
    thing and two stacked rows would read as two settings. */

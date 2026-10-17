@@ -92,11 +92,15 @@ than working around it.
 
 ## Vendored: @electricblazor/react
 
-Starline's editor chrome comes from `@electricblazor/react` where a component
+Starline's frame is the construction-set shell's (GameBase's `docs/SHELL.md`):
+`@ccllc/studio`'s `Shell` with the `DocumentBar` over the game's session, the
+mode buttons, the status line and presenting; `Workspace` with the palette and
+the Inspector as its rails; `HelpSheet` and `SettingsSheet`. Inside the rails
+the controls come from `@electricblazor/react` where a component
 fits: the tool panels' collapsible sections (`EbAccordion` /
 `EbAccordionItem`), the palette's OBJECTS/COMPONENTS switch (`EbTabbedCard`),
 the Inspector's number fields (`EbNumericInput`, text-only mode), and the
-destructive confirms (`EbDialog`). The suite's color pickers were evaluated
+confirms the document bar does not ask itself (`EbDialog`). The suite's color pickers were evaluated
 for the hue-tint fields and deliberately not adopted: they pick *colors*
 (RgbColor), while tint is a hue *rotation* — a picker whose swatch shows a
 color the game will never render is worse than the slider. The package is the
@@ -131,7 +135,7 @@ maintained deliberately:
 |---|---|---|
 | `@ccllc/arcade` (`shmup`, `core`, `platform`, …) | The level model, `normalizeLevel`/`normalizeBulletPattern`, the deterministic world simulation, damage, bullet-pattern engine, game loop, undo history, input action maps, perf monitoring | node_modules (feed) |
 | `@ccllc/studio` | Authoring UI: `SpriteStudio` (raster + vector editors), `BulletPatternStudio`; plus `@ccllc/studio/render`, the React-free drawing routines for saved sprite assets | node_modules (feed) |
-| **This repo** | Wiring and presentation: the editor shell (palette, inspector, tools, selection, dialogs), the canvas renderer and its built-in artwork, particles/stars, persistence in `localStorage`, keyboard/pad bindings — where the shortcut table is the construction-set shell's standard rows (GameBase's `docs/SHELL.md`, `shellBindings`) plus this set's own in `app/shortcuts.ts`, the help sheet is the studio's `HelpSheet` over it, and the preferences store is `defineShellSettings` under the namespace it always had | `app/` |
+| **This repo** | Wiring and presentation: the editor shell (palette, inspector, tools, selection, dialogs), the canvas renderer and its built-in artwork, particles/stars, persistence in `localStorage`, keyboard/pad bindings — where the shortcut table is the construction-set shell's standard rows (GameBase's `docs/SHELL.md`, `shellBindings`) plus this set's own in `app/shortcuts.ts`, the help sheet is the studio's `HelpSheet` over it, the frame is the studio's `Shell` and `Workspace` with the `DocumentBar`, and the preferences store is `defineShellSettings` under the namespace it always had, its person's half shared | `app/` |
 
 Consequences you must respect:
 
@@ -162,7 +166,8 @@ Consequences you must respect:
   `ACTIONS` input map at the top; module-level draw helpers (`drawSprite`,
   `drawShip`); then the `StarlineGame` component — state (with refs mirroring
   state the loop needs), editor callbacks, the keyboard shortcut effect, the
-  main loop-and-render effect, and finally the JSX shell.
+  main loop-and-render effect, and finally the rails, the stage and the
+  construction-set shell's frame around them.
 - [app/starter-level.ts](app/starter-level.ts) — the level a fresh Foundry
   opens on. Content, not mechanism; that is why it survived the library
   extraction.
@@ -172,7 +177,8 @@ Consequences you must respect:
   relative card URL reasoning in its comment.
 - [app/globals.css](app/globals.css) — all UI styling: dark theme, CSS
   variables (`--ink`, `--lime`, `--cyan`, `--panel`, …), flat class names
-  (`.topbar`, `.palette-item`, …). New UI should use these variables and the
+  (`.palette-item`, `.stage-panel`, …), and the shell's skin tokens mapped onto
+  them under `.starline-shell`. New UI should use these variables and the
   existing class idiom, not Tailwind utility soup.
 - [tests/rendered-html.test.mjs](tests/rendered-html.test.mjs) — post-build
   assertions. When asserting that bundled code contains something, match a

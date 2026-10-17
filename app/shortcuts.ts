@@ -18,8 +18,9 @@ import { shellBindings, type Binding } from "@ccllc/arcade/editor";
 export interface StarlineActions {
   /** Building, or flying (playing, paused, game over, victory). */
   mode(): "edit" | "play";
-  save(): void;
-  duplicateLevel(): void;
+  /** Absent when a DocumentBar binds Ctrl+S and Ctrl+Shift+S itself, as the editor's does. */
+  save?(): void;
+  duplicateLevel?(): void;
   undo(): void;
   redo(): void;
   test(): void;
