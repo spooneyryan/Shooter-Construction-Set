@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, 
 import { createDocumentSession, createHistory, createIndexedDbStorage, createLoop, createPerformanceMonitor, defineLibrary, DocumentError, type DocumentFormat, type PerfStats } from "@ccllc/arcade/core";
 import { useSyncExternalStore } from "react";
 import { createInput, createMusic } from "@ccllc/arcade/platform";
-import { createSelection, createEditorCommands, createKeymap, defineShellSettings } from "@ccllc/arcade/editor";
+import { createSelection, createEditorCommands, createKeymap, defineShellSettings, readShellHome } from "@ccllc/arcade/editor";
 import { FLIGHT_KEYS, starlineBindings } from "./shortcuts.js";
 import { uniqueId } from "@ccllc/arcade/core";
 import { createTelemetry } from "@ccllc/arcade/telemetry";
@@ -600,6 +600,11 @@ type DisplayPrefs = { pixelFilter: DisplayFilter; lineBrightness: number; bandRo
 // same namespace, so nothing anyone stored is orphaned by the move.
 const editorSettings = defineShellSettings({
   namespace: "starline-editor",
+  // The person's half -- text size, the played picture, sound, the rates --
+  // lives under GameBase's shared namespace, so it is the same in every set
+  // served from one address (the GameBase app); the rails stay Starline's.
+  // The first time, the shared half takes what this store already held.
+  shared: true,
   rails: {
     palette: { min: PANEL_LIMITS.palette.min, max: PANEL_LIMITS.palette.max, default: PANEL_LIMITS.palette.fallback },
     inspector: { min: PANEL_LIMITS.inspector.min, max: PANEL_LIMITS.inspector.max, default: PANEL_LIMITS.inspector.fallback },
@@ -1084,7 +1089,18 @@ function PackPreview({ pack }: { pack: SpritePack }) {
   return <canvas className="pack-preview" ref={ref} aria-hidden="true" />;
 }
 
+// The GameBase app's home cookie, read once in the browser: it does not change
+// while the page is open, so nothing subscribes.
+const HOME = typeof document === "undefined" ? null : readShellHome();
+const subscribeToNothing = () => () => {};
+const readHomeSnapshot = () => HOME;
+const readNoHome = () => null;
+
 export function StarlineGame() {
+  // Where home is when Starline is a room under the GameBase app; nothing at
+  // its own address. The prerendered page has no cookie, so the server
+  // snapshot is null and React swaps in the browser's after hydrating.
+  const home = useSyncExternalStore(subscribeToNothing, readHomeSnapshot, readNoHome);
   const mainCanvasRef = useRef<HTMLCanvasElement>(null);
   const miniCanvasRef = useRef<HTMLCanvasElement>(null);
   const importRef = useRef<HTMLInputElement>(null);
@@ -3534,7 +3550,10 @@ A game exported from the Starline Foundry.
   return (
     <main className={"editor-app" + (presenting ? " is-presenting" : "")}>
       <header className="topbar">
-        <a className="brand" href="#workspace" aria-label="Starline Foundry"><span className="brand-mark">S</span><span>STARLINE <i>FOUNDRY</i></span></a>
+        <div className="topbar-start">
+          {home ? <a className="topbar-home" href={home.href}>{home.label}</a> : null}
+          <a className="brand" href="#workspace" aria-label="Starline Foundry"><span className="brand-mark">S</span><span>STARLINE <i>FOUNDRY</i></span></a>
+        </div>
         <div className="mode-chip"><span className={mode === "build" ? "cyan-dot" : "lime-dot"} />{mode === "build" ? "BUILD MODE" : "PLAYTEST"}</div>
         <div className="top-actions">
           <span className="autosave-state">{notice}</span>

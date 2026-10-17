@@ -1238,3 +1238,25 @@ shell commit, and pushed; the pipeline's run on `master` queued at 22:16 UTC
 and finished green at 22:24. **Live** on the Static Web App: the home page is
 a new build (fresh `index` and `vinext` chunks) and its markup carries the
 HELP button the sheet opens from. Not seen by hand: `F1` on the deployed page.
+
+## 2026-10-17 — A room under the GameBase app, on GameBase 2.0.45
+
+Ryan, on GameBase's plan for one app over the four sets (GameBase
+docs/GAMEBASE-APP.md): "Please proceed with all your recommendations."
+Slice 1 (`2af613a`): the asset prefix is baked in and vinext's bundler
+refuses a relative one (tried: `"."` fails in rolldown's asset naming), so
+the pipeline now makes a second export for `/starline/` and publishes it as
+`starline-room`; `build/build-room.mjs` moves the prefixed `_next/` up beside
+the page so `dist/room` is exactly what the room serves. The export's
+`/player-runtime/` fetch now resolves beside the page, which also mends it
+under `/games/starline/`. Slice 3: on GameBase 2.0.45 the preferences pass
+`shared: true`, and the top bar shows "GameBase ›" beside the brand when
+`readShellHome` finds the app's cookie — read through `useSyncExternalStore`
+with a null server snapshot, because the page is prerendered without it.
+
+**Proof.** 11 tests; lint without errors (the four warnings are older);
+`npm run build:room`. Served by the GameBase app's host from
+`rooms/starline`: every script loads from `/starline/_next/`, the home link
+shows with no hydration error, and the shared store carries the launcher's
+text size — which this set's own chrome does not yet apply; that comes
+with its move into the shell's frame.

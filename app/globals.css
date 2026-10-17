@@ -57,6 +57,11 @@ button { cursor: pointer; }
   background: rgba(5, 11, 16, .94);
   font-family: var(--font-mono), monospace;
 }
+/* The way home when Starline is a room under the GameBase app: beside the brand, in the cell the brand had. */
+.topbar-start { display: inline-flex; align-items: center; gap: 14px; min-width: 0; }
+.topbar-home { color: var(--muted); text-decoration: none; font-size: 11px; font-weight: 700; letter-spacing: .13em; text-transform: uppercase; white-space: nowrap; }
+.topbar-home::after { content: "\203A"; margin-left: 10px; }
+.topbar-home:hover, .topbar-home:focus-visible { color: var(--ink); }
 .brand { display: inline-flex; width: fit-content; align-items: center; gap: 11px; color: var(--ink); text-decoration: none; font-size: 13px; font-weight: 800; letter-spacing: .13em; }
 .brand i { color: var(--muted); font-size: 10px; font-style: normal; }
 .brand-mark { width: 28px; height: 28px; display: grid; place-items: center; color: #081015; background: var(--lime); font-family: var(--font-display); font-size: 15px; font-weight: 800; letter-spacing: 0; transform: skew(-8deg); }
