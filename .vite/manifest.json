@@ -1,0 +1,68 @@
+{
+  "_framework-DTZGTDtF.js": {
+    "file": "Shooter-Construction-Set/_next/static/chunks/framework-DTZGTDtF.js",
+    "name": "framework",
+    "imports": [
+      "_rolldown-runtime-hePW80VL.js"
+    ]
+  },
+  "_rolldown-runtime-hePW80VL.js": {
+    "file": "Shooter-Construction-Set/_next/static/chunks/rolldown-runtime-hePW80VL.js",
+    "name": "rolldown-runtime"
+  },
+  "_vinext-_cJjiulW.js": {
+    "file": "Shooter-Construction-Set/_next/static/chunks/vinext-_cJjiulW.js",
+    "name": "vinext",
+    "imports": [
+      "_rolldown-runtime-hePW80VL.js",
+      "_framework-DTZGTDtF.js"
+    ],
+    "dynamicImports": [
+      "_vinext-_cJjiulW.js"
+    ]
+  },
+  "app/StarlineGame.tsx": {
+    "file": "Shooter-Construction-Set/_next/static/chunks/StarlineGame-CL8ZLsDY.js",
+    "name": "StarlineGame",
+    "src": "app/StarlineGame.tsx",
+    "isDynamicEntry": true,
+    "imports": [
+      "_rolldown-runtime-hePW80VL.js",
+      "_framework-DTZGTDtF.js"
+    ],
+    "assets": [
+      "Shooter-Construction-Set/_next/static/media/worker.B9c4oHuU.js"
+    ]
+  },
+  "node_modules/@ccllc/arcade/sfx/worker.js": {
+    "file": "Shooter-Construction-Set/_next/static/media/worker.B9c4oHuU.js",
+    "src": "node_modules/@ccllc/arcade/sfx/worker.js"
+  },
+  "node_modules/vinext/dist/shims/layout-segment-context.js": {
+    "file": "Shooter-Construction-Set/_next/static/chunks/layout-segment-context-Croo0ZtA.js",
+    "name": "layout-segment-context",
+    "src": "node_modules/vinext/dist/shims/layout-segment-context.js",
+    "isDynamicEntry": true,
+    "imports": [
+      "_rolldown-runtime-hePW80VL.js",
+      "_framework-DTZGTDtF.js",
+      "_vinext-_cJjiulW.js"
+    ]
+  },
+  "virtual:vinext-app-browser-entry": {
+    "file": "Shooter-Construction-Set/_next/static/chunks/index-41VVH6wa.js",
+    "name": "index",
+    "src": "virtual:vinext-app-browser-entry",
+    "isEntry": true,
+    "imports": [
+      "_rolldown-runtime-hePW80VL.js",
+      "_framework-DTZGTDtF.js",
+      "_vinext-_cJjiulW.js"
+    ],
+    "dynamicImports": [
+      "_vinext-_cJjiulW.js",
+      "node_modules/vinext/dist/shims/layout-segment-context.js",
+      "app/StarlineGame.tsx"
+    ]
+  }
+}
